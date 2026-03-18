@@ -3,3 +3,6 @@ node_modules/
 *.log
 dist/
 .env
+app/node_modules/
+app/dist/
+app/coverage/
