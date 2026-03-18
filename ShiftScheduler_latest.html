@@ -667,8 +667,8 @@ function findExtShiftPairs(day, employees, schedule, extShifts) {
     const coveredGaps = pair.covers.flatMap(shiftId => {
       const asgn = schedule[cellKey(day, shiftId)] || [];
       const missing = [];
-      if (!slotHasRole(asgn, sourceEmployees, "Scale"))   missing.push("Scale");
-      if (!slotHasRole(asgn, sourceEmployees, "Medical")) missing.push("Medical");
+      if (!slotHasRole(asgn, employees, "Scale"))   missing.push("Scale");
+      if (!slotHasRole(asgn, employees, "Medical")) missing.push("Medical");
       return missing.map(role => ({ shiftId, role }));
     });
     if (!coveredGaps.length) continue;
@@ -1595,6 +1595,95 @@ function buildAutoFill(sourceEmps, cfg, empTimeOffDays, empPatterns, extShiftsAr
   if (fixCount > 0) console.log("[AutoFill] Violation minimizer fixed " + fixCount + " slot(s)");
 
   return { schedule: ns, hourTracker, usedPatterns };
+}
+
+// ── Business Rule Enforcement (Hard Gates) ───────────────────────────────────
+// Rules:
+//   1. All FT employees must have >= 40 hours
+//   2. Every shift must have >= 3 people (NON-NEGOTIABLE)
+//   3. Every shift must have at least 1 Medical, 1 Scale, 1 other
+//
+// Returns { violations: [], blocked: bool }
+// violations: array of { rule, level:"error"|"warning", msg }
+// blocked: true if ANY error-level violation exists (prevents save/publish)
+function enforceBusinessRules(schedule, employees, extShifts) {
+  const violations = [];
+
+  // ── Rule 1: FT employees >= 40h ─────────────────────────────────────────
+  employees.forEach(emp => {
+    if (emp.employmentType !== "full-time") return;
+    const hours = calcHours(emp.id, schedule, extShifts || []);
+    if (hours < FT_MIN_HOURS) {
+      violations.push({
+        rule: 1,
+        level: "error",
+        msg: `Rule 1 — ${emp.name} has only ${hours}h scheduled (minimum 40h required for full-time).`,
+      });
+    }
+  });
+
+  // ── Rules 2 & 3: Per-shift checks ────────────────────────────────────────
+  DAYS.forEach(day => {
+    SHIFTS.forEach(shift => {
+      const key  = cellKey(day, shift.id);
+      const asgn = schedule[key] || [];
+
+      // Ext shift bodies that cover this slot
+      const cellExt = (extShifts || []).filter(e => extCovers(e, day, shift.id));
+      const extBodyCount = cellExt.reduce((n, ext) => {
+        const pair = EXT_PAIRS.find(p => p.id === ext.pairId);
+        if (!pair) return n;
+        const idx = pair.covers.indexOf(shift.id);
+        const hasBody = idx === 0 ? !!ext.empAId : idx === 1 ? !!ext.empBId : false;
+        return n + (hasBody ? 1 : 0);
+      }, 0);
+      const totalBodies = asgn.length + extBodyCount;
+
+      const dayLabel  = day;
+      const shiftLabel = shift.label + " (" + shift.time + ")";
+
+      // Rule 2: minimum 3 people
+      if (totalBodies < 3) {
+        violations.push({
+          rule: 2,
+          level: "error",
+          msg: `Rule 2 — ${dayLabel} ${shiftLabel}: only ${totalBodies} person${totalBodies===1?"":"s"} scheduled (minimum 3 required).`,
+        });
+      }
+
+      // Rule 3: must have Medical, Scale, and at least 1 other
+      const extHasScale   = cellExt.some(e => (e.roles||[]).includes("Scale"));
+      const extHasMedical = cellExt.some(e => (e.roles||[]).includes("Medical"));
+      const hasScale   = slotHasRole(asgn, employees, "Scale")   || extHasScale;
+      const hasMedical = slotHasRole(asgn, employees, "Medical") || extHasMedical;
+
+      if (!hasScale) {
+        violations.push({
+          rule: 3,
+          level: "error",
+          msg: `Rule 3 — ${dayLabel} ${shiftLabel}: no Scale assigned.`,
+        });
+      }
+      if (!hasMedical) {
+        violations.push({
+          rule: 3,
+          level: "error",
+          msg: `Rule 3 — ${dayLabel} ${shiftLabel}: no Medical assigned.`,
+        });
+      }
+      // "1 other" check: need at least 3 roles covered — Scale + Medical + one more body
+      if (hasScale && hasMedical && totalBodies < 3) {
+        violations.push({
+          rule: 3,
+          level: "error",
+          msg: `Rule 3 — ${dayLabel} ${shiftLabel}: Scale and Medical present but missing a 3rd person (Guard, 2nd Medic, or 2nd Scale).`,
+        });
+      }
+    });
+  });
+
+  const blocked = violations.some(v => v.level === "error");
+  return { violations, blocked };
 }
 
 // ── Excel Export ──────────────────────────────────────────────────────────────
@@ -3096,6 +3185,86 @@ function ExtShiftBanner({ extShifts, employees, onRemove }) {
             </div>
           );
         })}
+      </div>
+    </div>
+  );
+}
+
+// ── Hard Enforcement Block Modal ──────────────────────────────────────────────
+// Shown when Save Snapshot or Publish is attempted with rule violations.
+// Cannot be dismissed by clicking outside — must click "Go Fix Issues".
+function EnforcementBlockModal({ violations, onClose }) {
+  const t = useTheme();
+  const byRule = [1, 2, 3].map(r => ({
+    rule: r,
+    items: violations.filter(v => v.rule === r),
+    label: r === 1 ? "Rule 1 — Full-Time Hours (40h minimum)"
+         : r === 2 ? "Rule 2 — Minimum 3 People Per Shift"
+         : "Rule 3 — Required Roles (Medic + Scale + Other)",
+    icon: r === 1 ? "⏱" : r === 2 ? "👥" : "🏥",
+    color: t.danger,
+  })).filter(g => g.items.length > 0);
+
+  return (
+    <div style={{position:"fixed",inset:0,background:"rgba(0,0,0,0.85)",display:"flex",
+      alignItems:"center",justifyContent:"center",zIndex:2000,padding:20}}>
+      <div style={{background:t.surface,border:"2px solid "+t.danger,borderRadius:10,
+        padding:28,maxWidth:580,width:"100%",boxShadow:"0 24px 64px rgba(0,0,0,0.7)"}}>
+
+        {}
+        <div style={{display:"flex",alignItems:"center",gap:10,marginBottom:6}}>
+          <span style={{fontSize:26}}>🚫</span>
+          <div>
+            <div style={{fontSize:15,fontWeight:800,color:t.danger,letterSpacing:".02em"}}>
+              SCHEDULE BLOCKED — RULE VIOLATIONS
+            </div>
+            <div style={{fontSize:11,color:t.textMuted,marginTop:2}}>
+              The following issues must be resolved before this schedule can be saved or published.
+            </div>
+          </div>
+        </div>
+
+        <div style={{height:1,background:t.danger+"40",margin:"14px 0"}}/>
+
+        {}
+        <div style={{display:"flex",flexDirection:"column",gap:14,maxHeight:360,overflowY:"auto"}}>
+          {byRule.map(({rule,items,label,icon}) => (
+            <div key={rule}>
+              <div style={{fontSize:11,fontWeight:800,color:t.danger,letterSpacing:".06em",
+                marginBottom:6,display:"flex",alignItems:"center",gap:6}}>
+                <span>{icon}</span>
+                <span>{label.toUpperCase()}</span>
+                <span style={{background:t.danger,color:"#fff",fontSize:9,fontWeight:800,
+                  padding:"1px 6px",borderRadius:10,marginLeft:4}}>{items.length}</span>
+              </div>
+              <div style={{display:"flex",flexDirection:"column",gap:4}}>
+                {items.map((v,i) => (
+                  <div key={i} style={{display:"flex",alignItems:"flex-start",gap:8,
+                    padding:"7px 10px",background:t.danger+"0d",borderRadius:5,
+                    border:"1px solid "+t.danger+"30",fontSize:11,color:t.text}}>
+                    <span style={{color:t.danger,fontWeight:800,flexShrink:0}}>✗</span>
+                    <span>{v.msg.replace(/^Rule \d+ — /, "")}</span>
+                  </div>
+                ))}
+              </div>
+            </div>
+          ))}
+        </div>
+
+        <div style={{height:1,background:t.border,margin:"18px 0"}}/>
+
+        {}
+        <div style={{display:"flex",justifyContent:"space-between",alignItems:"center"}}>
+          <div style={{fontSize:10,color:t.textDim,maxWidth:340}}>
+            These rules are non-negotiable. Resolve all violations before saving or publishing.
+          </div>
+          <button onClick={onClose}
+            style={{background:t.danger,color:"#fff",border:"none",padding:"10px 22px",
+              borderRadius:6,cursor:"pointer",fontSize:13,fontWeight:700,fontFamily:"inherit",
+              flexShrink:0}}>
+            ← Go Fix Issues
+          </button>
+        </div>
       </div>
     </div>
   );
@@ -6848,6 +7017,7 @@ function ScheduleGrid({ employees, schedule, setSchedule, onOpenTestModal, pendi
   const [extSuggestions,     setExtSuggestions]   = useState(null);
   const [pendingExtShifts,   setPendingExtShifts] = useState([]);
   const [manualPairDay,      setManualPairDay]    = useState(null);
+  const [enforcementBlock,   setEnforcementBlock] = useState(null); // {violations:[]} or null
   const cellRefs = useRef({});
 
   useEffect(() => {
@@ -7134,42 +7304,41 @@ function ScheduleGrid({ employees, schedule, setSchedule, onOpenTestModal, pendi
 
     DAYS.forEach(day => {
       SHIFTS.forEach(shift => {
-        const isWd1 = isWeekday(day) && shift.id === "first";
-        const regNeed = REGULAR_SLOTS(day, shift.id);
-        const supNeed = SUP_SLOT_DAY(day, shift.id) ? 1 : 0;
-        const totalNeed = regNeed + supNeed;
-        const key = cellKey(day, shift.id);
+        const key  = cellKey(day, shift.id);
         const asgn = sched[key] || [];
         const extBodies = extBodyCount(day, shift.id);
-        const regCount = asgn.length + extBodies;
-        const supCount = asgn.filter(a => a.position === "Supervisor").length;
-        const total = regCount + supCount;
+        const totalBodies = asgn.length + extBodies;
+        const shiftLabel = `${day} ${shift.label}`;
 
-        if (total < totalNeed) {
+        // Rule 2: minimum 3 people per shift (non-negotiable — error)
+        if (totalBodies < 3) {
           const names = asgn.map(a => (rmap[a.employeeId]?.name||"?").split(" ").pop()).join(", ");
-          E(`Coverage gap: ${day} ${shift.id} — ${total}/${totalNeed} bodies${names ? " ["+names+"]" : ""}`);
+          E(`Rule 2 — ${shiftLabel}: only ${totalBodies} person${totalBodies===1?"":"s"} (min 3 required)${names ? " ["+names+"]" : ""}`);
         }
 
-        if (isWd1 && supNeed > 0 && supCount === 0) {
-          E(`No supervisor on ${day} 1st shift`);
-        }
-
-        const regs = asgn.filter(a => a.position !== "Supervisor");
-        const hasScale   = regs.some(a => (rmap[a.employeeId]?.qualifications||[]).includes("Scale"));
-        const hasMedical = regs.some(a => (rmap[a.employeeId]?.qualifications||[]).includes("Medical"));
+        // Rule 3: must have Scale and Medical (error, not warning)
         const extEmps = (allExts).filter(ext => ext.day === day)
           .flatMap(ext => [ext.empAId, ext.empBId].filter(Boolean)
             .map(id => rmap[id]).filter(Boolean)
             .filter(e => {
               const pair = EXT_PAIRS.find(p => p.id === ext.pairId);
               if (!pair) return false;
-              const idx = pair.covers.indexOf(shift.id);
-              return idx >= 0;
+              return pair.covers.indexOf(shift.id) >= 0;
             }));
         const extHasScale   = extEmps.some(e => (e.qualifications||[]).includes("Scale"));
         const extHasMedical = extEmps.some(e => (e.qualifications||[]).includes("Medical"));
-        if (!hasScale && !extHasScale)   W(`No Scale on ${day} ${shift.id}`);
-        if (!hasMedical && !extHasMedical) W(`No Medical on ${day} ${shift.id}`);
+        const hasScale   = slotHasRole(asgn, Object.values(rmap), "Scale")   || extHasScale;
+        const hasMedical = slotHasRole(asgn, Object.values(rmap), "Medical") || extHasMedical;
+
+        if (!hasScale)   E(`Rule 3 — ${shiftLabel}: no Scale assigned`);
+        if (!hasMedical) E(`Rule 3 — ${shiftLabel}: no Medical assigned`);
+
+        // Supervisor slot check (informational only — not a business rule block)
+        const supNeed  = SUP_SLOT_DAY(day, shift.id) ? 1 : 0;
+        const supCount = asgn.filter(a => a.position === "Supervisor").length;
+        if (supNeed > 0 && supCount === 0) {
+          W(`No Supervisor assigned on ${day} 1st shift`);
+        }
       });
     });
 
@@ -7238,8 +7407,8 @@ function ScheduleGrid({ employees, schedule, setSchedule, onOpenTestModal, pendi
     (emps||employees).forEach(emp => {
       if (emp.employmentType !== "full-time") return;
       const h = hoursByEmp[emp.id] || 0;
-      if (h < 40)  W(`${emp.name} has ${h}h (under 40h target)`);
-      if (h > 48)  W(`${emp.name} has ${h}h (over 48h)`);
+      if (h < 40)  E(`Rule 1 — ${emp.name} has only ${h}h scheduled (full-time minimum is 40h)`);
+      if (h > 48)  W(`${emp.name} has ${h}h this week (over 48h)`);
     });
 
     return issues;
@@ -8108,6 +8277,8 @@ pos === "Scale" ? 0 : pos === "Medical" ? 1 : 2;
               style={{background:"transparent",border:"none",color:t.text,fontSize:12,
                 fontFamily:"inherit",outline:"none",width:180}}/>
             <button onClick={()=>{
+                const {violations,blocked} = enforceBusinessRules(schedule,employees,extShifts);
+                if(blocked){setEnforcementBlock({violations});setShowHistSave(false);setHistSaveLabel("");return;}
                 if(histSaveLabel.trim()){manualSaveToHistory(histSaveLabel,weekStart,schedule);setHistSaveLabel("");}
                 setShowHistSave(false);
               }}
@@ -8131,9 +8302,17 @@ pos === "Scale" ? 0 : pos === "Medical" ? 1 : 2;
           💾 Saved Weeks{savedWeeks.length>0&&<span style={{background:t.accent,color:"#fff",
             fontSize:10,fontWeight:800,padding:"1px 6px",borderRadius:10}}>{savedWeeks.length}</span>}
         </button>}
-        <button onClick={()=>setShowExcelPreview(true)} style={{background:"transparent",color:t.scale,
+        <button onClick={()=>{
+          const {violations,blocked} = enforceBusinessRules(schedule,employees,extShifts);
+          if(blocked){setEnforcementBlock({violations});return;}
+          setShowExcelPreview(true);
+        }} style={{background:"transparent",color:t.scale,
           border:"1px solid "+t.scale+"55",padding:"10px 20px",borderRadius:6,cursor:"pointer",fontSize:13,fontWeight:600,fontFamily:"inherit"}}>↓ Export Excel</button>
-        <button onClick={()=>setShowPublish(true)} style={{background:"transparent",color:t.accent,
+        <button onClick={()=>{
+          const {violations,blocked} = enforceBusinessRules(schedule,employees,extShifts);
+          if(blocked){setEnforcementBlock({violations});return;}
+          setShowPublish(true);
+        }} style={{background:"transparent",color:t.accent,
           border:"1px solid "+t.accent+"55",padding:"10px 20px",borderRadius:6,cursor:"pointer",fontSize:13,fontWeight:600,fontFamily:"inherit"}}>📋 Publish</button>
         {!isReadOnly && <button onClick={onOpenTestModal} style={{background:"transparent",color:t.accent,
           border:"1px solid "+t.accent+"55",padding:"10px 20px",borderRadius:6,cursor:"pointer",fontSize:13,fontWeight:600,fontFamily:"inherit",marginLeft:"auto"}}>🧪 New Test Roster</button>}
@@ -8143,6 +8322,14 @@ pos === "Scale" ? 0 : pos === "Medical" ? 1 : 2;
           ↩ Back to Live Schedule
         </button>}
       </div>
+
+      {}
+      {enforcementBlock && (
+        <EnforcementBlockModal
+          violations={enforcementBlock.violations}
+          onClose={()=>setEnforcementBlock(null)}
+        />
+      )}
 
       {}
       {showPublish && (
