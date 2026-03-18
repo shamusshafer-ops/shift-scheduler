@@ -3644,17 +3644,23 @@ function buildViolationList(employees, schedule, extShiftsArg) {
   const SEVERITY = { supervisor_missing: -1, wrong_shift_required: 0, unavailable: 1, days_off: 2, wrong_shift: 3, overwork: 4, under_hours: 5 };
   const items = [];
 
-  WEEKDAYS.forEach(day => {
-    const asgn = schedule[cellKey(day, "first")] || [];
-    employees.forEach(emp => {
-
-      if ((emp.unavailableDays||[]).includes(day)) return;
-      if (asgn.some(a => a.employeeId === emp.id)) return;
-      items.push({ emp, day, shiftId: "first", position: null,
-        type: "supervisor_missing", severity: -1,
-        msg: `Supervisor not scheduled for 1st shift on ${day}` });
+  // Supervisor missing — one violation per day, only if roster has a supervisor
+  const supervisors = employees.filter(e => (e.qualifications||[]).includes("Supervisor"));
+  if (supervisors.length > 0) {
+    WEEKDAYS.forEach(day => {
+      const asgn = schedule[cellKey(day, "first")] || [];
+      const supPresent = asgn.some(a => {
+        const emp = employees.find(e => e.id === a.employeeId);
+        return emp && (emp.qualifications||[]).includes("Supervisor");
+      });
+      if (!supPresent) {
+        const sup = supervisors.find(e => !(e.unavailableDays||[]).includes(day)) || supervisors[0];
+        items.push({ emp: sup, day, shiftId: "first", position: null,
+          type: "supervisor_missing", severity: -1,
+          msg: `No supervisor scheduled for 1st shift on ${day}` });
+      }
     });
-  });
+  }
 
   employees.forEach(emp => {
     if (emp.employmentType !== "full-time") return;
