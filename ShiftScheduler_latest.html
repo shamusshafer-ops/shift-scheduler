@@ -667,8 +667,8 @@ function findExtShiftPairs(day, employees, schedule, extShifts) {
     const coveredGaps = pair.covers.flatMap(shiftId => {
       const asgn = schedule[cellKey(day, shiftId)] || [];
       const missing = [];
-      if (!slotHasRole(asgn, sourceEmployees, "Scale"))   missing.push("Scale");
-      if (!slotHasRole(asgn, sourceEmployees, "Medical")) missing.push("Medical");
+      if (!slotHasRole(asgn, employees, "Scale"))   missing.push("Scale");
+      if (!slotHasRole(asgn, employees, "Medical")) missing.push("Medical");
       return missing.map(role => ({ shiftId, role }));
     });
     if (!coveredGaps.length) continue;
@@ -7304,42 +7304,41 @@ function ScheduleGrid({ employees, schedule, setSchedule, onOpenTestModal, pendi
 
     DAYS.forEach(day => {
       SHIFTS.forEach(shift => {
-        const isWd1 = isWeekday(day) && shift.id === "first";
-        const regNeed = REGULAR_SLOTS(day, shift.id);
-        const supNeed = SUP_SLOT_DAY(day, shift.id) ? 1 : 0;
-        const totalNeed = regNeed + supNeed;
-        const key = cellKey(day, shift.id);
+        const key  = cellKey(day, shift.id);
         const asgn = sched[key] || [];
         const extBodies = extBodyCount(day, shift.id);
-        const regCount = asgn.length + extBodies;
-        const supCount = asgn.filter(a => a.position === "Supervisor").length;
-        const total = regCount + supCount;
+        const totalBodies = asgn.length + extBodies;
+        const shiftLabel = `${day} ${shift.label}`;
 
-        if (total < totalNeed) {
+        // Rule 2: minimum 3 people per shift (non-negotiable — error)
+        if (totalBodies < 3) {
           const names = asgn.map(a => (rmap[a.employeeId]?.name||"?").split(" ").pop()).join(", ");
-          E(`Coverage gap: ${day} ${shift.id} — ${total}/${totalNeed} bodies${names ? " ["+names+"]" : ""}`);
+          E(`Rule 2 — ${shiftLabel}: only ${totalBodies} person${totalBodies===1?"":"s"} (min 3 required)${names ? " ["+names+"]" : ""}`);
         }
 
-        if (isWd1 && supNeed > 0 && supCount === 0) {
-          E(`No supervisor on ${day} 1st shift`);
-        }
-
-        const regs = asgn.filter(a => a.position !== "Supervisor");
-        const hasScale   = regs.some(a => (rmap[a.employeeId]?.qualifications||[]).includes("Scale"));
-        const hasMedical = regs.some(a => (rmap[a.employeeId]?.qualifications||[]).includes("Medical"));
+        // Rule 3: must have Scale and Medical (error, not warning)
         const extEmps = (allExts).filter(ext => ext.day === day)
           .flatMap(ext => [ext.empAId, ext.empBId].filter(Boolean)
             .map(id => rmap[id]).filter(Boolean)
             .filter(e => {
               const pair = EXT_PAIRS.find(p => p.id === ext.pairId);
               if (!pair) return false;
-              const idx = pair.covers.indexOf(shift.id);
-              return idx >= 0;
+              return pair.covers.indexOf(shift.id) >= 0;
             }));
         const extHasScale   = extEmps.some(e => (e.qualifications||[]).includes("Scale"));
         const extHasMedical = extEmps.some(e => (e.qualifications||[]).includes("Medical"));
-        if (!hasScale && !extHasScale)   W(`No Scale on ${day} ${shift.id}`);
-        if (!hasMedical && !extHasMedical) W(`No Medical on ${day} ${shift.id}`);
+        const hasScale   = slotHasRole(asgn, Object.values(rmap), "Scale")   || extHasScale;
+        const hasMedical = slotHasRole(asgn, Object.values(rmap), "Medical") || extHasMedical;
+
+        if (!hasScale)   E(`Rule 3 — ${shiftLabel}: no Scale assigned`);
+        if (!hasMedical) E(`Rule 3 — ${shiftLabel}: no Medical assigned`);
+
+        // Supervisor slot check (informational only — not a business rule block)
+        const supNeed  = SUP_SLOT_DAY(day, shift.id) ? 1 : 0;
+        const supCount = asgn.filter(a => a.position === "Supervisor").length;
+        if (supNeed > 0 && supCount === 0) {
+          W(`No Supervisor assigned on ${day} 1st shift`);
+        }
       });
     });
 
@@ -7408,8 +7407,8 @@ function ScheduleGrid({ employees, schedule, setSchedule, onOpenTestModal, pendi
     (emps||employees).forEach(emp => {
       if (emp.employmentType !== "full-time") return;
       const h = hoursByEmp[emp.id] || 0;
-      if (h < 40)  W(`${emp.name} has ${h}h (under 40h target)`);
-      if (h > 48)  W(`${emp.name} has ${h}h (over 48h)`);
+      if (h < 40)  E(`Rule 1 — ${emp.name} has only ${h}h scheduled (full-time minimum is 40h)`);
+      if (h > 48)  W(`${emp.name} has ${h}h this week (over 48h)`);
     });
 
     return issues;
