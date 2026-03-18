@@ -9,10 +9,7 @@ import {
 import { positionColor, shiftColor } from "../../constants/themes.js";
 import { calcHours, calcRestGap, calcConsecutiveHours, calcConsecutiveNights, empMaxConsec, getFatigueIssues } from "../../utils/hours.js";
 import { slotHasRole, getPreferenceViolations, enforceBusinessRules } from "../../utils/validation.js";
-import { extCovers, getEffectiveSlotCount } from "../../utils/extShifts.js";
-import { buildAutoFill, canFillPos, canWorkExtHalf, timeOffCoversSlot } from "../../utils/autofill.js";
-import { extHalfConflictReason } from "../../utils/extShifts.js";
-import { findExtShiftPairs } from "../../utils/extShifts.js";
+import { extCovers, getEffectiveSlotCount, canWorkExtHalf, extHalfConflictReason, findExtShiftPairs } from "../../utils/extShifts.js";
 import { EnforcementBlockModal, OvertimeModal } from "../modals/index.jsx";
 import { UnderHoursBanner, FatigueBanner, ExtShiftBanner } from "../banners/index.jsx";
 import {

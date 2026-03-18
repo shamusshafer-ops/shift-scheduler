@@ -1,7 +1,7 @@
 // ── Validation Utilities ──────────────────────────────────────────────────────
 import {
   DAYS, SHIFTS, EXT_PAIRS, FT_MIN_HOURS,
-  cellKey, slotHasRole as _slotHasRole,
+  cellKey,
 } from "../constants/index.js";
 import { calcHours } from "./hours.js";
 
