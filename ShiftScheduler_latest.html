@@ -6960,6 +6960,7 @@ function ScheduleGrid({ employees, schedule, setSchedule, onOpenTestModal, pendi
   const [swapSource,        setSwapSource]        = useState(null);
   const [subSource,         setSubSource]         = useState(null);
   const [dragEmp,          setDragEmp]         = useState(null);
+  const [dragOver,         setDragOver]         = useState(null);
   const [overtimeItems,    setOvertimeItems]   = useState(null);
   const [pendingSchedule,  setPendingSchedule] = useState(null);
   const [supervisorItems,  setSupervisorItems] = useState(null);
@@ -7978,12 +7979,15 @@ pos === "Scale" ? 0 : pos === "Medical" ? 1 : 2;
                 return (
                   <div key={day}
                     ref={el => { if(el) cellRefs.current[cellKey(day,shift.id)] = el; }}
+                    onClick={()=>{ if(isReadOnly||swapSource||st.isFull) return; setEditingCell({day,shiftId:shift.id}); }}
                     onDragEnter={e=>{if(isReadOnly||!dragEmp)return;e.preventDefault();e.currentTarget.style.borderColor=t.accent;e.currentTarget.style.boxShadow="0 0 0 2px "+t.accent+"40";}}
                     onDragOver={e=>{if(isReadOnly||!dragEmp)return;e.preventDefault();}}
                     onDragLeave={e=>{if(!e.currentTarget.contains(e.relatedTarget)){e.currentTarget.style.borderColor=borderColor;e.currentTarget.style.boxShadow="none";}}}
                     onDrop={e=>{e.preventDefault();e.currentTarget.style.borderColor=borderColor;e.currentTarget.style.boxShadow="none";if(!isReadOnly)handleDrop(day,shift.id);}}
                     style={{background:bgColor,border:"1px solid "+borderColor,borderRadius:4,
-                      padding:8,minHeight:105,display:"flex",flexDirection:"column",gap:4,transition:"border-color .2s"}}>
+                      padding:8,minHeight:105,display:"flex",flexDirection:"column",gap:4,
+                      transition:"border-color .2s",
+                      cursor:isReadOnly||st.isFull?"default":"pointer"}}>
 
                     {(warn||cellFatigue.length>0||cellExt.length>0)&&(
                       <div style={{display:"flex",gap:3,flexWrap:"wrap",marginBottom:2}}>
