@@ -1783,7 +1783,7 @@ function violationMinimizerPass(ns, sourceEmps, cfg, empTimeOffDays, extShiftsAr
 </script>
 
 <script type="text/babel">
-function ExcelPreviewModal({ employees, schedule, extShifts, weekStart, onDownload, onClose }) {
+function ExcelPreviewModal({ employees, schedule, extShifts, weekStart, onDownload, onClose, previewMode }) {
   const t = useTheme();
 
   const CLR = {
@@ -1927,6 +1927,16 @@ function ExcelPreviewModal({ employees, schedule, extShifts, weekStart, onDownlo
           </button>
         </div>
 
+        {previewMode && (
+          <div style={{background:"#fff3cd",border:"2px solid #f59e0b",margin:"12px 20px 0",
+            borderRadius:6,padding:"10px 14px",display:"flex",alignItems:"center",gap:10,flexShrink:0}}>
+            <span style={{fontSize:18}}>⚠</span>
+            <div>
+              <div style={{fontSize:12,fontWeight:800,color:"#92400e"}}>PREVIEW ONLY — RULE VIOLATIONS PRESENT</div>
+              <div style={{fontSize:11,color:"#78350f",marginTop:1}}>This schedule has not passed all enforcement checks. Do not distribute until violations are resolved.</div>
+            </div>
+          </div>
+        )}
         {}
         <div style={{overflowX:"auto",overflowY:"auto",padding:"16px 20px",flex:1}}>
           <table style={{borderCollapse:"collapse",fontFamily:"Arial,sans-serif",fontSize:11,minWidth:700}}>
@@ -3193,7 +3203,7 @@ function ExtShiftBanner({ extShifts, employees, onRemove }) {
 // ── Hard Enforcement Block Modal ──────────────────────────────────────────────
 // Shown when Save Snapshot or Publish is attempted with rule violations.
 // Cannot be dismissed by clicking outside — must click "Go Fix Issues".
-function EnforcementBlockModal({ violations, onClose }) {
+function EnforcementBlockModal({ violations, onClose, onPreview }) {
   const t = useTheme();
   const byRule = [1, 2, 3].map(r => ({
     rule: r,
@@ -3254,16 +3264,25 @@ function EnforcementBlockModal({ violations, onClose }) {
         <div style={{height:1,background:t.border,margin:"18px 0"}}/>
 
         {}
-        <div style={{display:"flex",justifyContent:"space-between",alignItems:"center"}}>
-          <div style={{fontSize:10,color:t.textDim,maxWidth:340}}>
+        <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",gap:10}}>
+          <div style={{fontSize:10,color:t.textDim,maxWidth:280}}>
             These rules are non-negotiable. Resolve all violations before saving or publishing.
           </div>
-          <button onClick={onClose}
-            style={{background:t.danger,color:"#fff",border:"none",padding:"10px 22px",
-              borderRadius:6,cursor:"pointer",fontSize:13,fontWeight:700,fontFamily:"inherit",
-              flexShrink:0}}>
-            ← Go Fix Issues
-          </button>
+          <div style={{display:"flex",gap:8,flexShrink:0}}>
+            {onPreview && (
+              <button onClick={onPreview}
+                style={{background:"transparent",color:t.warning,border:"1px solid "+t.warning,
+                  padding:"10px 16px",borderRadius:6,cursor:"pointer",fontSize:12,
+                  fontWeight:700,fontFamily:"inherit"}}>
+                👁 Preview anyway
+              </button>
+            )}
+            <button onClick={onClose}
+              style={{background:t.danger,color:"#fff",border:"none",padding:"10px 22px",
+                borderRadius:6,cursor:"pointer",fontSize:13,fontWeight:700,fontFamily:"inherit"}}>
+              ← Go Fix Issues
+            </button>
+          </div>
         </div>
       </div>
     </div>
@@ -6954,6 +6973,7 @@ function ScheduleGrid({ employees, schedule, setSchedule, onOpenTestModal, pendi
   const [scheduleIssues,   setScheduleIssues]  = useState(null);
   const [bannersExpanded,  setBannersExpanded]  = useState(false);
   const [showPublish,      setShowPublish]       = useState(false);
+  const [previewMode,      setPreviewMode]       = useState(false);
 
   useEffect(() => {
     const handler = (e) => {
@@ -7023,7 +7043,7 @@ function ScheduleGrid({ employees, schedule, setSchedule, onOpenTestModal, pendi
   const [extSuggestions,     setExtSuggestions]   = useState(null);
   const [pendingExtShifts,   setPendingExtShifts] = useState([]);
   const [manualPairDay,      setManualPairDay]    = useState(null);
-  const [enforcementBlock,   setEnforcementBlock] = useState(null); // {violations:[]} or null
+  const [enforcementBlock,   setEnforcementBlock] = useState(null); // {violations:[], action:"publish"|"excel"} or null
   const cellRefs = useRef({});
 
   useEffect(() => {
@@ -7701,7 +7721,8 @@ pos === "Scale" ? 0 : pos === "Medical" ? 1 : 2;
           extShifts={extShifts||[]}
           weekStart={weekStart}
           onDownload={()=>{ exportToExcel(employees, viewingHistory?viewingHistory.schedule:schedule, extShifts||[], weekStart); setShowExcelPreview(false); }}
-          onClose={()=>setShowExcelPreview(false)}
+          onClose={()=>{setShowExcelPreview(false);setPreviewMode(false);}}
+          previewMode={previewMode}
         />
       )}
       {showPopout && (
@@ -8310,13 +8331,13 @@ pos === "Scale" ? 0 : pos === "Medical" ? 1 : 2;
         </button>}
         <button onClick={()=>{
           const {violations,blocked} = enforceBusinessRules(schedule,employees,extShifts);
-          if(blocked){setEnforcementBlock({violations});return;}
+          if(blocked){setEnforcementBlock({violations,action:"excel"});return;}
           setShowExcelPreview(true);
         }} style={{background:"transparent",color:t.scale,
           border:"1px solid "+t.scale+"55",padding:"10px 20px",borderRadius:6,cursor:"pointer",fontSize:13,fontWeight:600,fontFamily:"inherit"}}>↓ Export Excel</button>
         <button onClick={()=>{
           const {violations,blocked} = enforceBusinessRules(schedule,employees,extShifts);
-          if(blocked){setEnforcementBlock({violations});return;}
+          if(blocked){setEnforcementBlock({violations,action:"publish"});return;}
           setShowPublish(true);
         }} style={{background:"transparent",color:t.accent,
           border:"1px solid "+t.accent+"55",padding:"10px 20px",borderRadius:6,cursor:"pointer",fontSize:13,fontWeight:600,fontFamily:"inherit"}}>📋 Publish</button>
@@ -8334,6 +8355,13 @@ pos === "Scale" ? 0 : pos === "Medical" ? 1 : 2;
         <EnforcementBlockModal
           violations={enforcementBlock.violations}
           onClose={()=>setEnforcementBlock(null)}
+          onPreview={()=>{
+            const action = enforcementBlock.action;
+            setEnforcementBlock(null);
+            setPreviewMode(true);
+            if(action==="publish") setShowPublish(true);
+            if(action==="excel")   setShowExcelPreview(true);
+          }}
         />
       )}
 
@@ -8341,7 +8369,7 @@ pos === "Scale" ? 0 : pos === "Medical" ? 1 : 2;
       {showPublish && (
         <div style={{position:"fixed",inset:0,background:"rgba(0,0,0,.75)",display:"flex",
           alignItems:"flex-start",justifyContent:"center",zIndex:1200,padding:20,overflowY:"auto"}}
-          onClick={e=>{if(e.target===e.currentTarget)setShowPublish(false);}}>
+          onClick={e=>{if(e.target===e.currentTarget){setShowPublish(false);setPreviewMode(false);}}}>
           <div style={{background:"#fff",color:"#111",borderRadius:8,padding:28,
             width:"100%",maxWidth:860,boxShadow:"0 8px 40px rgba(0,0,0,.3)",marginTop:20}}>
             <div style={{display:"flex",alignItems:"center",marginBottom:16,gap:12}}>
@@ -8356,10 +8384,20 @@ pos === "Scale" ? 0 : pos === "Medical" ? 1 : 2;
               <button onClick={()=>window.print()}
                 style={{background:"#111",color:"#fff",border:"none",padding:"8px 18px",
                   borderRadius:5,cursor:"pointer",fontSize:12,fontWeight:700,fontFamily:"inherit"}}>🖨 Print</button>
-              <button onClick={()=>setShowPublish(false)}
+              <button onClick={()=>{setShowPublish(false);setPreviewMode(false);}}
                 style={{background:"transparent",border:"1px solid #ccc",color:"#555",
                   padding:"7px 14px",borderRadius:5,cursor:"pointer",fontSize:12,fontFamily:"inherit"}}>✕ Close</button>
             </div>
+            {previewMode && (
+              <div style={{background:"#fff3cd",border:"2px solid #f59e0b",borderRadius:6,
+                padding:"10px 16px",marginBottom:16,display:"flex",alignItems:"center",gap:10}}>
+                <span style={{fontSize:18}}>⚠</span>
+                <div>
+                  <div style={{fontSize:12,fontWeight:800,color:"#92400e"}}>PREVIEW ONLY — RULE VIOLATIONS PRESENT</div>
+                  <div style={{fontSize:11,color:"#78350f",marginTop:1}}>This schedule has not passed all enforcement checks. Do not distribute until violations are resolved.</div>
+                </div>
+              </div>
+            )}
             {}
             <table style={{width:"100%",borderCollapse:"collapse",fontSize:11}}>
               <thead>
