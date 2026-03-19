@@ -10087,6 +10087,7 @@ function ShiftSchedulerApp() {
   const [buildCount,  setBuildCount, buildLoaded] = usePersistentState("shift_build", 0);
   const [customSeed, setCustomSeed] = usePersistentState("shift_custom_seed", null);
   const [employees,   setEmployees,  empLoaded]   = usePersistentState("shift_employees",PSI_SEED_ROSTER);
+  const [draftEmployees, setDraftEmployees] = useState(null); // null = no draft active
   const [schedule,    setSchedule,   schedLoaded] = usePersistentState("shift_schedule",{});
   const [savedWeeks,  setSavedWeeks, weeksLoaded] = usePersistentState("shift_saved_weeks",[]);
   const [history,     setHistory,    histLoaded]  = usePersistentState("shift_history",[]);
@@ -10106,6 +10107,8 @@ function ShiftSchedulerApp() {
     return sun.toISOString().slice(0,10);
   })());
   const cfg = useMemo(() => ({ ...DEFAULT_SETTINGS, ...settings }), [settings]);
+  // activeEmployees: use draft when active, otherwise real roster
+  const activeEmployees = draftEmployees !== null ? draftEmployees : employees;
 
   const empTimeOffDays = useMemo(() => {
     const s = new Set();
@@ -10279,11 +10282,11 @@ function ShiftSchedulerApp() {
     return result;
   },[schedule,extShifts]);
   const underHoursCount = useMemo(()=>
-    employees.filter(e=>e.employmentType==="full-time"&&calcHours(e.id,schedule)<FT_MIN_HOURS).length
-  ,[employees,schedule]);
+    activeEmployees.filter(e=>e.employmentType==="full-time"&&calcHours(e.id,schedule)<FT_MIN_HOURS).length
+  ,[activeEmployees,schedule]);
   const fatigueCount = useMemo(()=>
-    employees.filter(e=>getFatigueIssues(e.id,schedule,cfg,employees).length>0).length
-  ,[employees,schedule]);
+    activeEmployees.filter(e=>getFatigueIssues(e.id,schedule,cfg,activeEmployees).length>0).length
+  ,[activeEmployees,schedule,cfg]);
   const prefViolCount = useMemo(()=>
     employees.filter(e=>getAllPrefViolations(e,schedule).length>0).length
   ,[employees,schedule]);
@@ -10580,6 +10583,10 @@ function ShiftSchedulerApp() {
               fontSize:13,fontWeight:600,fontFamily:"inherit",letterSpacing:".05em",
               textTransform:"uppercase",transition:"all .2s",display:"flex",alignItems:"center",gap:7}}>
               {tab.label}
+              {tab.id==="employees"&&draftEmployees!==null&&(
+                <span style={{background:"#f59e0b",color:"#000",fontSize:9,fontWeight:800,
+                  padding:"1px 6px",borderRadius:10,lineHeight:1.4}}>DRAFT</span>
+              )}
               {tab.id==="dashboard"&&(unmetReqs>0||underHoursCount>0||fatigueCount>0||prefViolCount>0)&&(
                 <span style={{background:t.danger,color:"#fff",fontSize:9,fontWeight:800,
                   padding:"1px 6px",borderRadius:10,lineHeight:1.4}}>
@@ -10599,17 +10606,58 @@ function ShiftSchedulerApp() {
         {}
         <div style={{padding:"24px 28px"}}>
           {activeTab==="employees"&&(
-            <EmployeeManager employees={employees} setEmployees={setEmployees}
-              schedule={schedule} setSchedule={setSchedule}
-              savedRosters={savedRosters} setSavedRosters={setSavedRosters}
-              onOpenTestModal={()=>setShowTestModal(true)}
-              afExclude={afExclude} setAfExclude={setAfExclude}
-              customSeed={customSeed} setCustomSeed={setCustomSeed}/>
+            <div>
+              {/* Draft mode banner */}
+              {draftEmployees !== null && (
+                <div style={{background:"#1c1917",border:"2px solid #f59e0b",borderRadius:8,
+                  padding:"12px 18px",marginBottom:16,display:"flex",alignItems:"center",gap:14,flexWrap:"wrap"}}>
+                  <span style={{fontSize:18}}>📝</span>
+                  <div style={{flex:1}}>
+                    <div style={{fontSize:13,fontWeight:800,color:"#f59e0b",letterSpacing:".02em"}}>DRAFT MODE — Changes are not saved yet</div>
+                    <div style={{fontSize:11,color:"#d4c89a",marginTop:2}}>
+                      You are editing a draft copy of the roster. Apply to commit, or discard to revert.
+                      The schedule and dashboard reflect your draft changes.
+                    </div>
+                  </div>
+                  <div style={{display:"flex",gap:8,flexShrink:0}}>
+                    <button onClick={()=>{setEmployees(draftEmployees);setDraftEmployees(null);}}
+                      style={{background:"#f59e0b",color:"#000",border:"none",padding:"9px 20px",
+                        borderRadius:6,cursor:"pointer",fontSize:13,fontWeight:700,fontFamily:"inherit"}}>
+                      ✓ Apply Changes
+                    </button>
+                    <button onClick={()=>setDraftEmployees(null)}
+                      style={{background:"transparent",color:"#f59e0b",border:"1.5px solid #f59e0b",
+                        padding:"9px 18px",borderRadius:6,cursor:"pointer",fontSize:13,fontWeight:600,fontFamily:"inherit"}}>
+                      ✕ Discard
+                    </button>
+                  </div>
+                </div>
+              )}
+              {/* Draft mode toggle */}
+              {draftEmployees === null && (
+                <div style={{display:"flex",justifyContent:"flex-end",marginBottom:12}}>
+                  <button onClick={()=>setDraftEmployees(JSON.parse(JSON.stringify(employees)))}
+                    style={{background:"transparent",color:"#f59e0b",border:"1px solid #f59e0b60",
+                      padding:"6px 14px",borderRadius:6,cursor:"pointer",fontSize:11,fontWeight:600,
+                      fontFamily:"inherit",display:"flex",alignItems:"center",gap:6}}>
+                    📝 Enter Draft Mode
+                  </button>
+                </div>
+              )}
+              <EmployeeManager
+                employees={draftEmployees !== null ? draftEmployees : employees}
+                setEmployees={draftEmployees !== null ? setDraftEmployees : setEmployees}
+                schedule={schedule} setSchedule={setSchedule}
+                savedRosters={savedRosters} setSavedRosters={setSavedRosters}
+                onOpenTestModal={()=>setShowTestModal(true)}
+                afExclude={afExclude} setAfExclude={setAfExclude}
+                customSeed={customSeed} setCustomSeed={setCustomSeed}/>
+            </div>
           )}
           {activeTab==="schedule"&&(
             <div style={{display:"flex",gap:0,alignItems:"flex-start"}}>
               <div style={{flex:1,minWidth:0}}>
-                <ScheduleGrid employees={employees} schedule={schedule} setSchedule={setSchedule}
+                <ScheduleGrid employees={activeEmployees} schedule={schedule} setSchedule={setSchedule}
                   onOpenTestModal={()=>setShowTestModal(true)}
                   pendingAutoFill={pendingAutoFill}
                   clearPendingAutoFill={()=>setPendingAutoFill(null)}
@@ -10641,9 +10689,9 @@ function ShiftSchedulerApp() {
                   const totalSlots  = DAYS.length * SHIFTS.length * 3;
                   const filled      = Object.values(schedule||{}).reduce((n,a)=>n+a.filter(x=>x.position!=="Supervisor").length,0);
                   const pct         = totalSlots>0?Math.round(filled/totalSlots*100):0;
-                  const ftShort     = employees.filter(e=>e.employmentType==="full-time"&&calcHours(e.id,schedule||{},extShifts||[])<40);
-                  const ftOver      = employees.filter(e=>e.employmentType==="full-time"&&calcHours(e.id,schedule||{},extShifts||[])>40);
-                  const ftHours     = employees.filter(e=>e.employmentType==="full-time").map(e=>({
+                  const ftShort     = activeEmployees.filter(e=>e.employmentType==="full-time"&&calcHours(e.id,schedule||{},extShifts||[])<40);
+                  const ftOver      = activeEmployees.filter(e=>e.employmentType==="full-time"&&calcHours(e.id,schedule||{},extShifts||[])>40);
+                  const ftHours     = activeEmployees.filter(e=>e.employmentType==="full-time").map(e=>({
                     name:e.name.split(" ").pop(), h:calcHours(e.id,schedule||{},extShifts||[])
                   })).sort((a,b)=>a.h-b.h);
                   const statRow = (label, val, col) => (
@@ -10685,14 +10733,14 @@ function ShiftSchedulerApp() {
             </div>
           )}
           {activeTab==="dashboard"&&(
-            <CoverageDashboard employees={employees} schedule={schedule} setSchedule={setSchedule}
+            <CoverageDashboard employees={activeEmployees} schedule={schedule} setSchedule={setSchedule}
               extShifts={extShifts} setExtShifts={setExtShifts} history={history}
               navigateToWeek={(weekStartVal) => { setWeekStart(weekStartVal); setActiveTab("schedule"); }}
               setActiveTab={(tab, hint) => { setActiveTab(tab); if(hint) setHighlightSlot(hint); }}/>
           )}
           {activeTab==="timeoff"&&(
             <TimeOffManager
-              employees={employees}
+              employees={activeEmployees}
               timeOffRequests={timeOffReqs}
               setTimeOffRequests={setTimeOffReqs}
               weekStart={weekStart}/>
