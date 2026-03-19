@@ -6961,6 +6961,7 @@ function ScheduleGrid({ employees, schedule, setSchedule, onOpenTestModal, pendi
   const [subSource,         setSubSource]         = useState(null);
   const [dragEmp,          setDragEmp]         = useState(null);
   const [dragOver,         setDragOver]         = useState(null);
+  const dragEmpRef = useRef(null); // sync ref so onDragOver closure always has current value
   const [overtimeItems,    setOvertimeItems]   = useState(null);
   const [pendingSchedule,  setPendingSchedule] = useState(null);
   const [supervisorItems,  setSupervisorItems] = useState(null);
@@ -7855,7 +7856,7 @@ pos === "Scale" ? 0 : pos === "Medical" ? 1 : 2;
           const fatigueN  = getFatigueIssues(emp.id, schedule, cfg, employees).length;
           const borderCol = fatigueN>0 ? t.fatigue : isFT&&hours>40 ? t.warning : t.border;
           return (
-            <span key={emp.id} draggable onDragStart={()=>setDragEmp(emp)} onDragEnd={()=>setDragEmp(null)}
+            <span key={emp.id} draggable onDragStart={()=>{setDragEmp(emp);dragEmpRef.current=emp;}} onDragEnd={()=>{setDragEmp(null);dragEmpRef.current=null;}}
               style={{fontSize:10,fontWeight:600,padding:"4px 10px",borderRadius:4,background:t.surface,
                 border:"1px solid "+borderCol,cursor:"grab",color:t.text,display:"flex",alignItems:"center",gap:4}}>
               {emp.name}
@@ -7980,8 +7981,8 @@ pos === "Scale" ? 0 : pos === "Medical" ? 1 : 2;
                   <div key={day}
                     ref={el => { if(el) cellRefs.current[cellKey(day,shift.id)] = el; }}
                     onClick={()=>{ if(isReadOnly||swapSource||st.isFull) return; setEditingCell({day,shiftId:shift.id}); }}
-                    onDragEnter={e=>{if(isReadOnly||!dragEmp)return;e.preventDefault();e.currentTarget.style.borderColor=t.accent;e.currentTarget.style.boxShadow="0 0 0 2px "+t.accent+"40";}}
-                    onDragOver={e=>{if(isReadOnly||!dragEmp)return;e.preventDefault();}}
+                    onDragEnter={e=>{if(isReadOnly||!dragEmpRef.current)return;e.preventDefault();e.currentTarget.style.borderColor=t.accent;e.currentTarget.style.boxShadow="0 0 0 2px "+t.accent+"40";}}
+                    onDragOver={e=>{if(isReadOnly||!dragEmpRef.current)return;e.preventDefault();}}
                     onDragLeave={e=>{if(!e.currentTarget.contains(e.relatedTarget)){e.currentTarget.style.borderColor=borderColor;e.currentTarget.style.boxShadow="none";}}}
                     onDrop={e=>{e.preventDefault();e.currentTarget.style.borderColor=borderColor;e.currentTarget.style.boxShadow="none";if(!isReadOnly)handleDrop(day,shift.id);}}
                     style={{background:bgColor,border:"1px solid "+borderColor,borderRadius:4,
