@@ -2256,7 +2256,7 @@ async function exportToExcel(employees, schedule, extShifts, weekStart) {
     const statusBold = hrs > 40 || (isFT && hrs < 40);
     r2 += `<Row ss:Height="18">`;
     r2 += cell(emp.name,                             getStyleId(bg, "1A1A1A", true,  "Left",   "Center", false, 10));
-    r2 += cell(isFT ? "Full-Time" : "Part-Time",     getStyleId(bg, "1A1A1A", false, "Left",   "Center", false, 10));
+    r2 += cell(isFT ? "Full-Time" : emp.employmentType === "on-call" ? "On-Call" : "Part-Time", getStyleId(bg, "1A1A1A", false, "Left",   "Center", false, 10));
     r2 += cell(emp.qualifications.join(", "),         getStyleId(bg, "1A1A1A", false, "Left",   "Center", false, 10));
     r2 += cell(hrs / SHIFT_HOURS,                    getStyleId(bg, "1A1A1A", false, "Center", "Center", false, 10), { type:"Number" });
     r2 += cell(hrs,                                  getStyleId(bg, hFg,      true,  "Center", "Center", false, 10), { type:"Number" });
@@ -4191,7 +4191,8 @@ function RosterManager({ employees, setEmployees, setSchedule, savedRosters, set
       employees: JSON.parse(JSON.stringify(employees)),
       count: employees.length,
       ft: employees.filter(e=>e.employmentType==="full-time").length,
-      pt: employees.filter(e=>e.employmentType!=="full-time").length,
+      pt: employees.filter(e=>e.employmentType==="part-time").length,
+      oc: employees.filter(e=>e.employmentType==="on-call").length,
     };
     setSavedRosters(p=>[entry,...p]);
     setSaveName("");
@@ -4333,7 +4334,8 @@ function RosterManager({ employees, setEmployees, setSchedule, savedRosters, set
                   <span>{entry.count} employee{entry.count!==1?"s":""}</span>
                   <span>·</span>
                   <span style={{color:t.accent}}>{entry.ft} FT</span>
-                  <span style={{color:t.scale}}>{entry.pt} PT</span>
+                  <span style={{color:t.scale}}>{entry.pt ?? (entry.count - entry.ft)} PT</span>
+                  {(entry.oc || 0) > 0 && <span style={{color:t.warning}}>{entry.oc} OC</span>}
                 </div>
                 <div style={{display:"flex",gap:4,flexWrap:"wrap",marginTop:6}}>
                   {["Scale","Medical","Guard"].map(role=>{
@@ -6699,133 +6701,6 @@ function EmpPicker({emp,day,sid,st,assign,getPos,schedule,extShifts,timeOffReqs,
   );
 }
 
-function printWeekSchedule(schedule, employees, extShifts, weekStart) {
-  const getName = (id) => (employees.find(e => e.id === id) || {}).name || id;
-  const [wy, wm, wd] = (weekStart || "2024-01-07").split("-").map(Number);
-  const sun = new Date(wy, wm - 1, wd, 12);
-
-  const dateCols = DAYS.map((day, i) => {
-    const d = new Date(sun); d.setDate(sun.getDate() + i);
-    return {
-      day,
-      label: d.toLocaleDateString("en-US", { weekday: "short", month: "numeric", day: "numeric" }),
-    };
-  });
-  const d0 = new Date(sun);
-  const d6 = new Date(sun); d6.setDate(sun.getDate() + 6);
-  const weekLabel = d0.toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" })
-    + " – " + d6.toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" });
-  const printedOn = new Date().toLocaleDateString("en-US",
-    { weekday: "short", month: "short", day: "numeric", year: "numeric" });
-
-  const posColor = (pos) =>
-    pos === "Supervisor_REMOVED" ? "#7c3aed"
-    : pos === "Scale"    ? "#0e7490"
-    : pos === "Medical"  ? "#166534"
-    :                      "#374151";
-  const posAbbr = (pos) =>
-    pos === "Supervisor_REMOVED" ? "SUP"
-    : pos === "Scale"    ? "SCA"
-    : pos === "Medical"  ? "MED"
-    :                      "GUA";
-
-  let rows = "";
-  SHIFTS.forEach(shift => {
-    rows += `<tr>
-      <td colspan="8" style="background:#374151;color:#f9fafb;font-weight:700;
-        font-size:9pt;padding:4px 8px;text-align:left;">
-        ${shift.label} &nbsp;&middot;&nbsp; ${shift.time}
-      </td></tr>`;
-    rows += "<tr>";
-    rows += `<td style="background:#f3f4f6;font-weight:700;font-size:8pt;
-      color:#6b7280;padding:4px 6px;border:1px solid #d1d5db;">STAFF</td>`;
-    dateCols.forEach(({ day }) => {
-      const key = day + "__" + shift.id;
-      const asgn = schedule[key] || [];
-      const cellExts = (extShifts || []).filter(e => {
-        const pair = EXT_PAIRS.find(p => p.id === e.pairId);
-        return pair && e.day === day && pair.covers.includes(shift.id);
-      });
-      let cell = "";
-      asgn.forEach(a => {
-        const c = posColor(a.position);
-        cell += `<div style="margin-bottom:3px;">
-          <span style="font-weight:700;font-size:7.5pt;color:${c};
-            background:${c}22;border-radius:2px;padding:0 3px;margin-right:3px;">
-            ${posAbbr(a.position)}
-          </span>
-          <span style="font-size:8pt;">${getName(a.employeeId)}</span>
-        </div>`;
-      });
-      cellExts.forEach(ext => {
-        const pair = EXT_PAIRS.find(p => p.id === ext.pairId);
-        const idx = pair.covers.indexOf(shift.id);
-        const empId = idx === 0 ? ext.empAId : ext.empBId;
-        if (!empId) return;
-        cell += `<div style="margin-bottom:3px;">
-          <span style="font-weight:700;font-size:7.5pt;color:#7c3aed;
-            background:#7c3aed22;border-radius:2px;padding:0 3px;margin-right:3px;">12H</span>
-          <span style="font-size:8pt;">${getName(empId)}</span>
-        </div>`;
-      });
-      if (!cell) cell = `<span style="color:#ef4444;font-weight:700;font-size:8pt;">OPEN</span>`;
-      rows += `<td style="border:1px solid #d1d5db;padding:5px 6px;
-        vertical-align:top;">${cell}</td>`;
-    });
-    rows += "</tr>";
-  });
-
-  let colHdrs = `<th style="background:#1e3a1e;color:#fff;font-weight:700;
-    font-size:9pt;padding:5px 6px;border:1px solid #d1d5db;width:72px;">SHIFT</th>`;
-  dateCols.forEach(({ label, day }) => {
-    colHdrs += `<th style="background:#1e3a1e;color:#fff;font-weight:700;
-      font-size:9pt;padding:5px 6px;border:1px solid #d1d5db;text-align:center;">
-      ${label}<br><span style="font-weight:400;font-size:8pt;">${day}</span>
-    </th>`;
-  });
-
-  const html = `<!DOCTYPE html>
-<html><head>
-  <meta charset="utf-8">
-  <title>PSI Shift Schedule &mdash; ${weekLabel}</title>
-  <style>
-    * { box-sizing: border-box; margin: 0; padding: 0; }
-    body { font-family: Arial, sans-serif; padding: 14px; background: #fff; color: #111; }
-    table { border-collapse: collapse; width: 100%; table-layout: fixed; }
-    @page { size: landscape; margin: 10mm; }
-    @media print { body { padding: 0; } }
-  </style>
-</head><body>
-  <div style="display:flex;align-items:center;margin-bottom:12px;">
-    <div>
-      <div style="font-size:17pt;font-weight:800;color:#111;">PROJECT SERVICE INC.</div>
-      <div style="font-size:10pt;color:#555;margin-top:3px;">
-        Shift Schedule &mdash; Week of ${weekLabel}
-      </div>
-    </div>
-    <div style="margin-left:auto;font-size:8pt;color:#888;">
-      Printed ${printedOn}
-    </div>
-  </div>
-  <table>
-    <thead><tr>${colHdrs}</tr></thead>
-    <tbody>${rows}</tbody>
-  </table>
-  <div style="margin-top:10px;display:flex;gap:20px;font-size:8pt;color:#555;">
-    <span>SUP = Supervisor</span><span>SCA = Scale</span>
-    <span>MED = Medical</span><span>GUA = Guard</span>
-    <span>12H = 12-hr Extended Shift</span>
-  </div>
-</body></html>`;
-
-  const win = window.open("", "_blank", "width=1100,height=700");
-  if (!win) { alert("Please allow pop-ups to print the schedule."); return; }
-  win.document.write(html);
-  win.document.close();
-  win.focus();
-  setTimeout(() => { win.print(); win.close(); }, 400);
-}
-
 function SubIndicator({ subSource, employees, onCancel }) {
   const srcEmp = employees.find(e => e.id === subSource.employeeId);
   const shiftLabel = {first:"1st",second:"2nd",third:"3rd"}[subSource.shiftId] || subSource.shiftId;
@@ -7157,6 +7032,7 @@ function ScheduleGrid({ employees, schedule, setSchedule, onOpenTestModal, pendi
   }, [highlightSlot]);
 
   const displaySchedule = viewingHistory ? viewingHistory.schedule : schedule;
+  const displayExtShifts = viewingHistory ? (viewingHistory.extShifts || []) : (extShifts || []);
   const liveSchedule   = schedule;
   const liveWeekStart  = weekStart;
   const isReadOnly     = !!viewingHistory;
@@ -7416,12 +7292,12 @@ function ScheduleGrid({ employees, schedule, setSchedule, onOpenTestModal, pendi
 
   const getStatus = (d,s) => {
     const a=getAsgn(d,s);
-    const cellExtList=(extShifts||[]).filter(e=>extCovers(e,d,s));
+    const cellExtList=displayExtShifts.filter(e=>extCovers(e,d,s));
     const extHasScale=cellExtList.some(e=>e.roles.includes("Scale"));
     const extHasMed=cellExtList.some(e=>e.roles.includes("Medical"));
     const hasScale=slotHasRole(a,employees,"Scale")||extHasScale;
     const hasMed=slotHasRole(a,employees,"Medical")||extHasMed;
-    const isFull=a.length>=getEffectiveSlotCount(d,s,extShifts);
+    const isFull=a.length>=getEffectiveSlotCount(d,s,displayExtShifts);
     const missing=[...(!hasScale?["Scale"]:[]),...(!hasMed?["Medical"]:[])];
     return{hasScale,hasMedical:hasMed,isFull,missing,ok:missing.length===0,cellExtList};
   };
@@ -8173,7 +8049,7 @@ pos === "Scale" ? 0 : pos === "Medical" ? 1 : 2;
                   return nights>(cfg?.maxConsecutiveNights??MAX_CONSECUTIVE_NIGHTS)||(rest<(cfg?.minRestHours??MIN_REST_HOURS)&&rest!==Infinity)||unavail;
                 });
 
-                const cellExt          = (extShifts||[]).filter(e=>extCovers(e,day,shift.id));
+                const cellExt          = displayExtShifts.filter(e=>extCovers(e,day,shift.id));
                 const extCoversScale   = cellExt.some(e=>e.roles.includes("Scale"));
                 const extCoversMedical = cellExt.some(e=>e.roles.includes("Medical"));
                 const missingScale     = !st.hasScale && !extCoversScale;
@@ -8474,7 +8350,7 @@ pos === "Scale" ? 0 : pos === "Medical" ? 1 : 2;
           {DAYS.map(day => {
             const totals = SHIFTS.map(shift => {
               const a = getAsgn(day, shift.id);
-              const cap = getEffectiveSlotCount(day, shift.id, extShifts);
+              const cap = getEffectiveSlotCount(day, shift.id, displayExtShifts);
               const sup = isWeekday(day) && shift.id==="first" ? 1 : 0;
               const need = cap + sup;
               const bodies = a.length;
@@ -9746,7 +9622,7 @@ function ThemeCustomizer({ themeName, setThemeName, customTheme, setCustomTheme 
 
 function RotationPreview({ employees, empPatterns, settings }) {
   const t = useTheme();
-  const DAYS = ["Sunday","Monday","Tuesday","Wednesday","Thursday","Friday","Saturday"];
+  // Use global DAYS — don't shadow it with a local redeclaration
   const DAY3 = ["Sun","Mon","Tue","Wed","Thu","Fri","Sat"];
   const maxShifts = settings?.maxConsecutiveShifts ?? 5;
   const daysOff   = Math.max(1, 7 - maxShifts);
@@ -9855,7 +9731,7 @@ function RotationPreview({ employees, empPatterns, settings }) {
   );
 }
 
-function RosterDiagnostic({ employees, schedule, extShifts }) {
+function RosterDiagnostic({ employees, schedule, extShifts, timeOffReqs, weekStart }) {
   const t = useTheme();
   const [results, setResults] = useState(null);
   const [running, setRunning]  = useState(false);
@@ -9954,6 +9830,11 @@ function RosterDiagnostic({ employees, schedule, extShifts }) {
               if ((emp.unavailableDays||[]).includes(day)) E(`S3: ${emp.name} on unavailable day ${day}`);
               if ((emp.blockedShifts||[]).includes(shift.id)) E(`S4: ${emp.name} on blocked shift ${shift.id}`);
               if (emp.requiredShift && emp.requiredShift!==shift.id) E(`S5: ${emp.name} on ${shift.id} but required on ${emp.requiredShift}`);
+              // R11: check approved time-off (timeOffReqs passed as prop)
+              if (timeOffReqs && timeOffReqs.some(r =>
+                r.empId===emp.id && r.status==="approved" &&
+                timeOffCoversSlot(r, day, shift.id, weekStart)
+              )) W(`S9: ${emp.name} scheduled on approved time-off on ${day} (${shift.id})`);
               shiftCount[id]=(shiftCount[id]||0)+1;
               if (["Saturday","Sunday"].includes(day)) weekendCount[id]=(weekendCount[id]||0)+1;
               const dk=id+"__"+day;
@@ -10043,7 +9924,7 @@ function RosterDiagnostic({ employees, schedule, extShifts }) {
   );
 }
 
-function SettingsPanel({ settings, setSettings, employees, setEmployees, setSchedule, setExtShifts, setTimeOffReqs, setSavedWeeks, setHistory, setEmpPatterns, empPatterns, setWeekStart, setSavedRosters, themeName, setThemeName, customTheme, setCustomTheme, schedule, extShifts }) {
+function SettingsPanel({ settings, setSettings, employees, setEmployees, setSchedule, setExtShifts, setTimeOffReqs, setSavedWeeks, setHistory, setEmpPatterns, empPatterns, setWeekStart, setSavedRosters, themeName, setThemeName, customTheme, setCustomTheme, schedule, extShifts, timeOffReqs, weekStart }) {
   const t = useTheme();
   const cfg = useSettings();
   const [settingsTab, setSettingsTab] = useState("rules");
@@ -10238,7 +10119,7 @@ function SettingsPanel({ settings, setSettings, employees, setEmployees, setSche
         <Section title="Roster & Schedule Diagnostic">
         <Row label="Run diagnostic"
           desc="Checks roster configuration and current schedule for issues.">
-          <RosterDiagnostic employees={employees} schedule={schedule||{}} extShifts={extShifts||[]} />
+          <RosterDiagnostic employees={employees} schedule={schedule||{}} extShifts={extShifts||[]} timeOffReqs={timeOffReqs} weekStart={weekStart} />
         </Row>
       </Section>
       )}
