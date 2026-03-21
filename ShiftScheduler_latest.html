@@ -2438,7 +2438,12 @@ function TestPopulationModal({ onGenerate, onCancel }) {
     const make = (qualifications, type) => {
       const name = generateName(usedNames);
       usedNames.add(name);
-      employees.push({id:uid(), name, qualifications, employmentType:type, unavailableDays:[], preferredShifts:[], blockedShifts:[], requiredShift:null, preferredDaysOff:[], overtimePref:"neutral"});
+      employees.push({
+        id:uid(), name, qualifications, employmentType:type,
+        unavailableDays:[], preferredShifts:[], blockedShifts:[],
+        requiredShift:null, preferredDaysOff:[], overtimePref:"neutral",
+        willing16h:false, maxShiftsPerWeek:null, maxWeekendDays:null, ext12hPref:null,
+      });
     };
     ROSTER_DEFS.forEach(section => {
       section.entries.forEach(entry => {
@@ -2901,7 +2906,7 @@ function ManualPairModal({ employees, schedule, extShifts, initialDay, onApprove
       }
     }
     return out.sort((x, y) => y.score - x.score).slice(0, 6);
-  }, [available]);
+  }, [available, pairId]);
 
   const empA = employees.find(e => e.id === empAId);
   const empB = employees.find(e => e.id === empBId);
@@ -2910,7 +2915,7 @@ function ManualPairModal({ employees, schedule, extShifts, initialDay, onApprove
   const hasScale   = combined.includes("Scale");
   const hasMedical = combined.includes("Medical");
   const compatible = hasScale && hasMedical;
-  const canSubmit  = empAId && empBId && empAId !== empBId && !alreadyExists;
+  const canSubmit  = empAId && empBId && empAId !== empBId && !alreadyExists && compatible;
 
   const QDot = ({ pos }) => (
     <span style={{width:7,height:7,borderRadius:"50%",background:pC(pos,t),
@@ -5168,7 +5173,9 @@ function findOTReliefSuggestions(employees, schedule, extShifts, cfg) {
           if ((c.unavailableDays||[]).includes(day)) return false;
           if ((c.blockedShifts||[]).includes(shift.id)) return false;
           if (c.requiredShift && c.requiredShift !== shift.id) return false;
-          if (!canWorkExtHalf(c, coveringPair.id, 0) || !canWorkExtHalf(c, coveringPair.id, 1)) return false;
+          // Candidate only needs to be able to work at least ONE half of the ext shift
+          // (pairs split the 12h between them — A works half 0, B works half 1)
+          if (!canWorkExtHalf(c, coveringPair.id, 0) && !canWorkExtHalf(c, coveringPair.id, 1)) return false;
           const pos = getAvailPos(day, shift.id);
           if (!pos.some(p => c.qualifications.includes(p))) return false;
           const afterH = hoursMap[c.id] + EXT_SHIFT_HOURS;
@@ -5182,23 +5189,30 @@ function findOTReliefSuggestions(employees, schedule, extShifts, cfg) {
             const cA = candidates[i];
             const cB = candidates[j];
 
-            const aQuals = cA.qualifications;
-            const bQuals = cB.qualifications;
+            // Each candidate must be able to work their specific half
+            // Try both orderings: A→half0+B→half1, or B→half0+A→half1
+            const abOk = canWorkExtHalf(cA, coveringPair.id, 0) && canWorkExtHalf(cB, coveringPair.id, 1);
+            const baOk = canWorkExtHalf(cB, coveringPair.id, 0) && canWorkExtHalf(cA, coveringPair.id, 1);
+            if (!abOk && !baOk) continue;
+            const [finalA, finalB] = abOk ? [cA, cB] : [cB, cA];
+
+            const aQuals = finalA.qualifications;
+            const bQuals = finalB.qualifications;
             if (needsScale   && !aQuals.includes("Scale")   && !bQuals.includes("Scale"))   continue;
             if (needsMedical && !aQuals.includes("Medical") && !bQuals.includes("Medical")) continue;
 
             const overHoursBefore = hoursMap[overEmp.id];
             const overHoursAfter  = overHoursBefore - SHIFT_HOURS;
-            const aHoursAfter     = hoursMap[cA.id] + EXT_SHIFT_HOURS;
-            const bHoursAfter     = hoursMap[cB.id] + EXT_SHIFT_HOURS;
+            const aHoursAfter     = hoursMap[finalA.id] + EXT_SHIFT_HOURS;
+            const bHoursAfter     = hoursMap[finalB.id] + EXT_SHIFT_HOURS;
 
             const overOTBefore = Math.max(0, overHoursBefore - FT_MIN_HOURS);
             if (Math.max(0, aHoursAfter - FT_MIN_HOURS) > overOTBefore) continue;
             if (Math.max(0, bHoursAfter - FT_MIN_HOURS) > overOTBefore) continue;
 
             const otBefore = overOTBefore
-                           + Math.max(0, hoursMap[cA.id] - FT_MIN_HOURS)
-                           + Math.max(0, hoursMap[cB.id] - FT_MIN_HOURS);
+                           + Math.max(0, hoursMap[finalA.id] - FT_MIN_HOURS)
+                           + Math.max(0, hoursMap[finalB.id] - FT_MIN_HOURS);
             const otAfter  = Math.max(0, overHoursAfter - FT_MIN_HOURS)
                            + Math.max(0, aHoursAfter - FT_MIN_HOURS)
                            + Math.max(0, bHoursAfter - FT_MIN_HOURS);
@@ -5207,10 +5221,10 @@ function findOTReliefSuggestions(employees, schedule, extShifts, cfg) {
 
             suggestions.push({
               overEmp, day, shift, pairId: coveringPair.id, pair: coveringPair,
-              empA: cA, empB: cB,
+              empA: finalA, empB: finalB,
               overHoursBefore, overHoursAfter,
-              aHoursBefore: hoursMap[cA.id], aHoursAfter,
-              bHoursBefore: hoursMap[cB.id], bHoursAfter,
+              aHoursBefore: hoursMap[finalA.id], aHoursAfter,
+              bHoursBefore: hoursMap[finalB.id], bHoursAfter,
               otReduction, myAsgn,
             });
 
@@ -7784,6 +7798,7 @@ pos === "Scale" ? 0 : pos === "Medical" ? 1 : 2;
     const newWeek = {
       name,
       schedule: JSON.parse(JSON.stringify(schedule)),
+      extShifts: JSON.parse(JSON.stringify(extShifts||[])),
       assignments: Object.values(schedule).reduce((s,a)=>s+a.length,0),
       savedAt: new Date().toLocaleDateString(),
     };
@@ -7791,6 +7806,7 @@ pos === "Scale" ? 0 : pos === "Medical" ? 1 : 2;
   };
   const handleLoadWeek = (idx) => {
     setSchedule(JSON.parse(JSON.stringify(savedWeeks[idx].schedule)));
+    if (savedWeeks[idx].extShifts) setExtShifts(savedWeeks[idx].extShifts);
     setShowCopyModal(false);
   };
   const handleDeleteWeek = (idx) => {
