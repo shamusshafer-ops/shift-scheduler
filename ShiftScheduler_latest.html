@@ -800,6 +800,14 @@ const isGuardOnly = (e) => {
   return q.includes("Guard") && !q.includes("Scale") && !q.includes("Medical");
 };
 
+// Check if employee has approved time-off on a given day+shift
+// Handles both full-day keys ("empId__day") and partial keys ("empId__day__shiftId")
+const hasTimeOff = (empTimeOffDays, empId, day, shiftId) => {
+  if (!empTimeOffDays) return false;
+  return empTimeOffDays.has(empId + "__" + day) ||           // full day / vacation
+         empTimeOffDays.has(empId + "__" + day + "__" + shiftId); // partial shift
+};
+
 function buildAutoFill(sourceEmps, cfg, empTimeOffDays, empPatterns, extShiftsArg) {
   const maxNights = cfg?.maxConsecutiveNights ?? MAX_CONSECUTIVE_NIGHTS;
   const minRest   = cfg?.minRestHours ?? MIN_REST_HOURS;
@@ -966,7 +974,7 @@ function buildAutoFill(sourceEmps, cfg, empTimeOffDays, empPatterns, extShiftsAr
   const empScore = (emp, day, shiftId, targetPos) => {
     // Hard blocks
     if ((emp.unavailableDays || []).includes(day)) return null;
-    if (empTimeOffDays && empTimeOffDays.has(emp.id + "__" + day)) return null;
+    if (hasTimeOff(empTimeOffDays, emp.id, day, shiftId)) return null;
     // Qualification gate: employee must be able to fill at least one position in this slot
     if (!getAvailPos(day, shiftId).some(p => emp.qualifications.includes(p))) return null;
     if (isRestViolation(emp, calcRestGap(emp.id, ns, day, shiftId), minRest)) return null;
@@ -1160,7 +1168,7 @@ function buildAutoFill(sourceEmps, cfg, empTimeOffDays, empPatterns, extShiftsAr
         if (!isFT) return null; // PT/OC already tried in normal pass
         if (empPlan && empPlan.shiftId !== shiftId) return null;
         if ((emp.unavailableDays||[]).includes(day)) return null;
-        if (empTimeOffDays && empTimeOffDays.has(emp.id + "__" + day)) return null;
+        if (hasTimeOff(empTimeOffDays, emp.id, day, shiftId)) return null;
         if ((emp.blockedShifts||[]).includes(shiftId)) return null;
         const myHours = hourTracker[emp.id] || 0;
         if (myHours >= OT_RELIEF_THRESHOLD) return null;
@@ -1226,7 +1234,7 @@ function buildAutoFill(sourceEmps, cfg, empTimeOffDays, empPatterns, extShiftsAr
           !used.has(e.id) &&
           (e.qualifications||[]).includes("Supervisor") &&
           !(e.unavailableDays||[]).includes(day) &&
-          !(empTimeOffDays && empTimeOffDays.has(e.id + "__" + day))
+          !hasTimeOff(empTimeOffDays, e.id, day, shift.id)
         );
         if (supPick) assign(supPick, "Supervisor");
       }
@@ -1456,7 +1464,7 @@ function buildAutoFill(sourceEmps, cfg, empTimeOffDays, empPatterns, extShiftsAr
             // Also respect hard blocks
             if (assigned.has(e.id)) return false;
             if ((e.unavailableDays||[]).includes(day)) return false;
-            if (empTimeOffDays && empTimeOffDays.has(e.id + "__" + day)) return false;
+            if (hasTimeOff(empTimeOffDays, e.id, day, shift.id)) return false;
             if ((e.blockedShifts||[]).includes(shift.id)) return false;
             if (e.requiredShift && e.requiredShift !== shift.id) return false;
             if (isRestViolation(e, calcRestGap(e.id, ns, day, shift.id), minRest)) return false;
@@ -1520,7 +1528,7 @@ function buildAutoFill(sourceEmps, cfg, empTimeOffDays, empPatterns, extShiftsAr
           const prefs = e.preferredShifts || [];
           if (prefs.length > 0 && !prefs.includes(shift.id)) return false;
           if ((e.unavailableDays||[]).includes(day)) return false;
-          if (empTimeOffDays && empTimeOffDays.has(e.id + "__" + day)) return false;
+          if (hasTimeOff(empTimeOffDays, e.id, day, shift.id)) return false;
           if ((e.blockedShifts||[]).includes(shift.id)) return false;
           if (e.requiredShift && e.requiredShift !== shift.id) return false;
           if (isRestViolation(e, calcRestGap(e.id, ns, day, shift.id), minRest)) return false;
@@ -1566,7 +1574,7 @@ function buildAutoFill(sourceEmps, cfg, empTimeOffDays, empPatterns, extShiftsAr
           const prefs = e.preferredShifts || [];
           if (prefs.length > 0 && !prefs.includes(shift.id)) return false;
           if ((e.unavailableDays||[]).includes(day)) return false;
-          if (empTimeOffDays && empTimeOffDays.has(e.id + "__" + day)) return false;
+          if (hasTimeOff(empTimeOffDays, e.id, day, shift.id)) return false;
           if ((e.blockedShifts||[]).includes(shift.id)) return false;
           if (e.requiredShift && e.requiredShift !== shift.id) return false;
           if (isRestViolation(e, calcRestGap(e.id, ns, day, shift.id), minRest)) return false;
@@ -1719,7 +1727,7 @@ function violationMinimizerPass(ns, sourceEmps, cfg, empTimeOffDays, extShiftsAr
 
   const isClean = (emp, day, shiftId, sched) => {
     if ((emp.unavailableDays||[]).includes(day)) return false;
-    if (empTimeOffDays && empTimeOffDays.has(emp.id + "__" + day)) return false;
+    if (hasTimeOff(empTimeOffDays, emp.id, day, shiftId)) return false;
     if ((emp.blockedShifts||[]).includes(shiftId)) return false;
     if (emp.requiredShift && emp.requiredShift !== shiftId) return false;
     if (isFT(emp) && !isSup(emp)) {
@@ -1734,7 +1742,7 @@ function violationMinimizerPass(ns, sourceEmps, cfg, empTimeOffDays, extShiftsAr
 
   const severity = (emp, day, shiftId) => {
     if ((emp.unavailableDays||[]).includes(day)) return 100;
-    if (empTimeOffDays && empTimeOffDays.has(emp.id + "__" + day)) return 95;
+    if (hasTimeOff(empTimeOffDays, emp.id, day, shiftId)) return 95;
     if ((emp.blockedShifts||[]).includes(shiftId)) return 90;
     if (emp.requiredShift && emp.requiredShift !== shiftId) return 80;
     if (isFT(emp) && !isSup(emp)) {
@@ -7067,7 +7075,7 @@ function ScheduleGrid({ employees, schedule, setSchedule, onOpenTestModal, pendi
     return () => document.removeEventListener("keydown", handler);
   }, [swapSource, subSource, dragEmp, editingCell]); // eslint-disable-line react-hooks/exhaustive-deps
 
-  const autoSaveToHistory = useCallback((ws, sched) => {
+  const autoSaveToHistory = useCallback((ws, sched, exts) => {
     const hasAssignments = Object.values(sched).some(a => a.length > 0);
     if (!hasAssignments) return;
     setHistory(prev => {
@@ -7077,16 +7085,24 @@ function ScheduleGrid({ employees, schedule, setSchedule, onOpenTestModal, pendi
         savedAt: new Date().toISOString(),
         label: null,
         schedule: JSON.parse(JSON.stringify(sched)),
+        extShifts: JSON.parse(JSON.stringify(exts || [])),
         isAutoSave: true,
       };
       const next = existing >= 0
         ? prev.map((h, i) => i === existing ? entry : h)
         : [...prev, entry];
-      return next.sort((a,b) => a.weekStart.localeCompare(b.weekStart));
+      const sorted = next.sort((a,b) => a.weekStart.localeCompare(b.weekStart));
+      // Cap history at 30 entries — drop oldest auto-saves first, then oldest named
+      if (sorted.length > 30) {
+        const autoIdx = sorted.findIndex(h => h.isAutoSave);
+        if (autoIdx >= 0) sorted.splice(autoIdx, 1);
+        else sorted.splice(0, 1);
+      }
+      return sorted;
     });
   }, [setHistory]);
 
-  const manualSaveToHistory = useCallback((label, ws, sched) => {
+  const manualSaveToHistory = useCallback((label, ws, sched, exts) => {
     const trimmedLabel = label.trim();
     if (!trimmedLabel) return;
     setHistory(prev => {
@@ -7095,6 +7111,7 @@ function ScheduleGrid({ employees, schedule, setSchedule, onOpenTestModal, pendi
         savedAt: new Date().toISOString(),
         label: trimmedLabel,
         schedule: JSON.parse(JSON.stringify(sched)),
+        extShifts: JSON.parse(JSON.stringify(exts || [])),
         isAutoSave: false,
       };
       const existing = prev.findIndex(h => h.weekStart === ws && !h.isAutoSave && h.label === trimmedLabel);
@@ -7224,6 +7241,13 @@ function ScheduleGrid({ employees, schedule, setSchedule, onOpenTestModal, pendi
       viols.push({ hard:true, msg:`${srcEmp.name} is unavailable on ${tgtDay}` });
     if ((tgtEmp?.unavailableDays||[]).includes(srcDay))
       viols.push({ hard:true, msg:`${tgtEmp.name} is unavailable on ${srcDay}` });
+    // Check approved time-off — hard block (same as unavailability)
+    const srcHasTimeOff = srcEmp && (timeOffReqs||[]).some(r =>
+      r.empId===srcEmp.id && r.status==="approved" && timeOffCoversSlot(r, tgtDay, tgtShiftId, weekStart));
+    const tgtHasTimeOff = tgtEmp && (timeOffReqs||[]).some(r =>
+      r.empId===tgtEmp.id && r.status==="approved" && timeOffCoversSlot(r, srcDay, srcShiftId, weekStart));
+    if (srcHasTimeOff) viols.push({ hard:true, msg:`${srcEmp.name} has approved time off on ${tgtDay}` });
+    if (tgtHasTimeOff) viols.push({ hard:true, msg:`${tgtEmp.name} has approved time off on ${srcDay}` });
     if (srcEmp?.requiredShift && srcEmp.requiredShift !== tgtShiftId)
       viols.push({ hard:true, msg:`${srcEmp.name} is locked to ${srcEmp.requiredShift} shift` });
     if (tgtEmp?.requiredShift && tgtEmp.requiredShift !== srcShiftId)
@@ -7513,6 +7537,14 @@ function ScheduleGrid({ employees, schedule, setSchedule, onOpenTestModal, pendi
           if ((emp.unavailableDays||[]).includes(day))
             E(`${emp.name} assigned on unavailable day ${day} (${shift.id})`);
 
+          // R8: check approved time-off violations
+          const hasApprovedTO = (timeOffReqs||[]).some(r =>
+            r.empId===emp.id && r.status==="approved" &&
+            timeOffCoversSlot(r, day, shift.id, weekStart)
+          );
+          if (hasApprovedTO)
+            W(`${emp.name} assigned on approved time-off day ${day} (${shift.label})`);
+
           if ((emp.blockedShifts||[]).includes(shift.id))
             E(`${emp.name} assigned to blocked shift ${shift.id} on ${day}`);
 
@@ -7778,6 +7810,7 @@ pos === "Scale" ? 0 : pos === "Medical" ? 1 : 2;
       setSchedule(ns);
       if (autoExtShifts.length) setExtShifts(autoExtShifts);
       setScheduleIssues(validateSchedule(ns, autoExtShifts, source));
+      autoSaveToHistory(weekStart, ns, autoExtShifts);
     }
     setScheduleStale(false);
   }, [employees, setSchedule, setExtShifts, cfg, empTimeOffDays, empPatterns, extShifts, schedule]);
@@ -7828,7 +7861,9 @@ pos === "Scale" ? 0 : pos === "Medical" ? 1 : 2;
       setSchedule(cleaned);
     } else setSchedule(pendingSchedule);
     setOvertimeItems(null); setPendingSchedule(null);
+    const finalExts = pendingExtShifts.length ? pendingExtShifts : extShifts;
     if (pendingExtShifts.length) { setExtShifts(pendingExtShifts); setPendingExtShifts([]); }
+    autoSaveToHistory(weekStart, cleaned || pendingSchedule, finalExts);
     setScheduleIssues(validateSchedule(
       cleaned || pendingSchedule,
       pendingExtShifts.length ? pendingExtShifts : extShifts,
@@ -8486,7 +8521,7 @@ pos === "Scale" ? 0 : pos === "Medical" ? 1 : 2;
             <span style={{fontSize:11,color:t.warning,fontWeight:700}}>★</span>
             <input value={histSaveLabel} onChange={e=>setHistSaveLabel(e.target.value)}
               onKeyDown={e=>{
-                if(e.key==="Enter"&&histSaveLabel.trim()){manualSaveToHistory(histSaveLabel,weekStart,schedule);setHistSaveLabel("");setShowHistSave(false);}
+                if(e.key==="Enter"&&histSaveLabel.trim()){manualSaveToHistory(histSaveLabel,weekStart,schedule,extShifts);setHistSaveLabel("");setShowHistSave(false);}
                 if(e.key==="Escape"){setShowHistSave(false);setHistSaveLabel("");}
               }}
               placeholder="Name this snapshot…"
@@ -8496,7 +8531,7 @@ pos === "Scale" ? 0 : pos === "Medical" ? 1 : 2;
             <button onClick={()=>{
                 const {violations,blocked} = enforceBusinessRules(schedule,employees,extShifts);
                 if(blocked){setEnforcementBlock({violations});setShowHistSave(false);setHistSaveLabel("");return;}
-                if(histSaveLabel.trim()){manualSaveToHistory(histSaveLabel,weekStart,schedule);setHistSaveLabel("");}
+                if(histSaveLabel.trim()){manualSaveToHistory(histSaveLabel,weekStart,schedule,extShifts);setHistSaveLabel("");}
                 setShowHistSave(false);
               }}
               style={{background:t.warning,color:"#000",border:"none",padding:"4px 10px",
@@ -8606,12 +8641,15 @@ pos === "Scale" ? 0 : pos === "Medical" ? 1 : 2;
               </thead>
               <tbody>
                 {SHIFTS.map((shift,si) => {
+                  // Show every employee who is actually scheduled on this shift,
+                  // regardless of their preferredShifts setting.
+                  // Previously filtered by preference which silently dropped employees
+                  // with no preferredShifts/requiredShift set.
+                  const scheduledIds = new Set(
+                    DAYS.flatMap(day => (displaySchedule[cellKey(day,shift.id)]||[]).map(a=>a.employeeId))
+                  );
                   const shiftEmps = employees
-                    .filter(e => {
-                      const prefs = e.preferredShifts||[];
-                      const req   = e.requiredShift;
-                      return req===shift.id || prefs.includes(shift.id);
-                    })
+                    .filter(e => scheduledIds.has(e.id))
                     .sort((a,b)=>a.name.localeCompare(b.name));
                   return [
                     <tr key={"hdr"+shift.id}>
@@ -10297,12 +10335,21 @@ function ShiftSchedulerApp() {
   const activeEmployees = draftEmployees !== null ? draftEmployees : employees;
 
   const empTimeOffDays = useMemo(() => {
+    // Key format: "empId__day" for full-day/vacation, "empId__day__shiftId" for partial
+    // autofill checks: for full days use empId__day; for partial use empId__day__shiftId
     const s = new Set();
     (timeOffReqs||[]).filter(r=>r.status==="approved").forEach(r=>{
       DAYS.forEach(day=>{
-        if(timeOffCoversSlot(r, day, r.shiftId||"first", weekStart) ||
-           (r.type!=="partial" && timeOffCoversSlot(r, day, "first", weekStart))) {
-          s.add(r.empId+"__"+day);
+        if (r.type === "partial") {
+          // Partial: only block the specific shift
+          if (timeOffCoversSlot(r, day, r.shiftId, weekStart)) {
+            s.add(r.empId+"__"+day+"__"+r.shiftId);
+          }
+        } else {
+          // Full day or vacation: block all shifts on that day
+          if (timeOffCoversSlot(r, day, "first", weekStart)) {
+            s.add(r.empId+"__"+day);
+          }
         }
       });
     });
