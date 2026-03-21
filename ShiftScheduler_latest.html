@@ -1416,13 +1416,7 @@ function buildAutoFill(sourceEmps, cfg, empTimeOffDays, empPatterns, extShiftsAr
     return worked >= emp.maxWeekendDays;
   };
 
-  const doTrack = (emp, asgn, assigned, day, isOnCall = false) => {
-    hourTracker[emp.id]  = (hourTracker[emp.id]  || 0) + SHIFT_HOURS;
-    shiftsWorked[emp.id] = (shiftsWorked[emp.id] || 0) + 1;
-    dayWorked[emp.id].add(day);
-    asgn.push({ employeeId: emp.id, position: pickPosition._lastPos, isOnCall: isOnCall || undefined });
-    assigned.add(emp.id);
-  };
+  // doTrack was removed — Steps 4/5/5b push assignments directly for clarity.
 
   // ── Step 4: FT makeup pass (planned-shift only, caps at 40h) ────────────
   // Find FT employees still under 40h and insert them into open slots on their
@@ -1439,6 +1433,11 @@ function buildAutoFill(sourceEmps, cfg, empTimeOffDays, empPatterns, extShiftsAr
         const regCount = asgn.length;
         if (regCount >= cap) continue;
         const assigned = slotAssigned(asgn, day, shift.id);
+
+        // Check if ext shifts already provide Scale/Medical for this slot (R3 fix)
+        const step4ActiveExts = (extShiftsArg||[]).filter(e => extCovers(e, day, shift.id));
+        const step4ExtScale   = step4ActiveExts.some(e => (e.roles||[]).includes("Scale"));
+        const step4ExtMedical = step4ActiveExts.some(e => (e.roles||[]).includes("Medical"));
 
         // Only consider FT employees whose PLANNED shift matches this slot
         const candidates = ftShort()
@@ -1465,9 +1464,24 @@ function buildAutoFill(sourceEmps, cfg, empTimeOffDays, empPatterns, extShiftsAr
           if (asgn.length >= cap) break;
           // Cap at exactly 40h — don't overfill FT beyond minimum
           if ((hourTracker[emp.id] || 0) >= FT_MIN_HOURS) continue;
-          const pos = pickPosition(emp, asgn, day, shift.id);
+          // Use ext-aware position picking: don't duplicate a role the ext shift already covers
+          const ap = getAvailPos(day, shift.id).filter(p => canFillPos(emp, p, day));
+          if (!ap.length) continue;
+          const nowHasScale   = slotHasRole(asgn, sourceEmps, "Scale")   || step4ExtScale;
+          const nowHasMedical = slotHasRole(asgn, sourceEmps, "Medical") || step4ExtMedical;
+          let pos;
+          if      (!nowHasScale   && ap.includes("Scale"))   pos = "Scale";
+          else if (!nowHasMedical && ap.includes("Medical")) pos = "Medical";
+          else if (ap.includes("Guard"))                     pos = "Guard";
+          else pos = ap[0];
           if (!pos) continue;
-          if (pos === "Guard" && !isGuardOnly(emp)) continue;
+          // Guard preference: prefer guard-only employees for Guard slots,
+          // but allow specialists to fill Guard if needed to reach 40h (Rule 1 must win).
+          // Only skip specialist for Guard if a guard-only employee is actually available.
+          const guardOnlyAvailForMakeup = pos === "Guard" && !isGuardOnly(emp) && candidates.some(c =>
+            c.id !== emp.id && isGuardOnly(c) && (hourTracker[c.id]||0) < FT_MIN_HOURS
+          );
+          if (guardOnlyAvailForMakeup) continue;
           if (weekendCapHit(emp, day)) continue;
           hourTracker[emp.id]  = (hourTracker[emp.id]  || 0) + SHIFT_HOURS;
           shiftsWorked[emp.id] = (shiftsWorked[emp.id] || 0) + 1;
@@ -1669,14 +1683,6 @@ function enforceBusinessRules(schedule, employees, extShifts) {
           rule: 3,
           level: "error",
           msg: `Rule 3 — ${dayLabel} ${shiftLabel}: no Medical assigned.`,
-        });
-      }
-      // "1 other" check: need at least 3 roles covered — Scale + Medical + one more body
-      if (hasScale && hasMedical && totalBodies < 3) {
-        violations.push({
-          rule: 3,
-          level: "error",
-          msg: `Rule 3 — ${dayLabel} ${shiftLabel}: Scale and Medical present but missing a 3rd person (Guard, 2nd Medic, or 2nd Scale).`,
         });
       }
     });
@@ -3660,8 +3666,46 @@ function ViolationMinimizeButton({ employees, schedule, extShifts, onClick }) {
 }
 
 function buildViolationList(employees, schedule, extShiftsArg) {
-  const SEVERITY = { supervisor_missing: -1, wrong_shift_required: 0, unavailable: 1, days_off: 2, wrong_shift: 3, overwork: 4, under_hours: 5 };
+  const SEVERITY = { rule2_headcount: -3, rule3_role: -2, supervisor_missing: -1, wrong_shift_required: 0, unavailable: 1, days_off: 2, wrong_shift: 3, overwork: 4, under_hours: 5 };
   const items = [];
+
+  // Rule 2/3 violations — shown as read-only info rows (cannot be auto-fixed by the minimizer)
+  DAYS.forEach(day => {
+    SHIFTS.forEach(shift => {
+      const asgn     = schedule[cellKey(day, shift.id)] || [];
+      const cellExt  = (extShiftsArg||[]).filter(e => extCovers(e, day, shift.id));
+      const extBodies= cellExt.reduce((n,ext)=>{
+        const pair=EXT_PAIRS.find(p=>p.id===ext.pairId); if(!pair) return n;
+        const idx=pair.covers.indexOf(shift.id);
+        return n+((idx===0?!!ext.empAId:idx===1?!!ext.empBId:false)?1:0);
+      }, 0);
+      const totalBodies = asgn.length + extBodies;
+      const shiftLabel = `${day} ${shift.label}`;
+      if (totalBodies > 0 && totalBodies < 3) {
+        // Use first assigned employee as the "anchor" for display purposes
+        const anchorEmp = employees.find(e => e.id === asgn[0]?.employeeId) || employees[0];
+        if (anchorEmp) items.push({ emp: anchorEmp, day, shiftId: shift.id, position: null,
+          type: "rule2_headcount", severity: -3, readOnly: true,
+          msg: `${shiftLabel}: only ${totalBodies} person${totalBodies===1?"":"s"} (min 3 required)` });
+      }
+      const extHasScale=cellExt.some(e=>(e.roles||[]).includes("Scale"));
+      const extHasMed  =cellExt.some(e=>(e.roles||[]).includes("Medical"));
+      const hasScale   =slotHasRole(asgn,employees,"Scale")  ||extHasScale;
+      const hasMed     =slotHasRole(asgn,employees,"Medical")||extHasMed;
+      if (asgn.length > 0 && !hasScale) {
+        const anchorEmp = employees.find(e => e.id === asgn[0]?.employeeId) || employees[0];
+        if (anchorEmp) items.push({ emp: anchorEmp, day, shiftId: shift.id, position: null,
+          type: "rule3_role", severity: -2, readOnly: true,
+          msg: `${shiftLabel}: no Scale assigned` });
+      }
+      if (asgn.length > 0 && !hasMed) {
+        const anchorEmp = employees.find(e => e.id === asgn[0]?.employeeId) || employees[0];
+        if (anchorEmp) items.push({ emp: anchorEmp, day, shiftId: shift.id, position: null,
+          type: "rule3_role", severity: -2, readOnly: true,
+          msg: `${shiftLabel}: no Medical assigned` });
+      }
+    });
+  });
 
   // Supervisor missing — one violation per day, only if roster has a supervisor
   const supervisors = employees.filter(e => (e.qualifications||[]).includes("Supervisor"));
@@ -3814,7 +3858,11 @@ function tryFixViolation(item, employees, schedule, cfg, extShiftsArg) {
     if (asgn3.some(a => a.employeeId === emp.id)) return null;
     if (isRestViolation(emp, calcRestGap(emp.id, ns, day, "first"), cfg?.minRestHours ?? 12)) return null;
     if (calcConsecutiveHours(emp.id, ns, day, "first") > empMaxConsec(emp)) return null;
-    const pos3 = "Guard";
+    // Check slot capacity before adding — don't exceed 4 total (3 regular + 1 sup)
+    const maxSlots3 = getSlotCount(day, "first");
+    if (asgn3.length >= maxSlots3) return null;
+    // Use "Supervisor" position (not "Guard") so they display correctly
+    const pos3 = (emp.qualifications||[]).includes("Supervisor") ? "Supervisor" : "Guard";
     ns[key3] = [...asgn3, { employeeId: emp.id, position: pos3 }];
     return ns;
   }
@@ -3904,6 +3952,7 @@ function MinimizeViolationsPanel({ employees, schedule, setSchedule, extShifts, 
     const nowUnfix = new Set(unfixableIds);
     const items = buildViolationList(employees, cur, extShifts);
     items.forEach(item => {
+      if (item.readOnly) return; // Rule 2/3 cannot be auto-fixed
       if (nowFixed.has(itemKey(item))) return;
       const result = tryFixViolation(item, employees, cur, cfg, extShifts);
       if (result) { cur = result; nowFixed.add(itemKey(item)); }
@@ -3915,17 +3964,21 @@ function MinimizeViolationsPanel({ employees, schedule, setSchedule, extShifts, 
   };
 
   const TYPE_META = {
-    wrong_shift_required: { label: "REQUIRED SHIFT",  color: (t) => t.danger },
-    unavailable:          { label: "UNAVAILABLE",      color: (t) => t.danger },
-    days_off:             { label: "PREF DAY OFF",     color: (t) => t.warning },
-    wrong_shift:          { label: "WRONG SHIFT",      color: (t) => t.warning },
-    overwork:             { label: "OVERWORK",         color: (t) => t.fatigue },
-    under_hours:          { label: "UNDER 40H",        color: (t) => t.danger },
-    supervisor_missing:   { label: "SUP MISSING",      color: (t) => t.danger },
+    rule2_headcount:      { label: "RULE 2 — HEADCOUNT", color: (t) => t.danger },
+    rule3_role:           { label: "RULE 3 — ROLE GAP",  color: (t) => t.danger },
+    wrong_shift_required: { label: "REQUIRED SHIFT",      color: (t) => t.danger },
+    unavailable:          { label: "UNAVAILABLE",          color: (t) => t.danger },
+    days_off:             { label: "PREF DAY OFF",         color: (t) => t.warning },
+    wrong_shift:          { label: "WRONG SHIFT",          color: (t) => t.warning },
+    overwork:             { label: "OVERWORK",             color: (t) => t.fatigue },
+    under_hours:          { label: "UNDER 40H",            color: (t) => t.danger },
+    supervisor_missing:   { label: "SUP MISSING",          color: (t) => t.danger },
   };
 
   const activeViolations = violations.filter(v => !fixedIds.has(itemKey(v)));
-  const fixableCount = activeViolations.filter(v => !unfixableIds.has(itemKey(v))).length;
+  // readOnly items (Rule 2/3) cannot be auto-fixed — exclude from fixable count
+  const fixableCount = activeViolations.filter(v => !v.readOnly && !unfixableIds.has(itemKey(v))).length;
+  const readOnlyCount = activeViolations.filter(v => v.readOnly).length;
 
   return (
     <div style={{position:"fixed",inset:0,background:"rgba(0,0,0,0.72)",display:"flex",
@@ -3946,7 +3999,16 @@ function MinimizeViolationsPanel({ employees, schedule, setSchedule, extShifts, 
         <p style={{margin:"0 0 16px",fontSize:11,color:t.textMuted,flexShrink:0}}>
           {violations.length === 0
             ? "No violations found — schedule looks clean."
-            : `${violations.length} violation${violations.length!==1?"s":""} found across ${new Set(violations.map(v=>v.emp.id)).size} employee${new Set(violations.map(v=>v.emp.id)).size!==1?"s":""}.`}
+            : (() => {
+                const ruleViolations = violations.filter(v => v.readOnly).length;
+                const prefViolations = violations.length - ruleViolations;
+                const empCount = new Set(violations.filter(v=>!v.readOnly).map(v=>v.emp.id)).size;
+                const parts = [];
+                if (ruleViolations > 0) parts.push(`${ruleViolations} business rule issue${ruleViolations!==1?"s":""} (cannot auto-fix)`);
+                if (prefViolations > 0) parts.push(`${prefViolations} preference violation${prefViolations!==1?"s":""} across ${empCount} employee${empCount!==1?"s":""}`);
+                return parts.join(" · ");
+              })()
+          }
         </p>
 
         {violations.length > 0 && (
@@ -3980,16 +4042,17 @@ function MinimizeViolationsPanel({ employees, schedule, setSchedule, extShifts, 
           )}
           {violations.map((item) => {
             const id = itemKey(item);
-            const isFixed    = fixedIds.has(id);
+            const isFixed     = fixedIds.has(id);
             const isUnfixable = unfixableIds.has(id);
+            const isReadOnly  = !!item.readOnly;
             const meta = TYPE_META[item.type] || { label: item.type.toUpperCase(), color: () => t.textMuted };
             const col  = meta.color(t);
             const shiftLabel = SHIFTS.find(s=>s.id===item.shiftId)?.label || item.shiftId;
             return (
               <div key={id} style={{display:"flex",alignItems:"center",gap:10,
                 padding:"10px 14px",borderRadius:6,
-                background: isFixed ? t.scale+"12" : isUnfixable ? t.surfaceAlt : t.surfaceAlt,
-                border:"1px solid "+(isFixed?t.scale+"40":isUnfixable?t.border:col+"30"),
+                background: isReadOnly ? t.danger+"08" : isFixed ? t.scale+"12" : t.surfaceAlt,
+                border:"1px solid "+(isReadOnly?t.danger+"40":isFixed?t.scale+"40":isUnfixable?t.border:col+"30"),
                 opacity: isFixed ? 0.7 : 1, transition:"all .2s"}}>
 
                 <span style={{width:8,height:8,borderRadius:"50%",
@@ -3997,7 +4060,7 @@ function MinimizeViolationsPanel({ employees, schedule, setSchedule, extShifts, 
 
                 <div style={{flex:1,minWidth:0}}>
                   <div style={{display:"flex",alignItems:"center",gap:6,flexWrap:"wrap"}}>
-                    <span style={{fontWeight:700,fontSize:12,color:t.text}}>{item.emp.name}</span>
+                    {!isReadOnly && <span style={{fontWeight:700,fontSize:12,color:t.text}}>{item.emp.name}</span>}
                     <span style={{fontSize:9,fontWeight:800,padding:"1px 6px",borderRadius:3,
                       background:col+"20",color:col,border:"1px solid "+col+"40"}}>
                       {meta.label}
@@ -4005,9 +4068,16 @@ function MinimizeViolationsPanel({ employees, schedule, setSchedule, extShifts, 
                     <span style={{fontSize:10,color:t.textDim}}>{item.day} · {shiftLabel}</span>
                   </div>
                   <div style={{fontSize:10,color:t.textMuted,marginTop:2}}>{item.msg}</div>
+                  {isReadOnly && (
+                    <div style={{fontSize:9,color:t.textDim,marginTop:3,fontStyle:"italic"}}>
+                      Cannot auto-fix — add staff, use 12hr pair, or clear and re-run auto-fill
+                    </div>
+                  )}
                 </div>
 
-                {isFixed ? (
+                {isReadOnly ? (
+                  <span style={{fontSize:10,color:t.danger,flexShrink:0,fontWeight:700}}>🚫 Rule</span>
+                ) : isFixed ? (
                   <span style={{fontSize:11,fontWeight:700,color:t.scale,flexShrink:0}}>✓ Fixed</span>
                 ) : isUnfixable ? (
                   <span style={{fontSize:10,color:t.textDim,flexShrink:0,textAlign:"right",maxWidth:90}}>
@@ -4029,7 +4099,7 @@ function MinimizeViolationsPanel({ employees, schedule, setSchedule, extShifts, 
         <div style={{marginTop:16,flexShrink:0,display:"flex",justifyContent:"space-between",
           alignItems:"center",flexWrap:"wrap",gap:8}}>
           <div style={{fontSize:10,color:t.textDim}}>
-            Fixes move employees to their preferred shift or substitute a conflict-free replacement.<br/>
+            Fixes move employees to their preferred shift or substitute a conflict-free replacement. 🚫 Rule violations require manual action (staff changes or 12hr pairs).<br/>
             "No swap available" means no qualified employee is free for that slot without creating a new violation.
           </div>
           <button onClick={onClose}
@@ -7115,7 +7185,30 @@ function ScheduleGrid({ employees, schedule, setSchedule, onOpenTestModal, pendi
   const removeAsgn = (d,s,eid) => {
     if (isReadOnly) return;
     const key=cellKey(d,s);
-    setSchedule(p=>({...p,[key]:(p[key]||[]).filter(a=>a.employeeId!==eid)}));
+    const cur = schedule[key]||[];
+    const remaining = cur.filter(a=>a.employeeId!==eid);
+    // Warn if removal would break Rule 2 (min 3) or Rule 3 (Scale/Medical)
+    const warns = [];
+    const cellExt=(extShifts||[]).filter(e=>extCovers(e,d,s));
+    const extBodies=cellExt.reduce((n,ext)=>{
+      const pair=EXT_PAIRS.find(p=>p.id===ext.pairId); if(!pair) return n;
+      const idx=pair.covers.indexOf(s);
+      return n+((idx===0?!!ext.empAId:idx===1?!!ext.empBId:false)?1:0);
+    },0);
+    const totalAfter = remaining.length + extBodies;
+    if (totalAfter < 3) warns.push(`Rule 2 — shift will have only ${totalAfter} person${totalAfter===1?"":"s"} (minimum 3 required).`);
+    const extHasScale=cellExt.some(e=>(e.roles||[]).includes("Scale"));
+    const extHasMed=cellExt.some(e=>(e.roles||[]).includes("Medical"));
+    const hasScale=slotHasRole(remaining,employees,"Scale")||extHasScale;
+    const hasMed=slotHasRole(remaining,employees,"Medical")||extHasMed;
+    if (!hasScale) warns.push("Rule 3 — shift will have no Scale employee.");
+    if (!hasMed)   warns.push("Rule 3 — shift will have no Medical employee.");
+    if (warns.length > 0 && !window.confirm(
+      "\u26a0 Removing this person will create a rule violation:\n\n" +
+      warns.map(w=>"\u2022 "+w).join("\n") +
+      "\n\nRemove anyway?"
+    )) return;
+    setSchedule(p=>({...p,[key]:remaining}));
   };
   const getSwapViolations = (srcEmp, srcDay, srcShiftId, srcPos, tgtEmp, tgtDay, tgtShiftId, tgtPos) => {
     const viols = [];
@@ -7147,6 +7240,20 @@ function ScheduleGrid({ employees, schedule, setSchedule, onOpenTestModal, pendi
       viols.push({ hard:false, msg:`${srcEmp.name} would have only ${Math.round(srcRestAfter*10)/10}h rest (min ${minRest}h)` });
     if (tgtRestAfter < minRest && tgtRestAfter !== Infinity)
       viols.push({ hard:false, msg:`${tgtEmp.name} would have only ${Math.round(tgtRestAfter*10)/10}h rest (min ${minRest}h)` });
+    // Check Rule 3: would either cell lose its only Scale or Medical after the swap?
+    const checkRule3 = (cellKey, shiftId, day, incomingEmp, outgoingEmpId) => {
+      const cellAfter = (swapped[cellKey]||[]);
+      const cellExt   = (extShifts||[]).filter(e=>extCovers(e,day,shiftId));
+      const extScale  = cellExt.some(e=>(e.roles||[]).includes("Scale"));
+      const extMed    = cellExt.some(e=>(e.roles||[]).includes("Medical"));
+      const hasScale  = slotHasRole(cellAfter, employees, "Scale") || extScale;
+      const hasMed    = slotHasRole(cellAfter, employees, "Medical") || extMed;
+      const shiftLabel= SHIFTS.find(s=>s.id===shiftId)?.label||shiftId;
+      if (!hasScale) viols.push({ hard:false, msg:`Swap would leave ${day} ${shiftLabel} with no Scale` });
+      if (!hasMed)   viols.push({ hard:false, msg:`Swap would leave ${day} ${shiftLabel} with no Medical` });
+    };
+    checkRule3(sk, srcShiftId, srcDay, tgtEmp, srcEmp?.id);
+    checkRule3(tk, tgtShiftId, tgtDay, srcEmp, tgtEmp?.id);
     return viols;
   };
 
@@ -7183,6 +7290,18 @@ function ScheduleGrid({ employees, schedule, setSchedule, onOpenTestModal, pendi
     const minRest = cfg?.minRestHours ?? 12;
     if (rest < minRest && rest !== Infinity)
       viols.push({ hard:false, msg:`${newEmp.name} would have only ${Math.round(rest*10)/10}h rest (min ${minRest}h)` });
+    // Rule 3 check: would removing subEmp leave the shift without Scale or Medical?
+    const key0 = cellKey(subSrc.day, subSrc.shiftId);
+    const afterSub = (schedule[key0]||[]).map(a =>
+      a.employeeId === subSrc.employeeId ? {...a, employeeId: newEmpId, position: newPosition} : a
+    );
+    const cellExt0=(extShifts||[]).filter(e=>extCovers(e,subSrc.day,subSrc.shiftId));
+    const extScale0=cellExt0.some(e=>(e.roles||[]).includes("Scale"));
+    const extMed0  =cellExt0.some(e=>(e.roles||[]).includes("Medical"));
+    const hasScale0=slotHasRole(afterSub,employees,"Scale")||extScale0;
+    const hasMed0  =slotHasRole(afterSub,employees,"Medical")||extMed0;
+    if (!hasScale0) viols.push({ hard:false, msg:`Sub would leave ${subSrc.day} ${SHIFTS.find(s=>s.id===subSrc.shiftId)?.label||subSrc.shiftId} with no Scale employee` });
+    if (!hasMed0)   viols.push({ hard:false, msg:`Sub would leave ${subSrc.day} ${SHIFTS.find(s=>s.id===subSrc.shiftId)?.label||subSrc.shiftId} with no Medical employee` });
     const hardBlocks = viols.filter(v => v.hard);
     const softWarns  = viols.filter(v => !v.hard);
     if (hardBlocks.length > 0) {
@@ -7432,6 +7551,11 @@ function ScheduleGrid({ employees, schedule, setSchedule, onOpenTestModal, pendi
         });
       });
     });
+    // Also count ext shift hours (12h per ext shift body)
+    (allExts||[]).forEach(ext => {
+      if (ext.empAId) hoursByEmp[ext.empAId] = (hoursByEmp[ext.empAId]||0) + EXT_SHIFT_HOURS;
+      if (ext.empBId) hoursByEmp[ext.empBId] = (hoursByEmp[ext.empBId]||0) + EXT_SHIFT_HOURS;
+    });
     (emps||employees).forEach(emp => {
       if (emp.employmentType !== "full-time") return;
       const h = hoursByEmp[emp.id] || 0;
@@ -7447,6 +7571,59 @@ function ScheduleGrid({ employees, schedule, setSchedule, onOpenTestModal, pendi
     const excludeSet = new Set(afExclude || []);
     const source = allSource.filter(e => !excludeSet.has(e.id));
     if (!source.length) return;
+
+    // ── Pre-flight feasibility check ─────────────────────────────────────────
+    // Warn the user before running if the roster structurally cannot satisfy
+    // the business rules, so they understand why violations will appear.
+    const feasibilityIssues = [];
+    const totalShifts = DAYS.length * SHIFTS.length; // 21 slots per week
+    const ftEmps = source.filter(e => e.employmentType === "full-time");
+    const scaleEmps  = source.filter(e => (e.qualifications||[]).includes("Scale"));
+    const medEmps    = source.filter(e => (e.qualifications||[]).includes("Medical"));
+    // Rule 2: need at least 3 available bodies per shift on average
+    const minBodiesNeeded = totalShifts * 3;
+    const shiftsPerFT = 5; // nominal 5-on-2-off
+    const estCoverage = ftEmps.length * shiftsPerFT + source.filter(e=>e.employmentType!=="full-time").length * 3;
+    if (estCoverage < minBodiesNeeded) {
+      feasibilityIssues.push(`Rule 2 risk — roster may not have enough staff to put 3 people on every shift. Need ~${Math.ceil(minBodiesNeeded/shiftsPerFT)} FT employees; have ${ftEmps.length} FT + ${source.length - ftEmps.length} PT/OC.`);
+    }
+    // Rule 3: need at least one Scale and one Medical qualified per shift
+    const scaleShiftsNeeded = SHIFTS.length; // 3 per day minimum
+    const medShiftsNeeded   = SHIFTS.length;
+    if (scaleEmps.length === 0) {
+      feasibilityIssues.push("Rule 3 — no Scale-qualified employees on roster. Every shift will be missing Scale.");
+    } else if (scaleEmps.length < scaleShiftsNeeded) {
+      feasibilityIssues.push(`Rule 3 risk — only ${scaleEmps.length} Scale-qualified employee${scaleEmps.length===1?"":"s"} for ${scaleShiftsNeeded} shifts/day. Some shifts may lack Scale coverage.`);
+    }
+    if (medEmps.length === 0) {
+      feasibilityIssues.push("Rule 3 — no Medical-qualified employees on roster. Every shift will be missing Medical.");
+    } else if (medEmps.length < medShiftsNeeded) {
+      feasibilityIssues.push(`Rule 3 risk — only ${medEmps.length} Medical-qualified employee${medEmps.length===1?"":"s"} for ${medShiftsNeeded} shifts/day. Some shifts may lack Medical coverage.`);
+    }
+    // Rule 1: check if FT employees can mathematically reach 40h
+    const ftUnreachable = ftEmps.filter(e => {
+      const unavailCount = (e.unavailableDays||[]).length;
+      const maxPossibleShifts = 7 - unavailCount;
+      return maxPossibleShifts * SHIFT_HOURS < FT_MIN_HOURS;
+    });
+    if (ftUnreachable.length > 0) {
+      ftUnreachable.forEach(e => {
+        const avail = 7 - (e.unavailableDays||[]).length;
+        feasibilityIssues.push(`Rule 1 — ${e.name} has ${avail} available day${avail===1?"":"s"} this week (${avail*SHIFT_HOURS}h max) — cannot reach 40h.`);
+      });
+    }
+
+    if (feasibilityIssues.length > 0) {
+      const proceed = window.confirm(
+        "⚠ ROSTER FEASIBILITY WARNING\n\n" +
+        "Auto-fill may produce rule violations because the current roster " +
+        "cannot satisfy all business rules:\n\n" +
+        feasibilityIssues.map(i => "• " + i).join("\n") +
+        "\n\nProceed with auto-fill anyway? Violations will be shown after."
+      );
+      if (!proceed) return;
+    }
+    // ── End pre-flight ────────────────────────────────────────────────────────
 
     const manualExtShifts = (extShifts||[]).filter(e => e.approvedAt !== "auto-fill");
     const {schedule:ns, hourTracker, usedPatterns} = buildAutoFill(source, cfg, empTimeOffDays, empPatterns, manualExtShifts);
@@ -7980,7 +8157,7 @@ pos === "Scale" ? 0 : pos === "Medical" ? 1 : 2;
                 return (
                   <div key={day}
                     ref={el => { if(el) cellRefs.current[cellKey(day,shift.id)] = el; }}
-                    onClick={()=>{ if(isReadOnly||swapSource||st.isFull) return; setEditingCell({day,shiftId:shift.id}); }}
+                    onClick={()=>{ if(isReadOnly||swapSource||subSource||st.isFull) return; setEditingCell({day,shiftId:shift.id}); }}
                     onDragEnter={e=>{if(isReadOnly||!dragEmpRef.current)return;e.preventDefault();e.currentTarget.style.borderColor=t.accent;e.currentTarget.style.boxShadow="0 0 0 2px "+t.accent+"40";}}
                     onDragOver={e=>{if(isReadOnly||!dragEmpRef.current)return;e.preventDefault();}}
                     onDragLeave={e=>{if(!e.currentTarget.contains(e.relatedTarget)){e.currentTarget.style.borderColor=borderColor;e.currentTarget.style.boxShadow="none";}}}
