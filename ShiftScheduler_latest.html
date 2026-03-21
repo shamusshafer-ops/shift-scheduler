@@ -185,6 +185,7 @@ const MIN_REST_HOURS = 12;          // fallback only
 //   NIGHT variant: emp B works 1800–0600 (covers half-2nd+3rd)
 // Together they guarantee Scale+Medical coverage on 2nd shift.
 const EXT_SHIFT_HOURS = 12;
+const OT_RELIEF_THRESHOLD = 48;  // FT hours above which relief suggestions fire
 const EXT_PAIRS = [
   {
     id: "day",   label: "Day 12hr",   time: "0600 – 1800",
@@ -682,7 +683,11 @@ function findExtShiftPairs(day, employees, schedule, extShifts) {
 
     // Find candidates: must have ALL needed roles as qualifications
     const candidates = employees.filter(emp => {
+      if ((emp.unavailableDays || []).includes(emp.id)) return false; // bug guard
       if ((emp.unavailableDays || []).includes(day)) return false;
+      // Don't suggest employees already at/over OT threshold — ext shift = 12h more
+      const currentHours = calcHours(emp.id, schedule, extShifts);
+      if (currentHours >= OT_RELIEF_THRESHOLD) return false;
       // Already assigned in both covered shifts? skip
       const alreadyInBoth = pair.covers.every(shiftId => {
         const asgn = schedule[cellKey(day, shiftId)] || [];
@@ -864,13 +869,15 @@ function buildAutoFill(sourceEmps, cfg, empTimeOffDays, empPatterns, extShiftsAr
       // position each week, giving a fair rolling schedule over time.
       const freshBlockStart = Math.floor((ftIdx / ftGroupSize) * 7);
       const prevPattern = empPatterns && empPatterns[emp.id];
-      // requiredShift employees anchor to Sunday on fresh start so they cover
-      // the beginning of the week where specialist gaps are most critical.
-      // On subsequent weeks their blockStart advances normally from storage.
+      // requiredShift employees anchor to Sunday (blockStart 0) always.
+      // They must cover the start of the week for their shift — don't let
+      // rolling mode drift them to Tuesday, Wednesday, etc.
       const freshBlockStartEff = emp.requiredShift ? 0 : freshBlockStart;
       // rotationMode: "rolling" advances by 1 day/week; "fixed" keeps same days off.
+      // requiredShift employees always stay at 0 — ignore rotation advancement.
       const rotationMode = cfg?.rotationMode ?? "fixed";
-      const advancement = rotationMode === "rolling" ? 1 : (maxShifts + daysOff);
+      const advancement = emp.requiredShift ? 0
+        : rotationMode === "rolling" ? 1 : (maxShifts + daysOff);
       const blockStart = prevPattern?.blockStart !== undefined
         ? (prevPattern.blockStart + advancement) % 7
         : freshBlockStartEff;
@@ -3682,8 +3689,10 @@ function buildViolationList(employees, schedule, extShiftsArg) {
       const totalBodies = asgn.length + extBodies;
       const shiftLabel = `${day} ${shift.label}`;
       if (totalBodies > 0 && totalBodies < 3) {
-        // Use first assigned employee as the "anchor" for display purposes
-        const anchorEmp = employees.find(e => e.id === asgn[0]?.employeeId) || employees[0];
+        // Only show if someone IS scheduled (empty shifts are a separate issue)
+        const anchorEmp = asgn.length > 0
+          ? employees.find(e => e.id === asgn[0]?.employeeId)
+          : null;
         if (anchorEmp) items.push({ emp: anchorEmp, day, shiftId: shift.id, position: null,
           type: "rule2_headcount", severity: -3, readOnly: true,
           msg: `${shiftLabel}: only ${totalBodies} person${totalBodies===1?"":"s"} (min 3 required)` });
@@ -3693,13 +3702,13 @@ function buildViolationList(employees, schedule, extShiftsArg) {
       const hasScale   =slotHasRole(asgn,employees,"Scale")  ||extHasScale;
       const hasMed     =slotHasRole(asgn,employees,"Medical")||extHasMed;
       if (asgn.length > 0 && !hasScale) {
-        const anchorEmp = employees.find(e => e.id === asgn[0]?.employeeId) || employees[0];
+        const anchorEmp = employees.find(e => e.id === asgn[0]?.employeeId);
         if (anchorEmp) items.push({ emp: anchorEmp, day, shiftId: shift.id, position: null,
           type: "rule3_role", severity: -2, readOnly: true,
           msg: `${shiftLabel}: no Scale assigned` });
       }
       if (asgn.length > 0 && !hasMed) {
-        const anchorEmp = employees.find(e => e.id === asgn[0]?.employeeId) || employees[0];
+        const anchorEmp = employees.find(e => e.id === asgn[0]?.employeeId);
         if (anchorEmp) items.push({ emp: anchorEmp, day, shiftId: shift.id, position: null,
           type: "rule3_role", severity: -2, readOnly: true,
           msg: `${shiftLabel}: no Medical assigned` });
@@ -5113,7 +5122,6 @@ function EmployeeManager({ employees, setEmployees, schedule, setSchedule, saved
   );
 }
 
-const OT_RELIEF_THRESHOLD = 48;
 
 function findOTReliefSuggestions(employees, schedule, extShifts, cfg) {
   const suggestions = [];
