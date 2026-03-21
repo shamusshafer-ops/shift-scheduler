@@ -4772,9 +4772,19 @@ function EmployeeManager({ employees, setEmployees, schedule, setSchedule, saved
     setNewForm(EMPTY_NEW); setErrors([]);
   };
 
-  const removeEmployee = (id) => {
-    setEmployees(p=>p.filter(e=>e.id!==id));
-    setSchedule(p=>{const n={...p};Object.keys(n).forEach(k=>{n[k]=n[k].filter(a=>a.employeeId!==id)});return n;});
+  const deleteEmployee = (id) => {
+    const emp = employees.find(e => e.id === id);
+    if (!emp) return;
+    const inSchedule = Object.values(schedule||{}).some(a => a.some(x => x.employeeId === id));
+    const msg = inSchedule
+      ? `Remove ${emp.name} from the roster?\n\nThey are currently assigned to shifts this week — those assignments will also be removed.`
+      : `Remove ${emp.name} from the roster?`;
+    if (!window.confirm(msg)) return;
+    setEmployees(p => p.filter(e => e.id !== id));
+    setSchedule(p => { const n={...p}; Object.keys(n).forEach(k=>{n[k]=n[k].filter(a=>a.employeeId!==id)}); return n; });
+    if (setExtShifts) setExtShifts(p => (p||[]).filter(e => e.empAId!==id && e.empBId!==id));
+    if (setEmpPatterns) setEmpPatterns(p => { const n={...p}; delete n[id]; return n; });
+    setAfExclude(p => (p||[]).filter(x => x !== id));
   };
 
   const saveEdit = () => {
