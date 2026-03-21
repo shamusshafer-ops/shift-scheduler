@@ -157,7 +157,6 @@ async function runSchemaMigrations() {
     await lsWrite("shift_employees", migrated);
   }
 
-  // Migrate schedule: rename position "Supervisor" → "Guard" (v3)
   // Stamp the new version
   await lsWrite(SCHEMA_KEY, SCHEMA_VERSION);
   console.log("[Schema] Migration complete -> v" + SCHEMA_VERSION);
@@ -437,7 +436,21 @@ function usePersistentState(key, fallback) {
       if (_hasWinStorage) {
         try { window.storage.set(key, serialized); } catch (_) {}
       } else {
-        try { localStorage.setItem(key, serialized); } catch (_) {}
+        try {
+          localStorage.setItem(key, serialized);
+        } catch (err) {
+          // QuotaExceededError: storage full — warn user once per session
+          if (err && (err.name === "QuotaExceededError" || err.code === 22)) {
+            if (!window.__storageQuotaWarned) {
+              window.__storageQuotaWarned = true;
+              setTimeout(() => alert(
+                "\u26a0 Storage Full\n\n" +
+                "Your browser storage is at capacity. Recent changes may NOT be saved.\n\n" +
+                "To fix: Settings \u2192 Backup & Data \u2192 download a backup, then clear old data."
+              ), 0);
+            }
+          }
+        }
       }
       return next;
     });
@@ -4690,7 +4703,7 @@ function AvailabilityEditor({ emp, onUpdate }) {
   );
 }
 
-function EmployeeManager({ employees, setEmployees, schedule, setSchedule, savedRosters, setSavedRosters, onOpenTestModal, afExclude, setAfExclude, customSeed, setCustomSeed }) {
+function EmployeeManager({ employees, setEmployees, schedule, setSchedule, savedRosters, setSavedRosters, onOpenTestModal, afExclude, setAfExclude, customSeed, setCustomSeed, setExtShifts, setEmpPatterns }) {
   const t = useTheme();
   const cfg = useSettings();
   const EMPTY_NEW = {name:"",quals:["Guard"],type:"full-time",unavail:[],prefShifts:[],blockedShifts:[],requiredShift:null,prefDaysOff:[],overtimePref:"neutral",willing16h:false,maxShiftsPerWeek:null,ext12hPref:null,maxWeekendDays:null};
@@ -5120,7 +5133,7 @@ function EmployeeManager({ employees, setEmployees, schedule, setSchedule, saved
           {employees.length>0&&(confirmClearAll ? (
             <div style={{display:"flex",alignItems:"center",gap:8}}>
               <span style={{fontSize:11,color:t.danger,fontWeight:600}}>Clear all {employees.length} employees?</span>
-              <button onClick={()=>{setEmployees([]);setSchedule({});setConfirmClearAll(false);}}
+              <button onClick={()=>{setEmployees([]);setSchedule({});setExtShifts([]);setEmpPatterns({});setAfExclude([]);setConfirmClearAll(false);}}
                 style={{background:t.danger,color:"#fff",border:"none",padding:"6px 14px",
                   borderRadius:6,cursor:"pointer",fontSize:11,fontWeight:700,fontFamily:"inherit"}}>Yes, clear</button>
               <button onClick={()=>setConfirmClearAll(false)}
@@ -9290,6 +9303,7 @@ const ALL_BACKUP_KEYS = [
   "shift_employees","shift_settings","shift_schedule","shift_ext_shifts",
   "shift_saved_weeks","shift_history","shift_timeoff","shift_patterns",
   "shift_week_start","shift_saved_rosters","shift_custom_theme","shift_theme",
+  "shift_custom_seed","shift_af_exclude",   // previously missing from backup
 ];
 
 function RosterBackup({ employees, setEmployees, setSchedule, setExtShifts,
@@ -10212,13 +10226,21 @@ function AfExcludeGroupToggles({ employees, afExclude, setAfExclude, t }) {
 function ShiftSchedulerApp() {
   const [migrationDone, setMigrationDone] = useState(false);
   useEffect(() => {
-
     const t = setTimeout(() => setMigrationDone(true), 2000);
     runSchemaMigrations().finally(() => {
       clearTimeout(t);
       setMigrationDone(true);
     });
   }, []);
+
+  // Gate rendering until migration completes (prevents reading stale localStorage
+  // before migrations have had a chance to update the data shape).
+  if (!migrationDone) return (
+    <div style={{display:"flex",alignItems:"center",justifyContent:"center",
+      height:"100vh",background:"#0f1117",color:"#5c6070",fontSize:13,fontFamily:"inherit"}}>
+      Loading…
+    </div>
+  );
 
   const [themeName,   setThemeName,  themeLoaded] = usePersistentState("shift_theme","dark");
   const [customTheme, setCustomTheme, customThemeLoaded] = usePersistentState("shift_custom_theme", {});
@@ -10798,7 +10820,8 @@ function ShiftSchedulerApp() {
                 savedRosters={savedRosters} setSavedRosters={setSavedRosters}
                 onOpenTestModal={()=>setShowTestModal(true)}
                 afExclude={afExclude} setAfExclude={setAfExclude}
-                customSeed={customSeed} setCustomSeed={setCustomSeed}/>
+                customSeed={customSeed} setCustomSeed={setCustomSeed}
+                setExtShifts={setExtShifts} setEmpPatterns={setEmpPatterns}/>
             </div>
           )}
           {activeTab==="schedule"&&(
