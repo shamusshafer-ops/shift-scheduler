@@ -348,6 +348,12 @@ function computeWeekStats(schedule, employees, extShiftsArg) {
     });
   });
 
+  // Add ext shift hours (12h per body)
+  (extShiftsArg||[]).forEach(ext => {
+    if (ext.empAId && empHours[ext.empAId] !== undefined) empHours[ext.empAId] += EXT_SHIFT_HOURS;
+    if (ext.empBId && empHours[ext.empBId] !== undefined) empHours[ext.empBId] += EXT_SHIFT_HOURS;
+  });
+
   employees.forEach(e => {
     const h = empHours[e.id]||0;
     if (e.employmentType==="full-time" && h>40) totalOTHours += h-40;
@@ -5410,7 +5416,7 @@ function OTReliefPanel({ otReliefSuggestions, employees, schedule, extShifts, se
           </div>
         );
 }
-function CoverageDashboard({ employees, schedule, setSchedule, extShifts, setExtShifts, history, navigateToWeek, setActiveTab }) {
+function CoverageDashboard({ employees, schedule, setSchedule, extShifts, setExtShifts, history, navigateToWeek, setActiveTab, timeOffReqs, weekStart }) {
   const t = useTheme();
   const cfg = useSettings();
   const [quickFilling, setQuickFilling] = useState(null);
@@ -5424,6 +5430,7 @@ function CoverageDashboard({ employees, schedule, setSchedule, extShifts, setExt
         fatigueIssues: getFatigueIssues(e.id, schedule, cfg, employees).length };
     });
 
+    // Count regular shift hours
     let totalEmpty = 0, totalMissingRole = 0, totalPartial = 0, totalOk = 0;
 
     DAYS.forEach(day => {
@@ -5474,6 +5481,12 @@ function CoverageDashboard({ employees, schedule, setSchedule, extShifts, setExt
           }
         }
       });
+    });
+
+    // Add ext shift hours to empStats (12h per ext pair body)
+    (extShifts||[]).forEach(ext => {
+      if (ext.empAId && empStats[ext.empAId]) empStats[ext.empAId].hours += EXT_SHIFT_HOURS;
+      if (ext.empBId && empStats[ext.empBId]) empStats[ext.empBId].hours += EXT_SHIFT_HOURS;
     });
 
     gaps.sort((a,b) => b.severity - a.severity || slotIndex(a.day,a.shiftId) - slotIndex(b.day,b.shiftId));
@@ -5579,8 +5592,12 @@ function CoverageDashboard({ employees, schedule, setSchedule, extShifts, setExt
       .filter(e => {
         if (usedIds.has(e.id)) return false;
         if ((e.unavailableDays||[]).includes(day)) return false;
+        // B27: skip employees on approved time-off
+        if ((timeOffReqs||[]).some(r =>
+          r.empId===e.id && r.status==="approved" && timeOffCoversSlot(r, day, shiftId, weekStart)
+        )) return false;
         if (isRestViolation(e, calcRestGap(e.id,schedule,day,shiftId), cfg?.minRestHours??MIN_REST_HOURS)) return false;
-      if (calcConsecutiveHours(e.id,schedule,day,shiftId) > empMaxConsec(e)) return false;
+        if (calcConsecutiveHours(e.id,schedule,day,shiftId) > empMaxConsec(e)) return false;
         if (shiftId==="third" && calcConsecutiveNights(e.id,schedule,day,shiftId)>=(cfg?.maxConsecutiveNights??MAX_CONSECUTIVE_NIGHTS)) return false;
         return avail.some(p => e.qualifications.includes(p));
       })
@@ -6633,7 +6650,7 @@ function EmpPicker({emp,day,sid,st,assign,getPos,schedule,extShifts,timeOffReqs,
   const pos = getPos(emp,day,sid);
   if (!pos.length) return null;
 
-  const currentHours  = calcHours(emp.id, schedule);
+  const currentHours  = calcHours(emp.id, schedule, extShifts);
   const wouldBeOver   = emp.employmentType==="full-time" && currentHours>=40;
   const isUnavailable = (emp.unavailableDays||[]).includes(day);
   const restGap       = calcRestGap(emp.id, schedule, day, sid);
@@ -7336,7 +7353,7 @@ function ScheduleGrid({ employees, schedule, setSchedule, onOpenTestModal, pendi
     const shortRest = rest < (cfg?.minRestHours??MIN_REST_HOURS) && rest !== Infinity;
     const nights = s==="third" ? calcConsecutiveNights(dragEmp.id, schedule, d, s) : 0;
     const tooManyNights = nights >= (cfg?.maxConsecutiveNights??MAX_CONSECUTIVE_NIGHTS);
-    const currentHours = calcHours(dragEmp.id, schedule);
+    const currentHours = calcHours(dragEmp.id, schedule, extShifts);
     const wouldBeOver = dragEmp.employmentType==="full-time" && currentHours>=40;
     if (consecHDrag > empMaxConsec(dragEmp)) { setDragOver(null); return; }
     if (isUnavailable) warns.push(`${dragEmp.name} is marked unavailable on ${d}.`);
@@ -7963,7 +7980,7 @@ pos === "Scale" ? 0 : pos === "Medical" ? 1 : 2;
         background:t.surfaceAlt,border:"1px solid "+t.border,borderRadius:6}}>
         <span style={{fontSize:10,color:t.textDim,fontWeight:600,alignSelf:"center",marginRight:8}}>DRAG:</span>
         {stableEmpOrder.map(emp => {
-          const hours     = calcHours(emp.id, schedule);
+          const hours     = calcHours(emp.id, schedule, extShifts);
           const isFT      = emp.employmentType==="full-time";
           const fatigueN  = getFatigueIssues(emp.id, schedule, cfg, employees).length;
           const borderCol = fatigueN>0 ? t.fatigue : isFT&&hours>40 ? t.warning : t.border;
@@ -10412,7 +10429,7 @@ function ShiftSchedulerApp() {
     return result;
   },[schedule,extShifts]);
   const underHoursCount = useMemo(()=>
-    activeEmployees.filter(e=>e.employmentType==="full-time"&&calcHours(e.id,schedule)<FT_MIN_HOURS).length
+    activeEmployees.filter(e=>e.employmentType==="full-time"&&calcHours(e.id,schedule,extShifts||[])<FT_MIN_HOURS).length
   ,[activeEmployees,schedule]);
   const fatigueCount = useMemo(()=>
     activeEmployees.filter(e=>getFatigueIssues(e.id,schedule,cfg,activeEmployees).length>0).length
@@ -10866,7 +10883,8 @@ function ShiftSchedulerApp() {
             <CoverageDashboard employees={activeEmployees} schedule={schedule} setSchedule={setSchedule}
               extShifts={extShifts} setExtShifts={setExtShifts} history={history}
               navigateToWeek={(weekStartVal) => { setWeekStart(weekStartVal); setActiveTab("schedule"); }}
-              setActiveTab={(tab, hint) => { setActiveTab(tab); if(hint) setHighlightSlot(hint); }}/>
+              setActiveTab={(tab, hint) => { setActiveTab(tab); if(hint) setHighlightSlot(hint); }}
+              timeOffReqs={timeOffReqs} weekStart={weekStart}/>
           )}
           {activeTab==="timeoff"&&(
             <TimeOffManager
