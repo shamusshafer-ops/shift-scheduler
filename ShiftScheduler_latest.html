@@ -1416,13 +1416,7 @@ function buildAutoFill(sourceEmps, cfg, empTimeOffDays, empPatterns, extShiftsAr
     return worked >= emp.maxWeekendDays;
   };
 
-  const doTrack = (emp, asgn, assigned, day, isOnCall = false) => {
-    hourTracker[emp.id]  = (hourTracker[emp.id]  || 0) + SHIFT_HOURS;
-    shiftsWorked[emp.id] = (shiftsWorked[emp.id] || 0) + 1;
-    dayWorked[emp.id].add(day);
-    asgn.push({ employeeId: emp.id, position: pickPosition._lastPos, isOnCall: isOnCall || undefined });
-    assigned.add(emp.id);
-  };
+  // doTrack was removed — Steps 4/5/5b push assignments directly for clarity.
 
   // ── Step 4: FT makeup pass (planned-shift only, caps at 40h) ────────────
   // Find FT employees still under 40h and insert them into open slots on their
@@ -1439,6 +1433,11 @@ function buildAutoFill(sourceEmps, cfg, empTimeOffDays, empPatterns, extShiftsAr
         const regCount = asgn.length;
         if (regCount >= cap) continue;
         const assigned = slotAssigned(asgn, day, shift.id);
+
+        // Check if ext shifts already provide Scale/Medical for this slot (R3 fix)
+        const step4ActiveExts = (extShiftsArg||[]).filter(e => extCovers(e, day, shift.id));
+        const step4ExtScale   = step4ActiveExts.some(e => (e.roles||[]).includes("Scale"));
+        const step4ExtMedical = step4ActiveExts.some(e => (e.roles||[]).includes("Medical"));
 
         // Only consider FT employees whose PLANNED shift matches this slot
         const candidates = ftShort()
@@ -1465,9 +1464,24 @@ function buildAutoFill(sourceEmps, cfg, empTimeOffDays, empPatterns, extShiftsAr
           if (asgn.length >= cap) break;
           // Cap at exactly 40h — don't overfill FT beyond minimum
           if ((hourTracker[emp.id] || 0) >= FT_MIN_HOURS) continue;
-          const pos = pickPosition(emp, asgn, day, shift.id);
+          // Use ext-aware position picking: don't duplicate a role the ext shift already covers
+          const ap = getAvailPos(day, shift.id).filter(p => canFillPos(emp, p, day));
+          if (!ap.length) continue;
+          const nowHasScale   = slotHasRole(asgn, sourceEmps, "Scale")   || step4ExtScale;
+          const nowHasMedical = slotHasRole(asgn, sourceEmps, "Medical") || step4ExtMedical;
+          let pos;
+          if      (!nowHasScale   && ap.includes("Scale"))   pos = "Scale";
+          else if (!nowHasMedical && ap.includes("Medical")) pos = "Medical";
+          else if (ap.includes("Guard"))                     pos = "Guard";
+          else pos = ap[0];
           if (!pos) continue;
-          if (pos === "Guard" && !isGuardOnly(emp)) continue;
+          // Guard preference: prefer guard-only employees for Guard slots,
+          // but allow specialists to fill Guard if needed to reach 40h (Rule 1 must win).
+          // Only skip specialist for Guard if a guard-only employee is actually available.
+          const guardOnlyAvailForMakeup = pos === "Guard" && !isGuardOnly(emp) && candidates.some(c =>
+            c.id !== emp.id && isGuardOnly(c) && (hourTracker[c.id]||0) < FT_MIN_HOURS
+          );
+          if (guardOnlyAvailForMakeup) continue;
           if (weekendCapHit(emp, day)) continue;
           hourTracker[emp.id]  = (hourTracker[emp.id]  || 0) + SHIFT_HOURS;
           shiftsWorked[emp.id] = (shiftsWorked[emp.id] || 0) + 1;
@@ -1669,14 +1683,6 @@ function enforceBusinessRules(schedule, employees, extShifts) {
           rule: 3,
           level: "error",
           msg: `Rule 3 — ${dayLabel} ${shiftLabel}: no Medical assigned.`,
-        });
-      }
-      // "1 other" check: need at least 3 roles covered — Scale + Medical + one more body
-      if (hasScale && hasMedical && totalBodies < 3) {
-        violations.push({
-          rule: 3,
-          level: "error",
-          msg: `Rule 3 — ${dayLabel} ${shiftLabel}: Scale and Medical present but missing a 3rd person (Guard, 2nd Medic, or 2nd Scale).`,
         });
       }
     });
@@ -7432,6 +7438,11 @@ function ScheduleGrid({ employees, schedule, setSchedule, onOpenTestModal, pendi
         });
       });
     });
+    // Also count ext shift hours (12h per ext shift body)
+    (allExts||[]).forEach(ext => {
+      if (ext.empAId) hoursByEmp[ext.empAId] = (hoursByEmp[ext.empAId]||0) + EXT_SHIFT_HOURS;
+      if (ext.empBId) hoursByEmp[ext.empBId] = (hoursByEmp[ext.empBId]||0) + EXT_SHIFT_HOURS;
+    });
     (emps||employees).forEach(emp => {
       if (emp.employmentType !== "full-time") return;
       const h = hoursByEmp[emp.id] || 0;
@@ -7447,6 +7458,59 @@ function ScheduleGrid({ employees, schedule, setSchedule, onOpenTestModal, pendi
     const excludeSet = new Set(afExclude || []);
     const source = allSource.filter(e => !excludeSet.has(e.id));
     if (!source.length) return;
+
+    // ── Pre-flight feasibility check ─────────────────────────────────────────
+    // Warn the user before running if the roster structurally cannot satisfy
+    // the business rules, so they understand why violations will appear.
+    const feasibilityIssues = [];
+    const totalShifts = DAYS.length * SHIFTS.length; // 21 slots per week
+    const ftEmps = source.filter(e => e.employmentType === "full-time");
+    const scaleEmps  = source.filter(e => (e.qualifications||[]).includes("Scale"));
+    const medEmps    = source.filter(e => (e.qualifications||[]).includes("Medical"));
+    // Rule 2: need at least 3 available bodies per shift on average
+    const minBodiesNeeded = totalShifts * 3;
+    const shiftsPerFT = 5; // nominal 5-on-2-off
+    const estCoverage = ftEmps.length * shiftsPerFT + source.filter(e=>e.employmentType!=="full-time").length * 3;
+    if (estCoverage < minBodiesNeeded) {
+      feasibilityIssues.push(`Rule 2 risk — roster may not have enough staff to put 3 people on every shift. Need ~${Math.ceil(minBodiesNeeded/shiftsPerFT)} FT employees; have ${ftEmps.length} FT + ${source.length - ftEmps.length} PT/OC.`);
+    }
+    // Rule 3: need at least one Scale and one Medical qualified per shift
+    const scaleShiftsNeeded = SHIFTS.length; // 3 per day minimum
+    const medShiftsNeeded   = SHIFTS.length;
+    if (scaleEmps.length === 0) {
+      feasibilityIssues.push("Rule 3 — no Scale-qualified employees on roster. Every shift will be missing Scale.");
+    } else if (scaleEmps.length < scaleShiftsNeeded) {
+      feasibilityIssues.push(`Rule 3 risk — only ${scaleEmps.length} Scale-qualified employee${scaleEmps.length===1?"":"s"} for ${scaleShiftsNeeded} shifts/day. Some shifts may lack Scale coverage.`);
+    }
+    if (medEmps.length === 0) {
+      feasibilityIssues.push("Rule 3 — no Medical-qualified employees on roster. Every shift will be missing Medical.");
+    } else if (medEmps.length < medShiftsNeeded) {
+      feasibilityIssues.push(`Rule 3 risk — only ${medEmps.length} Medical-qualified employee${medEmps.length===1?"":"s"} for ${medShiftsNeeded} shifts/day. Some shifts may lack Medical coverage.`);
+    }
+    // Rule 1: check if FT employees can mathematically reach 40h
+    const ftUnreachable = ftEmps.filter(e => {
+      const unavailCount = (e.unavailableDays||[]).length;
+      const maxPossibleShifts = 7 - unavailCount;
+      return maxPossibleShifts * SHIFT_HOURS < FT_MIN_HOURS;
+    });
+    if (ftUnreachable.length > 0) {
+      ftUnreachable.forEach(e => {
+        const avail = 7 - (e.unavailableDays||[]).length;
+        feasibilityIssues.push(`Rule 1 — ${e.name} has ${avail} available day${avail===1?"":"s"} this week (${avail*SHIFT_HOURS}h max) — cannot reach 40h.`);
+      });
+    }
+
+    if (feasibilityIssues.length > 0) {
+      const proceed = window.confirm(
+        "⚠ ROSTER FEASIBILITY WARNING\n\n" +
+        "Auto-fill may produce rule violations because the current roster " +
+        "cannot satisfy all business rules:\n\n" +
+        feasibilityIssues.map(i => "• " + i).join("\n") +
+        "\n\nProceed with auto-fill anyway? Violations will be shown after."
+      );
+      if (!proceed) return;
+    }
+    // ── End pre-flight ────────────────────────────────────────────────────────
 
     const manualExtShifts = (extShifts||[]).filter(e => e.approvedAt !== "auto-fill");
     const {schedule:ns, hourTracker, usedPatterns} = buildAutoFill(source, cfg, empTimeOffDays, empPatterns, manualExtShifts);
@@ -7980,7 +8044,7 @@ pos === "Scale" ? 0 : pos === "Medical" ? 1 : 2;
                 return (
                   <div key={day}
                     ref={el => { if(el) cellRefs.current[cellKey(day,shift.id)] = el; }}
-                    onClick={()=>{ if(isReadOnly||swapSource||st.isFull) return; setEditingCell({day,shiftId:shift.id}); }}
+                    onClick={()=>{ if(isReadOnly||swapSource||subSource||st.isFull) return; setEditingCell({day,shiftId:shift.id}); }}
                     onDragEnter={e=>{if(isReadOnly||!dragEmpRef.current)return;e.preventDefault();e.currentTarget.style.borderColor=t.accent;e.currentTarget.style.boxShadow="0 0 0 2px "+t.accent+"40";}}
                     onDragOver={e=>{if(isReadOnly||!dragEmpRef.current)return;e.preventDefault();}}
                     onDragLeave={e=>{if(!e.currentTarget.contains(e.relatedTarget)){e.currentTarget.style.borderColor=borderColor;e.currentTarget.style.boxShadow="none";}}}
