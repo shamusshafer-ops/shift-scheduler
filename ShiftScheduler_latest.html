@@ -7204,14 +7204,9 @@ function ScheduleGrid({ employees, schedule, setSchedule, onOpenTestModal, pendi
     if (!hasScale) warns.push("Rule 3 — shift will have no Scale employee.");
     if (!hasMed)   warns.push("Rule 3 — shift will have no Medical employee.");
     if (warns.length > 0 && !window.confirm(
-      "⚠ Removing this person will create a rule violation:
-
-" +
-      warns.map(w=>"• "+w).join("
-") +
-      "
-
-Remove anyway?"
+      "\u26a0 Removing this person will create a rule violation:\n\n" +
+      warns.map(w=>"\u2022 "+w).join("\n") +
+      "\n\nRemove anyway?"
     )) return;
     setSchedule(p=>({...p,[key]:remaining}));
   };
