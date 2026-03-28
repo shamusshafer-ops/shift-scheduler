@@ -1429,6 +1429,32 @@ function buildAutoFill(sourceEmps, cfg, empTimeOffDays, empPatterns, extShiftsAr
       ? (specialistCount >= 2 ? 250 : 150)
       : 0;
 
+    // ── Scarcity Reserve Penalty ──────────────────────────────────────────────
+    // Prevent "Jacks-of-all-trades" from being wasted on Guard slots early in
+    // the week when their Medical/Scale qualifications are rare in the roster.
+    //
+    // Logic: for each specialist qualification (Scale, Medical) this employee holds,
+    // look up how many OTHER roster members share that qualification.  The fewer
+    // there are, the more irreplaceable this employee is for that role — so apply
+    // a proportionally stronger deterrent against placing them as a Guard.
+    //
+    //   sole provider  (1 emp)  → +400  (almost never waste them on Guard)
+    //   scarce         (2 emps) → +200  (strong preference to save them)
+    //   limited        (3 emps) → +133  (moderate push)
+    //   comfortable    (4 emps) → +100  (mild nudge — Guard assignment more OK)
+    //   abundant       (5+)     →  +80 or less (diminishing, Guard is fine)
+    //
+    // Stacks per scarce qualification, so Scale+Medical in a thin roster accumulates
+    // a very large penalty — exactly the "hold in reserve" behaviour wanted.
+    let scarcityReservePenalty = 0;
+    if (isGuardSlot && hasSpecialist) {
+      for (const q of ["Scale", "Medical"]) {
+        if (!quals.includes(q)) continue;
+        const poolSize = (qualGroups[q] || []).length;
+        if (poolSize > 0) scarcityReservePenalty += Math.round(400 / poolSize);
+      }
+    }
+
     // ── Weighted Soft Preferences ─────────────────────────────────────────────
     // Score is penalty-based: lower = higher priority. Bonuses are negative deltas.
 
@@ -1454,8 +1480,8 @@ function buildAutoFill(sourceEmps, cfg, empTimeOffDays, empPatterns, extShiftsAr
 
     const bottleneckPenalty = Math.min(empRemainingOptions(emp), 50) * 0.6;
     return onPlannedShift + onWorkDay + overworkPenalty + ptPenalty + ftOtPenalty + fairPenalty
-         - underHoursBoost + supWeekendPenalty + roleStretchPenalty + bottleneckPenalty
-         + preferredShiftBonus + rhythmBonus + overtimeRampPenalty;
+         - underHoursBoost + supWeekendPenalty + roleStretchPenalty + scarcityReservePenalty
+         + bottleneckPenalty + preferredShiftBonus + rhythmBonus + overtimeRampPenalty;
 
   };
 
