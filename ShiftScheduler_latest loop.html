@@ -8349,7 +8349,7 @@ function ScheduleGrid({ onOpenTestModal }) {
         <SchedulePopout onClose={()=>setShowPopout(false)}/>
       )}
       {showMinimize&&<MinimizeViolationsPanel onClose={()=>setShowMinimize(false)}/>}
-      {showCopyModal&&<CopyWeekModal onSave={saveWeek} onLoad={loadWeek} onDelete={deleteWeek} onClose={()=>setShowCopyModal(false)}/>}
+      {showCopyModal&&<CopyWeekModal onSave={handleSaveWeek} onLoad={handleLoadWeek} onDelete={handleDeleteWeek} onClose={()=>setShowCopyModal(false)}/>}
       {manualPairDay&&<ManualPairModal
         initialDay={manualPairDay}
         onApprove={approveManualPair}
