@@ -1459,6 +1459,108 @@ function buildAutoFill(sourceEmps, cfg, empTimeOffDays, empPatterns, extShiftsAr
 
   };
 
+  // ── Pre-Pass: FT-First Reservation ──────────────────────────────────────────
+  // Reserve FT_TARGET_SHIFTS (5 × 8 h = 40 h) for every full-time non-Supervisor
+  // employee BEFORE any PT or on-call body is placed.
+  //
+  // Why this matters: the greedy MRV slot-fill can saturate early-week slots with
+  // flexible employees, leaving no legal slots for FT staff by Friday/Saturday.
+  // This pre-pass "fills the employee" rather than "filling the slot" — locking
+  // each FT employee's full week first, then opening gaps to the rest of the roster.
+  //
+  // Order: most-constrained FT employee first (fewest domain options).
+  // Slot selection: most-constrained slot first (lowest slotDomainSize),
+  //   with planned work-day and preferred-shift as tie-breakers.
+  // After each placement forwardCheck narrows domains so subsequent employees
+  // see an accurate picture of what's still available.
+  // ────────────────────────────────────────────────────────────────────────────
+  {
+    const FT_TARGET_SHIFTS = FT_MIN_HOURS / SHIFT_HOURS; // 5
+
+    const ftNonSup = sourceEmps.filter(e =>
+      e.employmentType === "full-time" &&
+      !(e.qualifications||[]).includes("Supervisor")
+    );
+
+    // Most-constrained employee first
+    ftNonSup.sort((a, b) => empRemainingOptions(a) - empRemainingOptions(b));
+
+    let ftReserveHit = 0, ftReserveMiss = 0;
+
+    for (const emp of ftNonSup) {
+      let slotsNeeded = FT_TARGET_SHIFTS - (shiftsWorked[emp.id] || 0);
+      if (slotsNeeded <= 0) { ftReserveHit++; continue; }
+
+      const empPlan = plan[emp.id];
+
+      // Build ordered candidate list from the live domain matrix
+      const candidates = [];
+      for (const day of DAYS) {
+        if (dayWorked[emp.id].has(day)) continue;
+        for (const shift of SHIFTS) {
+          const key = cellKey(day, shift.id);
+          if (!domains[emp.id]?.[key]) continue; // domain gate (hard filters pre-applied)
+
+          const nonSupCount = (ns[key]||[]).filter(a => a.position !== "Supervisor").length;
+          if (nonSupCount >= slotCap(day, shift.id)) continue; // slot at capacity
+
+          if (isRestViolation(emp, calcRestGap(emp.id, ns, day, shift.id), minRest)) continue;
+          if (calcConsecutiveHours(emp.id, ns, day, shift.id, extShiftsArg) > empMaxConsec(emp)) continue;
+          if (shift.id === "third" && calcConsecutiveNights(emp.id, ns, day, shift.id) >= maxNights) continue;
+
+          const ap = getAvailPos(day, shift.id).filter(p => canFillPos(emp, p, day));
+          if (!ap.length) continue;
+
+          const isPlannedDay  = empPlan?.workDays.has(day)            ? 0 : 1; // 0 = preferred
+          const isPrefShift   = (emp.preferredShifts||[]).includes(shift.id) ? 0 : 1;
+          const slotConstraint = slotDomainSize(key); // lower = harder to fill → claim first
+
+          candidates.push({ day, shift, key, ap, isPlannedDay, isPrefShift, slotConstraint });
+        }
+      }
+
+      // Sort: hardest slot first; planned day > preferred shift as tie-breakers
+      candidates.sort((a, b) =>
+        a.slotConstraint - b.slotConstraint ||
+        a.isPlannedDay   - b.isPlannedDay   ||
+        a.isPrefShift    - b.isPrefShift
+      );
+
+      for (const { day, shift, key, ap } of candidates) {
+        if (slotsNeeded <= 0) break;
+        if (dayWorked[emp.id].has(day)) continue; // re-check after prior placements
+
+        // Re-check capacity (a prior iteration within this employee's loop may have filled it)
+        const nonSupCount = (ns[key]||[]).filter(a => a.position !== "Supervisor").length;
+        if (nonSupCount >= slotCap(day, shift.id)) continue;
+
+        // Pick position: fill missing critical roles first
+        const asgn = ns[key] || [];
+        const nowHasScale   = slotHasRole(asgn, sourceEmps, "Scale");
+        const nowHasMedical = slotHasRole(asgn, sourceEmps, "Medical");
+        let pos;
+        if      (!nowHasScale   && ap.includes("Scale"))   pos = "Scale";
+        else if (!nowHasMedical && ap.includes("Medical")) pos = "Medical";
+        else if (ap.includes("Guard"))                     pos = "Guard";
+        else pos = ap[0];
+
+        ns[key] = [...asgn, { employeeId: emp.id, position: pos }];
+        hourTracker[emp.id]  = (hourTracker[emp.id]  || 0) + SHIFT_HOURS;
+        shiftsWorked[emp.id] = (shiftsWorked[emp.id] || 0) + 1;
+        dayWorked[emp.id].add(day);
+        forwardCheck(emp, day);
+        slotsNeeded--;
+      }
+
+      if (slotsNeeded <= 0) ftReserveHit++; else ftReserveMiss++;
+    }
+
+    console.log(
+      `[FT-Reserve] ${ftReserveHit}/${ftNonSup.length} FT employees fully reserved to ${FT_TARGET_SHIFTS} shifts` +
+      (ftReserveMiss > 0 ? ` — ${ftReserveMiss} fell short (domain too constrained)` : " ✓")
+    );
+  }
+
   // ── Step 3: CSP fill — process most-constrained slots first (MRV) ─────────
   // Snapshot domain sizes before any assignments, sort 21 slots ascending.
   // Slots with the fewest eligible (emp, position) pairs are filled first —
