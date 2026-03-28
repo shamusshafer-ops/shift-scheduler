@@ -11003,18 +11003,31 @@ function ShiftSchedulerApp() {
     document.addEventListener("mousedown",h);
     return()=>document.removeEventListener("mousedown",h);
   },[covOpen]);
+  // S&M dual-role helper: an employee assigned as Scale or Medical who holds BOTH
+  // qualifications implicitly covers the complementary role in the same slot.
+  // Used by coverage-gap memos so S&M assignments don't generate false positives.
+  const slotSMDualCoverage = useCallback((a) =>
+    a.some(x => {
+      const emp = employees.find(e => e.id === x.employeeId);
+      return emp &&
+        (emp.qualifications||[]).includes("Scale") &&
+        (emp.qualifications||[]).includes("Medical") &&
+        (x.position === "Scale" || x.position === "Medical");
+    }), [employees]);
+
   const unmetReqs = useMemo(()=>{
     let c=0;
     DAYS.forEach(d=>SHIFTS.forEach(s=>{
       const a=schedule[cellKey(d,s.id)]||[];
       if(!a.length) return;
-      const cellExt   = (extShifts||[]).filter(e=>extCovers(e,d,s.id));
-      const hasScale  = a.some(x=>x.position==="Scale")  || cellExt.some(e=>(e.roles||[]).includes("Scale"));
-      const hasMedical= a.some(x=>x.position==="Medical")|| cellExt.some(e=>(e.roles||[]).includes("Medical"));
-      if(!hasScale||!hasMedical) c++;
+      const cellExt    = (extShifts||[]).filter(e=>extCovers(e,d,s.id));
+      const hasScale   = a.some(x=>x.position==="Scale")   || cellExt.some(e=>(e.roles||[]).includes("Scale"));
+      const hasMedical = a.some(x=>x.position==="Medical") || cellExt.some(e=>(e.roles||[]).includes("Medical"));
+      const smDual     = (!hasScale || !hasMedical) && slotSMDualCoverage(a);
+      if(!(hasScale||smDual) || !(hasMedical||smDual)) c++;
     }));
     return c;
-  },[schedule,extShifts]);
+  },[schedule,extShifts,slotSMDualCoverage]);
 
   const coverageIssueSlots = useMemo(()=>{
     const result=[];
@@ -11022,15 +11035,18 @@ function ShiftSchedulerApp() {
       const a=schedule[cellKey(d,s.id)]||[];
       if(!a.length) return;
       const cellExt    = (extShifts||[]).filter(e=>extCovers(e,d,s.id));
-      const hasScale   = a.some(x=>x.position==="Scale")  || cellExt.some(e=>(e.roles||[]).includes("Scale"));
-      const hasMedical = a.some(x=>x.position==="Medical")|| cellExt.some(e=>(e.roles||[]).includes("Medical"));
-      if(!hasScale||!hasMedical){
-        const missing=[...(!hasScale?["Scale"]:[]),...(!hasMedical?["Medical"]:[])];
+      const hasScale   = a.some(x=>x.position==="Scale")   || cellExt.some(e=>(e.roles||[]).includes("Scale"));
+      const hasMedical = a.some(x=>x.position==="Medical") || cellExt.some(e=>(e.roles||[]).includes("Medical"));
+      const smDual     = (!hasScale || !hasMedical) && slotSMDualCoverage(a);
+      const effScale   = hasScale   || smDual;
+      const effMedical = hasMedical || smDual;
+      if(!effScale||!effMedical){
+        const missing=[...(!effScale?["Scale"]:[]),...(!effMedical?["Medical"]:[])];
         result.push({day:d,shiftId:s.id,shiftLabel:s.label,missing});
       }
     }));
     return result;
-  },[schedule,extShifts]);
+  },[schedule,extShifts,slotSMDualCoverage]);
   const underHoursCount = useMemo(()=>
     employees.filter(e=>e.employmentType==="full-time"&&calcHours(e.id,schedule)<FT_MIN_HOURS).length
   ,[employees,schedule]);
