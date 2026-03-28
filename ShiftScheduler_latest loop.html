@@ -1903,6 +1903,164 @@ function buildAutoFill(sourceEmps, cfg, empTimeOffDays, empPatterns, extShiftsAr
     }
   }
 
+  // ── Step 5d: Directed Local Search (Smart Swapping) ─────────────────────────
+  // When a slot is still missing Scale or Medical after 5c, and no fresh employee
+  // is available (all qualified staff are already at cap or scheduled elsewhere),
+  // attempt a targeted 2-hop chain swap:
+  //   1. Find a qualified employee already scheduled in a DIFFERENT slot that week.
+  //   2. Check whether a substitute (Guard or other eligible body) can take their
+  //      current slot — keeping that slot's headcount and roles intact.
+  //   3. If yes: move the qualified employee to the gap, put the sub in their old slot.
+  // Hours/shifts/dayWorked are updated to reflect the swap so all downstream
+  // tracking remains consistent.
+  {
+    const MAX_DLS_PASSES = 3; // re-scan after each swap in case one swap unlocks another
+
+    const slotMissingRoles = () => {
+      const gaps = [];
+      for (const day of DAYS) {
+        for (const shift of SHIFTS) {
+          const key  = cellKey(day, shift.id);
+          const asgn = ns[key] || [];
+          if (!asgn.length) continue;
+          const activeExts = (extShiftsArg||[]).filter(e => extCovers(e, day, shift.id));
+          const hasScale   = slotHasRole(asgn, sourceEmps, "Scale")   || activeExts.some(e=>(e.roles||[]).includes("Scale"));
+          const hasMedical = slotHasRole(asgn, sourceEmps, "Medical") || activeExts.some(e=>(e.roles||[]).includes("Medical"));
+          if (!hasScale)   gaps.push({ day, shift, key, role: "Scale"   });
+          if (!hasMedical) gaps.push({ day, shift, key, role: "Medical" });
+        }
+      }
+      return gaps;
+    };
+
+    for (let pass = 0; pass < MAX_DLS_PASSES; pass++) {
+      const gaps = slotMissingRoles();
+      if (!gaps.length) break;
+      let swappedThisPass = false;
+
+      for (const { day: gapDay, shift: gapShift, key: gapKey, role: neededRole } of gaps) {
+        const gapAsgn = ns[gapKey] || [];
+        const cap     = slotCap(gapDay, gapShift.id);
+
+        // ── Find a donor: qualified employee already assigned somewhere else ──
+        let swapDone = false;
+        for (const donor of sourceEmps) {
+          if (swapDone) break;
+          if (!(donor.qualifications||[]).includes(neededRole)) continue;
+          if ((donor.unavailableDays||[]).includes(gapDay)) continue;
+          if (empTimeOffDays && empTimeOffDays.has(donor.id + "__" + gapDay)) continue;
+          if ((donor.blockedShifts||[]).includes(gapShift.id)) continue;
+          if (donor.requiredShift && donor.requiredShift !== gapShift.id) continue;
+          if (isRestViolation(donor, calcRestGap(donor.id, ns, gapDay, gapShift.id), minRest)) continue;
+          if (calcConsecutiveHours(donor.id, ns, gapDay, gapShift.id, extShiftsArg) > empMaxConsec(donor)) continue;
+
+          // Already filling the gap slot? Skip.
+          if (gapAsgn.some(a => a.employeeId === donor.id)) continue;
+
+          // Find the donor's current scheduled slot this week (any day/shift)
+          let donorSourceKey = null, donorSourceDay = null, donorSourceShift = null;
+          for (const d of DAYS) {
+            if (donorSourceKey) break;
+            for (const s of SHIFTS) {
+              const k = cellKey(d, s.id);
+              if ((ns[k]||[]).some(a => a.employeeId === donor.id)) {
+                donorSourceKey   = k;
+                donorSourceDay   = d;
+                donorSourceShift = s;
+                break;
+              }
+            }
+          }
+          if (!donorSourceKey) continue; // donor not scheduled at all — should be caught by earlier passes
+
+          // Same slot as the gap? Would be a no-op.
+          if (donorSourceKey === gapKey) continue;
+
+          // ── Find a substitute who can cover the donor's vacated slot ──
+          const donorSourceAsgn = ns[donorSourceKey] || [];
+          const donorEntry      = donorSourceAsgn.find(a => a.employeeId === donor.id);
+          const vacatedPosition = donorEntry?.position || "Guard";
+
+          // The sub must be able to fill the vacated position (or Guard as fallback)
+          // and must not already be in that slot or exceed their constraints.
+          const sub = sourceEmps.find(sub => {
+            if (sub.id === donor.id) return false;
+            if (donorSourceAsgn.some(a => a.employeeId === sub.id)) return false;
+            if ((sub.unavailableDays||[]).includes(donorSourceDay)) return false;
+            if (empTimeOffDays && empTimeOffDays.has(sub.id + "__" + donorSourceDay)) return false;
+            if ((sub.blockedShifts||[]).includes(donorSourceShift.id)) return false;
+            if (sub.requiredShift && sub.requiredShift !== donorSourceShift.id) return false;
+            // Check the sub can fill the vacated role (or at least Guard)
+            const subAp = getAvailPos(donorSourceDay, donorSourceShift.id).filter(p => canFillPos(sub, p, donorSourceDay));
+            if (!subAp.includes(vacatedPosition) && !subAp.includes("Guard")) return false;
+            if (isRestViolation(sub, calcRestGap(sub.id, ns, donorSourceDay, donorSourceShift.id), minRest)) return false;
+            if (calcConsecutiveHours(sub.id, ns, donorSourceDay, donorSourceShift.id, extShiftsArg) > empMaxConsec(sub)) return false;
+            // Respect weekly shift cap
+            const subCap = sub.maxShiftsPerWeek;
+            if (subCap !== null && subCap !== undefined && (shiftsWorked[sub.id]||0) >= subCap) return false;
+            return true;
+          });
+
+          if (!sub) continue; // can't free this donor without leaving their slot uncovered
+
+          // ── Perform the swap ──
+          const subAp = getAvailPos(donorSourceDay, donorSourceShift.id).filter(p => canFillPos(sub, p, donorSourceDay));
+          const subPos = subAp.includes(vacatedPosition) ? vacatedPosition : (subAp.includes("Guard") ? "Guard" : subAp[0]);
+
+          // Remove donor from source slot, insert sub
+          ns[donorSourceKey] = donorSourceAsgn
+            .filter(a => a.employeeId !== donor.id)
+            .concat({ employeeId: sub.id, position: subPos });
+
+          // Add donor to gap slot (or replace a Guard-only body if slot is full)
+          if (gapAsgn.length < cap) {
+            ns[gapKey] = [...gapAsgn, { employeeId: donor.id, position: neededRole }];
+          } else {
+            // Slot is full — swap out a Guard-only body to make room
+            const evictIdx = gapAsgn.findIndex(a => {
+              const e = sourceEmps.find(x => x.id === a.employeeId);
+              return e && isGuardOnly(e);
+            });
+            if (evictIdx === -1) {
+              // Can't evict anyone — undo source-slot change and move on
+              ns[donorSourceKey] = donorSourceAsgn;
+              continue;
+            }
+            const evicted = gapAsgn[evictIdx];
+            const evictedEmp = sourceEmps.find(x => x.id === evicted.employeeId);
+            ns[gapKey] = [
+              ...gapAsgn.slice(0, evictIdx),
+              { employeeId: donor.id, position: neededRole },
+              ...gapAsgn.slice(evictIdx + 1),
+            ];
+            // Update hour/shift tracking for evicted employee
+            if (evictedEmp) {
+              hourTracker[evictedEmp.id]   = Math.max(0, (hourTracker[evictedEmp.id]||0)   - SHIFT_HOURS);
+              shiftsWorked[evictedEmp.id]  = Math.max(0, (shiftsWorked[evictedEmp.id]||0)  - 1);
+              dayWorked[evictedEmp.id]?.delete(gapDay);
+            }
+          }
+
+          // Update hour/shift tracking for donor (source → gap, same total hours)
+          hourTracker[donor.id]  = (hourTracker[donor.id]||0); // net change = 0
+          shiftsWorked[donor.id] = (shiftsWorked[donor.id]||0); // net = 0 (removed from one, added to another)
+          dayWorked[donor.id]?.delete(donorSourceDay);
+          dayWorked[donor.id]?.add(gapDay);
+
+          // Update hour/shift tracking for sub (new assignment)
+          hourTracker[sub.id]   = (hourTracker[sub.id]||0)  + SHIFT_HOURS;
+          shiftsWorked[sub.id]  = (shiftsWorked[sub.id]||0) + 1;
+          (dayWorked[sub.id] = dayWorked[sub.id] || new Set()).add(donorSourceDay);
+
+          console.log(`[DLS] Swap: ${donor.name} freed from ${donorSourceDay}/${donorSourceShift.id} → fills ${neededRole} on ${gapDay}/${gapShift.id} | Sub: ${sub.name} covers vacated slot`);
+          swapDone        = true;
+          swappedThisPass = true;
+        }
+      }
+      if (!swappedThisPass) break; // no progress — stop scanning
+    }
+  }
+
   // Capture each FT employee's blockStart + shiftId for week-to-week continuity.
   // Only FT employees get rotation-tracked; PT and on-call are fill-as-available.
   const usedPatterns = {};
