@@ -1890,6 +1890,133 @@ function buildAutoFill(sourceEmps, cfg, empTimeOffDays, empPatterns, extShiftsAr
   // Step 5b: On-call fill — last resort
   fillPass("on-call", { shiftLocked: false, isOnCall: true });
 
+  // ── Step 5e: Ripple Effect Cascade ───────────────────────────────────────────
+  // When FT employees are still under 40h after all fill passes, cascade-displace
+  // PT/OC employees from filled slots to make room, then relocate the displaced
+  // body to a vacant slot elsewhere — so the FT guarantee is met without leaving
+  // the displaced employee stranded (their hours stay the same, just different day).
+  //
+  // 1-hop ripple per iteration; up to MAX_RIPPLE_PASSES sweeps.
+  // Runs before role-enforcement (5c) and DLS (5d) so they can repair any
+  // role-coverage side-effects the ripple creates.
+  {
+    const MAX_RIPPLE_PASSES = 3;
+
+    for (let pass = 0; pass < MAX_RIPPLE_PASSES; pass++) {
+      const underFT = sourceEmps
+        .filter(e => e.employmentType === "full-time" &&
+                     !(e.qualifications||[]).includes("Supervisor") &&
+                     (hourTracker[e.id]||0) < FT_MIN_HOURS)
+        .sort((a, b) => (hourTracker[a.id]||0) - (hourTracker[b.id]||0)); // most under-hours first
+
+      if (!underFT.length) break;
+      let rippleThisPass = false;
+
+      for (const ftEmp of underFT) {
+        if ((hourTracker[ftEmp.id]||0) >= FT_MIN_HOURS) continue;
+        const empPlan = plan[ftEmp.id];
+        let ripped = false;
+
+        for (const day of DAYS) {
+          if (ripped) break;
+          if (dayWorked[ftEmp.id].has(day)) continue; // already working this day
+
+          for (const shift of SHIFTS) {
+            if (ripped) break;
+            // FT employees stay on their planned shift
+            if (empPlan && shift.id !== empPlan.shiftId) continue;
+
+            const key  = cellKey(day, shift.id);
+            const asgn = ns[key] || [];
+            if (!asgn.length) continue; // nothing to displace
+
+            // FT employee must be eligible for this slot
+            if ((ftEmp.unavailableDays||[]).includes(day)) continue;
+            if (empTimeOffDays && empTimeOffDays.has(ftEmp.id + "__" + day)) continue;
+            if (isRestViolation(ftEmp, calcRestGap(ftEmp.id, ns, day, shift.id), minRest)) continue;
+            if (calcConsecutiveHours(ftEmp.id, ns, day, shift.id, extShiftsArg) > empMaxConsec(ftEmp)) continue;
+            if (shift.id === "third" && calcConsecutiveNights(ftEmp.id, ns, day, shift.id) >= maxNights) continue;
+            const ftAp = getAvailPos(day, shift.id).filter(p => canFillPos(ftEmp, p, day));
+            if (!ftAp.length) continue;
+
+            // Find a PT or on-call employee in this slot to displace
+            const displaceIdx = asgn.findIndex(a => {
+              const e = sourceEmps.find(x => x.id === a.employeeId);
+              return e && (e.employmentType === "part-time" || e.employmentType === "on-call");
+            });
+            if (displaceIdx === -1) continue;
+
+            const displaced    = asgn[displaceIdx];
+            const displacedEmp = sourceEmps.find(x => x.id === displaced.employeeId);
+            if (!displacedEmp) continue;
+
+            // Find a valid vacant (or under-capacity) slot to relocate the displaced employee
+            let relocateKey = null, relocateDay = null, relocateShift = null, relocatePos = null;
+
+            for (const rDay of DAYS) {
+              if (relocateKey) break;
+              if (rDay === day) continue; // skip same day (employee just worked it)
+              if (dayWorked[displacedEmp.id].has(rDay)) continue; // already working this day
+              for (const rShift of SHIFTS) {
+                if (relocateKey) break;
+                const rKey   = cellKey(rDay, rShift.id);
+                const rAsgn  = ns[rKey] || [];
+                const rCount = rAsgn.filter(a => a.position !== "Supervisor").length;
+                if (rCount >= slotCap(rDay, rShift.id)) continue; // slot full
+                if ((displacedEmp.unavailableDays||[]).includes(rDay)) continue;
+                if (empTimeOffDays && empTimeOffDays.has(displacedEmp.id + "__" + rDay)) continue;
+                if ((displacedEmp.blockedShifts||[]).includes(rShift.id)) continue;
+                if (displacedEmp.requiredShift && displacedEmp.requiredShift !== rShift.id) continue;
+                if (isRestViolation(displacedEmp, calcRestGap(displacedEmp.id, ns, rDay, rShift.id), minRest)) continue;
+                if (calcConsecutiveHours(displacedEmp.id, ns, rDay, rShift.id, extShiftsArg) > empMaxConsec(displacedEmp)) continue;
+                const rAp = getAvailPos(rDay, rShift.id).filter(p => canFillPos(displacedEmp, p, rDay));
+                if (!rAp.length) continue;
+                relocateKey   = rKey;
+                relocateDay   = rDay;
+                relocateShift = rShift;
+                relocatePos   = rAp.includes("Guard") ? "Guard" : rAp[0];
+              }
+            }
+
+            if (!relocateKey) continue; // nowhere to put the displaced employee — skip
+
+            // Determine position for FT employee taking the vacated slot
+            const remainingAsgn = asgn.filter((_, i) => i !== displaceIdx);
+            const nowHasScale   = slotHasRole(remainingAsgn, sourceEmps, "Scale");
+            const nowHasMedical = slotHasRole(remainingAsgn, sourceEmps, "Medical");
+            let ftPos;
+            if      (!nowHasScale   && ftAp.includes("Scale"))   ftPos = "Scale";
+            else if (!nowHasMedical && ftAp.includes("Medical")) ftPos = "Medical";
+            else if (ftAp.includes("Guard"))                     ftPos = "Guard";
+            else ftPos = ftAp[0];
+
+            // ── Perform the ripple ──
+            // Remove displaced PT/OC from original slot, insert FT employee
+            ns[key] = [...remainingAsgn, { employeeId: ftEmp.id, position: ftPos }];
+            hourTracker[displacedEmp.id]  = Math.max(0, (hourTracker[displacedEmp.id]||0) - SHIFT_HOURS);
+            shiftsWorked[displacedEmp.id] = Math.max(0, (shiftsWorked[displacedEmp.id]||0) - 1);
+            dayWorked[displacedEmp.id]?.delete(day);
+
+            // Place displaced PT/OC in their new slot
+            ns[relocateKey] = [...(ns[relocateKey]||[]), { employeeId: displacedEmp.id, position: relocatePos }];
+            hourTracker[displacedEmp.id]  = (hourTracker[displacedEmp.id]||0) + SHIFT_HOURS;
+            shiftsWorked[displacedEmp.id] = (shiftsWorked[displacedEmp.id]||0) + 1;
+            (dayWorked[displacedEmp.id] = dayWorked[displacedEmp.id] || new Set()).add(relocateDay);
+
+            // Update FT employee tracking
+            hourTracker[ftEmp.id]  = (hourTracker[ftEmp.id]||0) + SHIFT_HOURS;
+            shiftsWorked[ftEmp.id] = (shiftsWorked[ftEmp.id]||0) + 1;
+            dayWorked[ftEmp.id].add(day);
+
+            console.log(`[Ripple] ${ftEmp.name} (FT, ${hourTracker[ftEmp.id]}h) takes ${day}/${shift.id} from ${displacedEmp.name} → ${displacedEmp.name} relocated to ${relocateDay}/${relocateShift.id}`);
+            ripped = rippleThisPass = true;
+          }
+        }
+      }
+      if (!rippleThisPass) break;
+    }
+  }
+
   // ── Step 5c: Role-enforcement swap pass ───────────────────────────────────
   // Business rule: every shift MUST have Scale AND Medical coverage.
   // If a slot is full but missing a required role, swap out a Guard-only body
