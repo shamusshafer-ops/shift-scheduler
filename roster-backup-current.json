@@ -1,11 +1,11 @@
 {
   "_meta": {
-    "version": "v35.2",
+    "version": "v35.2-csp",
     "exportedAt": "2026-03-28T12:51:07.815Z",
     "convertedAt": "2026-03-28",
     "originalVersion": "v34.2",
     "employeeCount": 15,
-    "label": "ShiftScheduler Full Backup"
+    "label": "ShiftScheduler Full Backup (CSP autofill)"
   },
   "data": {
     "shift_employees": [
