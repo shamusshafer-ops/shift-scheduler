@@ -1429,8 +1429,33 @@ function buildAutoFill(sourceEmps, cfg, empTimeOffDays, empPatterns, extShiftsAr
       ? (specialistCount >= 2 ? 250 : 150)
       : 0;
 
+    // ── Weighted Soft Preferences ─────────────────────────────────────────────
+    // Score is penalty-based: lower = higher priority. Bonuses are negative deltas.
+
+    // +100 preferred-shift bonus: reward placements that match the employee's
+    // declared preferredShifts list.  Applies to both FT and PT employees.
+    const prefShifts = emp.preferredShifts || [];
+    const preferredShiftBonus = prefShifts.includes(shiftId) ? -100 : 0;
+
+    // +50 consecutive-day rhythm bonus: reward placements that continue an
+    // active work streak (1–4 days so far this week), nudging the scheduler
+    // to keep employees on a natural 5-on/2-off rhythm rather than scattering
+    // their shifts across non-consecutive days.
+    const rhythmBonus = (consec >= 1 && consec <= 4 && (empPlan ? empPlan.workDays.has(day) : true))
+      ? -50 : 0;
+
+    // -200 approaching-overtime soft ramp: once an FT employee exceeds 32 hours
+    // (4 shifts), apply a growing penalty that ramps toward the hard 40h wall.
+    // This spreads scheduling pressure earlier so the algorithm avoids backing
+    // into corners where the only remaining options are already-OT employees.
+    // At 40h exactly the ramp adds 80pts — the hard ftOtPenalty (600) takes over.
+    const hoursOverSoftCap   = isFT ? Math.max(0, myHours - 32) : 0;
+    const overtimeRampPenalty = hoursOverSoftCap * 10; // +10/hr above 32h → max +80 at 40h
+
     const bottleneckPenalty = Math.min(empRemainingOptions(emp), 50) * 0.6;
-    return onPlannedShift + onWorkDay + overworkPenalty + ptPenalty + ftOtPenalty + fairPenalty - underHoursBoost + supWeekendPenalty + roleStretchPenalty + bottleneckPenalty;
+    return onPlannedShift + onWorkDay + overworkPenalty + ptPenalty + ftOtPenalty + fairPenalty
+         - underHoursBoost + supWeekendPenalty + roleStretchPenalty + bottleneckPenalty
+         + preferredShiftBonus + rhythmBonus + overtimeRampPenalty;
 
   };
 
