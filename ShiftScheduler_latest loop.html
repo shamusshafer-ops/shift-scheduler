@@ -1505,11 +1505,19 @@ function buildAutoFill(sourceEmps, cfg, empTimeOffDays, empPatterns, extShiftsAr
 
       const empPlan = plan[emp.id];
 
-      // Build ordered candidate list from the live domain matrix
+      // Build ordered candidate list from the live domain matrix.
+      // Restrict to the employee's planned shift + planned work days so the pre-pass
+      // mirrors the original plan-based schedule exactly — just reserves it upfront
+      // before any PT/OC body can claim the slot.
       const candidates = [];
       for (const day of DAYS) {
         if (dayWorked[emp.id].has(day)) continue;
+        // Hard constraint: FT employees stay on their planned work days in the pre-pass.
+        // Off-plan days are still reachable by the makeup pass (Step 4) if needed.
+        if (empPlan && !empPlan.workDays.has(day)) continue;
         for (const shift of SHIFTS) {
+          // Hard constraint: FT employees stay on their planned shift in the pre-pass.
+          if (empPlan && shift.id !== empPlan.shiftId) continue;
           const key = cellKey(day, shift.id);
           if (!domains[emp.id]?.[key]) continue; // domain gate (hard filters pre-applied)
 
@@ -1523,20 +1531,13 @@ function buildAutoFill(sourceEmps, cfg, empTimeOffDays, empPatterns, extShiftsAr
           const ap = getAvailPos(day, shift.id).filter(p => canFillPos(emp, p, day));
           if (!ap.length) continue;
 
-          const isPlannedDay  = empPlan?.workDays.has(day)            ? 0 : 1; // 0 = preferred
-          const isPrefShift   = (emp.preferredShifts||[]).includes(shift.id) ? 0 : 1;
           const slotConstraint = slotDomainSize(key); // lower = harder to fill → claim first
-
-          candidates.push({ day, shift, key, ap, isPlannedDay, isPrefShift, slotConstraint });
+          candidates.push({ day, shift, key, ap, slotConstraint });
         }
       }
 
-      // Sort: hardest slot first; planned day > preferred shift as tie-breakers
-      candidates.sort((a, b) =>
-        a.slotConstraint - b.slotConstraint ||
-        a.isPlannedDay   - b.isPlannedDay   ||
-        a.isPrefShift    - b.isPrefShift
-      );
+      // Sort: hardest slot first (lowest slotDomainSize = fewest eligible employees)
+      candidates.sort((a, b) => a.slotConstraint - b.slotConstraint);
 
       for (const { day, shift, key, ap } of candidates) {
         if (slotsNeeded <= 0) break;
