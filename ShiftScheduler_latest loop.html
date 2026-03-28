@@ -1459,6 +1459,18 @@ function buildAutoFill(sourceEmps, cfg, empTimeOffDays, empPatterns, extShiftsAr
 
   };
 
+  // Slot cap: maximum regular (non-Supervisor) bodies for a given slot,
+  // reduced by any ext-shift bodies already covering that slot.
+  // Hoisted here so both the FT-First Pre-Pass and Steps 4/5/5b can use it.
+  const slotCap = (day, shiftId) =>
+    Math.max(0, REGULAR_SLOTS(day, shiftId) -
+      (extShiftsArg||[]).reduce((n, ext) => {
+        const pair = EXT_PAIRS.find(p => p.id === ext.pairId);
+        if (!pair) return n;
+        const idx = pair.covers.indexOf(shiftId);
+        return n + ((idx === 0 ? !!ext.empAId : idx === 1 ? !!ext.empBId : false) ? 1 : 0);
+      }, 0));
+
   // ── Pre-Pass: FT-First Reservation ──────────────────────────────────────────
   // Reserve FT_TARGET_SHIFTS (5 × 8 h = 40 h) for every full-time non-Supervisor
   // employee BEFORE any PT or on-call body is placed.
@@ -1853,15 +1865,6 @@ function buildAutoFill(sourceEmps, cfg, empTimeOffDays, empPatterns, extShiftsAr
   // fill pass: computing the effective slot cap, building the assigned-set
   // (including ext-shift bodies), picking the best position (Scale→Medical→Guard),
   // and updating all tracking state after a placement.
-
-  const slotCap = (day, shiftId) =>
-    Math.max(0, REGULAR_SLOTS(day, shiftId) -
-      (extShiftsArg||[]).reduce((n, ext) => {
-        const pair = EXT_PAIRS.find(p => p.id === ext.pairId);
-        if (!pair) return n;
-        const idx = pair.covers.indexOf(shiftId);
-        return n + ((idx === 0 ? !!ext.empAId : idx === 1 ? !!ext.empBId : false) ? 1 : 0);
-      }, 0));
 
   const slotAssigned = (asgn, day, shiftId) => {
     const s = new Set(asgn.map(a => a.employeeId));
