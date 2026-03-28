@@ -4996,6 +4996,7 @@ function EmployeeManager({ onOpenTestModal }) {
   const [confirmClearAll,   setConfirmClearAll]   = useState(false);
   const [confirmSeedRoster, setConfirmSeedRoster] = useState(false);
   const [showAddForm,       setShowAddForm]       = useState(false);
+  const [confirmDeleteEmp,  setConfirmDeleteEmp]  = useState(null); // empId pending delete
 
   useEffect(() => {
     const handler = (e) => {
@@ -5348,10 +5349,22 @@ function EmployeeManager({ onOpenTestModal }) {
                         padding:"2px 6px",borderRadius:4,whiteSpace:"nowrap"}}>
                       {(afExclude||[]).includes(emp.id)?"⊘":"⚡"}
                     </button>
-                    <button onClick={e=>{e.stopPropagation();deleteEmployee(emp.id);}}
-                      style={{background:"transparent",border:"none",color:"var(--ss-text-dim)",
-                        cursor:"pointer",fontSize:12,padding:"2px 4px"}}
-                      title="Remove employee">✕</button>
+                    {confirmDeleteEmp===emp.id ? (
+                      <div style={{display:"flex",gap:4,alignItems:"center"}} onClick={e=>e.stopPropagation()}>
+                        <span style={{fontSize:10,color:"var(--ss-danger)",fontWeight:600,whiteSpace:"nowrap"}}>Remove?</span>
+                        <button onClick={()=>{removeEmployee(emp.id);setConfirmDeleteEmp(null);}}
+                          style={{background:"var(--ss-danger)",color:"#fff",border:"none",padding:"2px 8px",
+                            borderRadius:4,cursor:"pointer",fontSize:11,fontWeight:700,fontFamily:"inherit"}}>YES</button>
+                        <button onClick={()=>setConfirmDeleteEmp(null)}
+                          style={{background:"transparent",color:"var(--ss-text-muted)",border:"1px solid var(--ss-border)",
+                            padding:"2px 8px",borderRadius:4,cursor:"pointer",fontSize:11,fontFamily:"inherit"}}>NO</button>
+                      </div>
+                    ) : (
+                      <button onClick={e=>{e.stopPropagation();setConfirmDeleteEmp(emp.id);}}
+                        style={{background:"transparent",border:"none",color:"var(--ss-text-dim)",
+                          cursor:"pointer",fontSize:12,padding:"2px 4px"}}
+                        title="Remove employee">✕</button>
+                    )}
                   </div>
                 </td>
               </tr>
