@@ -1197,10 +1197,72 @@ function buildAutoFill(sourceEmps, cfg, empTimeOffDays, empPatterns, extShiftsAr
     return Math.min(...[...peerIds].map(id => hourTracker[id] || 0));
   };
 
+  // ── Step 2b: CSP Domain Matrix ───────────────────────────────────────────
+  // Pre-compute feasibility: domains[empId][cellKey] = Set<positions>.
+  // Hard eliminations applied once — before any slot is touched:
+  //   • unavailableDays  (calendar block)
+  //   • blockedShifts    (shift-type block)
+  //   • empTimeOffDays   (approved time off)
+  //   • qualifications   (position eligibility via canFillPos)
+  //   • requiredShift    (FT anchored to a single shift)
+  //   • Supervisor logic (weekday 1st only)
+  // What remains is the strict pre-filtered matrix of mathematically possible moves.
+  const domains = {};
+  sourceEmps.forEach(emp => {
+    domains[emp.id] = {};
+    const isSup = (emp.qualifications||[]).includes("Supervisor");
+    for (const day of DAYS) {
+      if ((emp.unavailableDays||[]).includes(day)) continue;
+      if (empTimeOffDays && empTimeOffDays.has(emp.id + "__" + day)) continue;
+      for (const shift of SHIFTS) {
+        if ((emp.blockedShifts||[]).includes(shift.id)) continue;
+        if (emp.requiredShift && emp.requiredShift !== shift.id) continue;
+        if (isSup && !SUP_SLOT_DAY(day, shift.id)) continue;
+        const key = cellKey(day, shift.id);
+        const eligible = new Set(
+          ALL_POSITIONS.filter(p => canFillPos(emp, p, day) && getAvailPos(day, shift.id).includes(p))
+        );
+        if (eligible.size > 0) domains[emp.id][key] = eligible;
+      }
+    }
+  });
+
+  const totalFeasible = Object.values(domains).flatMap(d => Object.values(d)).reduce((n,s) => n + s.size, 0);
+  const totalPossible = sourceEmps.length * 21 * ALL_POSITIONS.length;
+  console.log(`[CSP] Domain matrix: ${sourceEmps.length} emps × 21 slots → ${totalFeasible} feasible triples (${((totalFeasible/totalPossible)*100).toFixed(1)}% of ${totalPossible} possible remain after exclusion)`);
+
+  // Slot domain size: total (emp, position) pairs still feasible for a given slot key.
+  const slotDomainSize = (key) => {
+    let count = 0;
+    for (const emp of sourceEmps) {
+      const d = domains[emp.id]?.[key];
+      if (d) count += d.size;
+    }
+    return count;
+  };
+
+  // Bottleneck score: total (slot, position) pairs remaining in emp's domain.
+  // Lower = more constrained = should be placed before flexible employees.
+  // Reads the live domain (updated by forwardCheck), so it's reactive as the week fills.
+  const empRemainingOptions = (emp) =>
+    Object.values(domains[emp.id] || {}).reduce((n, s) => n + s.size, 0);
+
+  // Forward checking: after assigning emp to a day, remove them from all slots on
+  // that day (can't double-book) and from all slots if their weekly cap is now full.
+  const forwardCheck = (emp, assignedDay) => {
+    for (const s of SHIFTS) delete domains[emp.id][cellKey(assignedDay, s.id)];
+    const cap = emp.maxShiftsPerWeek;
+    if (cap !== null && cap !== undefined && (shiftsWorked[emp.id] || 0) >= cap) {
+      domains[emp.id] = {};
+    }
+  };
+
   // ── Score function used for tie-breaking within a slot ───────────────────
   // targetPos: position being scored for — drives role-stretch penalty.
   const empScore = (emp, day, shiftId, targetPos) => {
-    // Hard blocks
+    // CSP domain gate: pre-filtered matrix says this (emp, slot) is impossible → skip
+    if (!domains[emp.id]?.[cellKey(day, shiftId)]) return null;
+    // Hard blocks (kept as safety net — domain matrix already excludes most of these)
     if ((emp.unavailableDays || []).includes(day)) return null;
     if (empTimeOffDays && empTimeOffDays.has(emp.id + "__" + day)) return null;
     // Qualification gate: employee must be able to fill at least one position in this slot
@@ -1367,13 +1429,26 @@ function buildAutoFill(sourceEmps, cfg, empTimeOffDays, empPatterns, extShiftsAr
       ? (specialistCount >= 2 ? 250 : 150)
       : 0;
 
-    return onPlannedShift + onWorkDay + overworkPenalty + ptPenalty + ftOtPenalty + fairPenalty - underHoursBoost + supWeekendPenalty + roleStretchPenalty;
+    const bottleneckPenalty = Math.min(empRemainingOptions(emp), 50) * 0.6;
+    return onPlannedShift + onWorkDay + overworkPenalty + ptPenalty + ftOtPenalty + fairPenalty - underHoursBoost + supWeekendPenalty + roleStretchPenalty + bottleneckPenalty;
 
   };
 
-  // ── Step 3: Fill the schedule slot by slot ────────────────────────────────
-  for (const day of DAYS) {
-    for (const shift of SHIFTS) {
+  // ── Step 3: CSP fill — process most-constrained slots first (MRV) ─────────
+  // Snapshot domain sizes before any assignments, sort 21 slots ascending.
+  // Slots with the fewest eligible (emp, position) pairs are filled first —
+  // preventing early calendar slots from consuming employees that scarce slots need.
+  const allSlots = DAYS.flatMap(d => SHIFTS.map(s => ({ day: d, shift: s })));
+  const slotMRVKey = Object.fromEntries(
+    allSlots.map(({ day: d, shift: s }) => [cellKey(d, s.id), slotDomainSize(cellKey(d, s.id))])
+  );
+  const orderedSlots = allSlots.sort((a, b) =>
+    (slotMRVKey[cellKey(a.day, a.shift.id)] || 0) - (slotMRVKey[cellKey(b.day, b.shift.id)] || 0)
+  );
+  console.log("[CSP] MRV slot order:", orderedSlots.map(({ day, shift }) =>
+    `${day.slice(0,3)}/${shift.id.slice(0,2)}(${slotMRVKey[cellKey(day, shift.id)]})`).join(" "));
+  for (const { day, shift } of orderedSlots) {
+    {
       const key   = cellKey(day, shift.id);
       const slots = getSlotCount(day, shift.id);
       const asgn  = [];
@@ -1413,6 +1488,7 @@ function buildAutoFill(sourceEmps, cfg, empTimeOffDays, empPatterns, extShiftsAr
         dayWorked[emp.id].add(day);
         asgn.push({ employeeId: emp.id, position });
         used.add(emp.id);
+        forwardCheck(emp, day); // propagate: remove emp from remaining domains on this day
       };
 
       // Count only non-Supervisor entries toward the regular-slot cap.
@@ -1514,6 +1590,31 @@ function buildAutoFill(sourceEmps, cfg, empTimeOffDays, empPatterns, extShiftsAr
         emp.maxWeekendDays !== null &&
         emp.maxWeekendDays !== undefined &&
         weekendDaysWorked(emp.id) >= emp.maxWeekendDays;
+
+      // Fail-Fast: force-assign any employee whose only remaining domain slot is this one
+      if (regularCount() < effectiveSlots) {
+        for (const emp of sourceEmps) {
+          if (regularCount() >= effectiveSlots) break;
+          if (used.has(emp.id)) continue;
+          if ((emp.qualifications||[]).includes("Supervisor")) continue;
+          const remaining = Object.keys(domains[emp.id] || {});
+          if (remaining.length !== 1 || remaining[0] !== key) continue;
+          if (isRestViolation(emp, calcRestGap(emp.id, ns, day, shift.id), minRest)) continue;
+          if (calcConsecutiveHours(emp.id, ns, day, shift.id, extShiftsArg) > empMaxConsec(emp)) continue;
+          const ap = getAvailPos(day, shift.id).filter(p => canFillPos(emp, p, day));
+          if (!ap.length) continue;
+          if (atWeekendCap(emp)) continue;
+          const nowHasScale   = slotHasRole(asgn, sourceEmps, "Scale");
+          const nowHasMedical = slotHasRole(asgn, sourceEmps, "Medical");
+          let pos;
+          if      (!nowHasScale   && !extAlreadyScale   && ap.includes("Scale"))   pos = "Scale";
+          else if (!nowHasMedical && !extAlreadyMedical && ap.includes("Medical")) pos = "Medical";
+          else if (ap.includes("Guard"))                                            pos = "Guard";
+          else pos = ap[0];
+          assign(emp, pos);
+          console.log(`[Fail-Fast] Forced: ${emp.name} → ${day}/${shift.id} as ${pos} (only remaining slot)`);
+        }
+      }
 
       const buildRankedPos = () => {
         const nowHasSc = slotHasRole(asgn, sourceEmps, "Scale");
@@ -6780,11 +6881,19 @@ function printWeekSchedule(schedule, employees, extShifts, weekStart) {
       });
       let cell = "";
       asgn.forEach(a => {
-        const c = posColor(a.position);
+        const empQ = (employees.find(e => e.id === a.employeeId)?.qualifications) || [];
+        const smDual = (
+          (a.position === "Scale" || a.position === "Medical") &&
+          empQ.includes("Scale") && empQ.includes("Medical") &&
+          !asgn.some(x => x.employeeId !== a.employeeId &&
+            (a.position === "Scale" ? x.position === "Medical" : x.position === "Scale"))
+        );
+        const c = smDual ? posColor("Medical") : posColor(a.position);
+        const lbl = smDual ? "S&M" : posAbbr(a.position);
         cell += `<div style="margin-bottom:3px;">
           <span style="font-weight:700;font-size:7.5pt;color:${c};
             background:${c}22;border-radius:2px;padding:0 3px;margin-right:3px;">
-            ${posAbbr(a.position)}
+            ${lbl}
           </span>
           <span style="font-size:8pt;">${getName(a.employeeId)}</span>
         </div>`;
@@ -8166,6 +8275,15 @@ function ScheduleGrid({ onOpenTestModal }) {
                       const hasPrefWarn    = prefViolations.length > 0;
                       const hasReqViol     = prefViolations.some(v=>v.type==="wrong_shift_required");
                       const isOnCallSlot = !!a.isOnCall;
+                      // S&M: employee covers BOTH Scale and Medical in this slot
+                      // (dual-qualified, and no separate Scale/Medical assignee fills the other role)
+                      const isSMDual = (
+                        (a.position === "Scale" || a.position === "Medical") &&
+                        (emp?.qualifications||[]).includes("Scale") &&
+                        (emp?.qualifications||[]).includes("Medical") &&
+                        !asgn.some(x => x.employeeId !== a.employeeId &&
+                          (a.position === "Scale" ? x.position === "Medical" : x.position === "Scale"))
+                      );
                       const borderCol = hasFatigue?"var(--ss-fatigue-60)":hasReqViol?"var(--ss-danger-60)":hasPrefWarn?"var(--ss-warning-50)":isOnCallSlot?"var(--ss-warning-60)":pC(a.position,t)+"30";
                       const bgCol     = hasFatigue?"var(--ss-fatigue-18)":hasReqViol?"var(--ss-danger-0d)":hasPrefWarn?"var(--ss-warning-0a)":pC(a.position,t)+"15";
                       const dotCol    = hasFatigue?"var(--ss-fatigue)":pC(a.position,t);
@@ -8221,7 +8339,7 @@ function ScheduleGrid({ onOpenTestModal }) {
                               </span>
                             );
                           })()}
-                          <span style={{fontSize:9,color:pC(a.position,t),fontWeight:700,flexShrink:0}}>{a.position.substring(0,3).toUpperCase()}</span>
+                          <span style={{fontSize:9,color:isSMDual?"var(--ss-medical)":pC(a.position,t),fontWeight:700,flexShrink:0}}>{isSMDual?"S&M":a.position.substring(0,3).toUpperCase()}</span>
                           {!isReadOnly&&<button onClick={(e)=>{e.stopPropagation();removeAsgn(day,shift.id,a.employeeId);}}
                             style={{background:"transparent",border:"none",color:"var(--ss-text-dim)",cursor:"pointer",fontSize:10,padding:"0 2px",lineHeight:1}}>✕</button>}
                         </div>
@@ -9302,6 +9420,72 @@ function RosterBackup() {
   const [msg,  setMsg]  = useState(null);
   const [busy, setBusy] = useState(false);
   const fileRef = useRef(null);
+  const [ghToken,   setGhToken]   = useState(() => localStorage.getItem("shift_github_token") || "");
+  const [showToken, setShowToken] = useState(false);
+  const [syncMsg,   setSyncMsg]   = useState(null);
+  const [syncBusy,  setSyncBusy]  = useState(false);
+
+  const syncToGitHub = async () => {
+    if (!ghToken.trim()) { setSyncMsg({ text: "Enter a GitHub token first", ok: false }); return; }
+    setSyncBusy(true);
+    setSyncMsg(null);
+    try {
+      // Build full backup payload
+      const snapshot = {};
+      for (const k of ALL_BACKUP_KEYS) {
+        try {
+          const r = await lsGet(k);
+          if (r && r.value !== undefined) snapshot[k] = JSON.parse(r.value);
+        } catch(_) {}
+      }
+      const payload = {
+        _meta: {
+          version: APP_VERSION,
+          exportedAt: new Date().toISOString(),
+          employeeCount: (snapshot.shift_employees||[]).length,
+          label: "ShiftScheduler Full Backup",
+        },
+        data: snapshot,
+      };
+      const json = JSON.stringify(payload, null, 2);
+      // btoa needs latin1 — encodeURIComponent + unescape handles unicode safely
+      const b64 = btoa(unescape(encodeURIComponent(json)));
+
+      const owner = "shamusshafer-ops";
+      const repo  = "shift-scheduler";
+      const path  = "roster-backup-current.json";
+      const apiUrl = `https://api.github.com/repos/${owner}/${repo}/contents/${path}`;
+      const headers = {
+        Authorization: `token ${ghToken.trim()}`,
+        Accept: "application/vnd.github.v3+json",
+        "Content-Type": "application/json",
+      };
+
+      // Fetch current SHA (required by GitHub API to update existing file)
+      const getRes = await fetch(apiUrl, { headers });
+      if (!getRes.ok) throw new Error(`GitHub ${getRes.status} — check token/permissions`);
+      const { sha } = await getRes.json();
+
+      // Push updated content
+      const putRes = await fetch(apiUrl, {
+        method: "PUT",
+        headers,
+        body: JSON.stringify({
+          message: `Auto-sync roster backup — ${new Date().toLocaleDateString()}`,
+          content: b64,
+          sha,
+        }),
+      });
+      if (!putRes.ok) throw new Error(`GitHub ${putRes.status} on push — ${await putRes.text()}`);
+
+      localStorage.setItem("shift_github_last_sync", new Date().toISOString());
+      setSyncMsg({ text: `✓ Synced to GitHub at ${new Date().toLocaleTimeString()}`, ok: true });
+      setTimeout(() => setSyncMsg(null), 6000);
+    } catch(e) {
+      setSyncMsg({ text: "✗ " + e.message, ok: false });
+    }
+    setSyncBusy(false);
+  };
 
   const flash = (text, ok=true) => {
     setMsg({text, ok});
@@ -9442,6 +9626,58 @@ function RosterBackup() {
         this app, re-import your backup — it takes about 2 seconds and restores everything
         including individual employee OT preferences, 12hr shift availability, shift caps,
         blocked shifts, unavailable days, and all time-off requests.
+      </div>
+
+      {/* ── GitHub Auto-Sync ─────────────────────────────────────────────── */}
+      <div style={{ marginTop:16, borderTop:"1px solid var(--ss-border)", paddingTop:16 }}>
+        <div style={{ fontWeight:700, fontSize:12, color:"var(--ss-text-muted)", marginBottom:8, letterSpacing:".07em" }}>
+          GITHUB AUTO-SYNC
+        </div>
+        <div style={{ fontSize:11, color:"var(--ss-text-dim)", marginBottom:10, lineHeight:1.6 }}>
+          Push the roster backup directly to{" "}
+          <strong style={{color:"var(--ss-text)"}}>shamusshafer-ops/shift-scheduler</strong> on GitHub
+          so the JSON stays current automatically. Requires a Personal Access Token with{" "}
+          <code style={{background:"var(--ss-surface-alt)",padding:"1px 5px",borderRadius:3,fontSize:10}}>repo</code> scope
+          — token is stored only in your browser.
+        </div>
+        <div style={{ display:"flex", gap:8, alignItems:"center", marginBottom:10, flexWrap:"wrap" }}>
+          <input
+            type={showToken ? "text" : "password"}
+            placeholder="ghp_xxxxxxxxxxxxxxxxxxxx"
+            value={ghToken}
+            onChange={e => { setGhToken(e.target.value); localStorage.setItem("shift_github_token", e.target.value); }}
+            style={{ flex:1, minWidth:180, background:"var(--ss-surface-alt)", border:"1px solid var(--ss-border)",
+              borderRadius:5, padding:"7px 10px", fontSize:12, color:"var(--ss-text)", fontFamily:"monospace", outline:"none" }}
+          />
+          <button onClick={() => setShowToken(v => !v)}
+            style={{ background:"var(--ss-surface-alt)", border:"1px solid var(--ss-border)", borderRadius:5,
+              padding:"7px 10px", fontSize:11, color:"var(--ss-text-muted)", cursor:"pointer", fontFamily:"inherit" }}>
+            {showToken ? "Hide" : "Show"}
+          </button>
+          <button onClick={syncToGitHub} disabled={syncBusy || !ghToken.trim()}
+            style={{ background:"var(--ss-accent)", color:"#fff", border:"none", padding:"8px 16px",
+              borderRadius:6, cursor:(syncBusy||!ghToken.trim())?"not-allowed":"pointer",
+              fontSize:12, fontWeight:700, fontFamily:"inherit",
+              opacity:(syncBusy||!ghToken.trim()) ? .5 : 1, transition:"opacity .15s" }}>
+            {syncBusy ? "Syncing…" : "⬆ Sync to GitHub"}
+          </button>
+        </div>
+        {syncMsg && (
+          <span style={{ fontSize:12, fontWeight:700,
+            color: syncMsg.ok ? "#4ade80" : "var(--ss-danger)",
+            padding:"6px 12px", borderRadius:5, display:"inline-block", marginBottom:6,
+            background: syncMsg.ok ? "#4ade8022" : "var(--ss-danger-22)" }}>
+            {syncMsg.text}
+          </span>
+        )}
+        {(() => {
+          const last = localStorage.getItem("shift_github_last_sync");
+          return last ? (
+            <div style={{ fontSize:11, color:"var(--ss-text-dim)", marginTop:4 }}>
+              Last synced: {new Date(last).toLocaleString()}
+            </div>
+          ) : null;
+        })()}
       </div>
     </div>
   );
