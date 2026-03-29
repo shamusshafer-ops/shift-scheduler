@@ -401,6 +401,31 @@ const EXT_PAIRS = [
     covers: ["second","third"],
     color: "#0e7490",            // teal
   },
+  // Swing shifts — single-person 12hr blocks used as coverage tools
+  {
+    id: "swing-10a-10p", label: "10A–10P", time: "1000 – 2200",
+    covers: ["second"],          // primarily covers 2nd shift (Sat gap filler)
+    color: "#b45309",            // amber
+    isSwing: true,
+  },
+  {
+    id: "swing-10p-10a", label: "10P–10A", time: "2200 – 1000",
+    covers: ["third"],           // primarily covers 3rd shift (Hillenburg Thu/Fri)
+    color: "#1d4ed8",            // blue
+    isSwing: true,
+  },
+  {
+    id: "swing-2p-2a", label: "2P–2A", time: "1400 – 0200",
+    covers: ["second","third"],  // spans 2nd and 3rd (Fri/Sat swing — Harms)
+    color: "#be185d",            // rose
+    isSwing: true,
+  },
+  {
+    id: "swing-2a-2p", label: "2A–2P", time: "0200 – 1400",
+    covers: ["third","first"],   // spans late 3rd into 1st
+    color: "#065f46",            // green
+    isSwing: true,
+  },
 ];
 
 const PSI_SEED_ROSTER = []; // Seed roster removed — users import their own via Roster Manager
@@ -420,20 +445,21 @@ const extRoles = (emp) => ["Scale","Medical"].filter(r => emp.qualifications.inc
 
 // Can an employee work one half of a 12hr ext pair?
 // slotIndex: 0 = first half (empA), 1 = second half (empB)
-// pairId: "day" | "night"
-// Checks requiredShift and blockedShifts against the 8hr shifts that half covers.
+// pairId: "day" | "night" | "swing-10a-10p" | "swing-10p-10a" | "swing-2p-2a" | "swing-2a-2p"
+// Checks requiredShift, blockedShifts, and shift availability against the 8hr shifts that half covers.
 const canWorkExtHalf = (emp, pairId, slotIndex) => {
   const pair = EXT_PAIRS.find(p => p.id === pairId);
   if (!pair) return true;
   const shiftId = pair.covers[slotIndex]; // primary 8hr shift for this half
-  if ((emp.blockedShifts || []).includes(shiftId)) return false;
-  if (emp.requiredShift && emp.requiredShift !== shiftId) return false;
-  // Check 12hr availability preference
+  if (shiftId && (emp.blockedShifts || []).includes(shiftId)) return false;
+  if (shiftId && emp.requiredShift && emp.requiredShift !== shiftId) return false;
+  // Swing shifts: check per-employee swingEligible array
+  if (pair.isSwing) {
+    const eligible = emp.swingEligible || [];
+    return eligible.includes(pairId);
+  }
+  // Original 12hr pairs: check ext12hPref
   // ext12hPref: null=not available, "day"=day half only, "night"=night half only, "both"=either
-  // slotIndex 0 = first half of the pair's time window, 1 = second half
-  // For "day" pair (0600-1800): slot 0 = 0600-1200 side, slot 1 = 1200-1800 side — but both are "day"
-  // For "night" pair (1800-0600): slot 0 = 1800-0000 side, slot 1 = 0000-0600 side — both are "night"
-  // So the pairId itself tells us day vs night
   const pref = emp.ext12hPref || null;
   if (pref === null) return false;          // not available for any 12hr shifts
   if (pref === "both") return true;         // available for either
@@ -448,10 +474,15 @@ const extHalfConflictReason = (emp, pairId, slotIndex) => {
   if (!pair) return null;
   const shiftId = pair.covers[slotIndex];
   const label = { first:"1st", second:"2nd", third:"3rd" }[shiftId] || shiftId;
-  if ((emp.blockedShifts || []).includes(shiftId))
+  if (shiftId && (emp.blockedShifts || []).includes(shiftId))
     return `${emp.name} has ${label} shift blocked`;
-  if (emp.requiredShift && emp.requiredShift !== shiftId)
+  if (shiftId && emp.requiredShift && emp.requiredShift !== shiftId)
     return `${emp.name} is locked to ${({first:"1st",second:"2nd",third:"3rd"}[emp.requiredShift]||emp.requiredShift)} shift`;
+  if (pair.isSwing) {
+    const eligible = emp.swingEligible || [];
+    if (!eligible.includes(pairId)) return `${emp.name} is not eligible for ${pair.label} swing shifts`;
+    return null;
+  }
   const pref = emp.ext12hPref || null;
   if (pref === null) return `${emp.name} is not available for 12-hour shifts`;
   if (pref === "day"   && pairId !== "day")   return `${emp.name} is only available for Day 12hr shifts`;
@@ -474,9 +505,10 @@ const getSlotCount = (d, s) => SUP_SLOT_DAY(d, s) ? 4 : 3;    // total (incl sup
 // qualifications to role coverage — their non-Supervisor quals are last-resort only.
 const slotHasRole = (asgn, employees, role) =>
   asgn.some(a => {
+    const emp = employees ? employees.find(e => e.id === a.employeeId) : null;
+    if (emp?.inTraining) return false; // trainees don't count toward coverage requirements
     if (a.position === role) return true;
     if (a.position === "Supervisor") return false; // Sup slot never covers Guard/Scale/Medical
-    const emp = employees ? employees.find(e => e.id === a.employeeId) : null;
     return emp && (emp.qualifications || []).includes(role);
   });
 
@@ -1200,23 +1232,27 @@ function buildAutoFill(sourceEmps, cfg, empTimeOffDays, empPatterns, extShiftsAr
   // ── Step 2b: CSP Domain Matrix ───────────────────────────────────────────
   // Pre-compute feasibility: domains[empId][cellKey] = Set<positions>.
   // Hard eliminations applied once — before any slot is touched:
-  //   • unavailableDays  (calendar block)
-  //   • blockedShifts    (shift-type block)
-  //   • empTimeOffDays   (approved time off)
-  //   • qualifications   (position eligibility via canFillPos)
-  //   • requiredShift    (FT anchored to a single shift)
-  //   • Supervisor logic (weekday 1st only)
+  //   • unavailableDays        (calendar block — specific dates)
+  //   • availableDaysOfWeek    (day-of-week lock — e.g. Ray: Tue/Wed only)
+  //   • blockedShifts          (shift-type block)
+  //   • empTimeOffDays         (approved time off)
+  //   • qualifications         (position eligibility via canFillPos)
+  //   • requiredShift          (FT anchored to a single shift)
+  //   • Supervisor logic       (weekday 1st only)
   // What remains is the strict pre-filtered matrix of mathematically possible moves.
   const domains = {};
   sourceEmps.forEach(emp => {
     domains[emp.id] = {};
     const isSup = (emp.qualifications||[]).includes("Supervisor");
+    const allowedDOW = emp.availableDaysOfWeek && emp.availableDaysOfWeek.length > 0
+      ? emp.availableDaysOfWeek : null; // null = all days OK
     for (const day of DAYS) {
       if ((emp.unavailableDays||[]).includes(day)) continue;
+      if (allowedDOW && !allowedDOW.includes(day)) continue; // day-of-week lock
       if (empTimeOffDays && empTimeOffDays.has(emp.id + "__" + day)) continue;
       for (const shift of SHIFTS) {
         if ((emp.blockedShifts||[]).includes(shift.id)) continue;
-        if (emp.requiredShift && emp.requiredShift !== shift.id) continue;
+        if (emp.requiredShift && emp.requiredShift !== shift.id && !emp.crossShiftOT) continue;
         if (isSup && !SUP_SLOT_DAY(day, shift.id)) continue;
         const key = cellKey(day, shift.id);
         const eligible = new Set(
@@ -1264,14 +1300,19 @@ function buildAutoFill(sourceEmps, cfg, empTimeOffDays, empPatterns, extShiftsAr
     if (!domains[emp.id]?.[cellKey(day, shiftId)]) return null;
     // Hard blocks (kept as safety net — domain matrix already excludes most of these)
     if ((emp.unavailableDays || []).includes(day)) return null;
+    // Day-of-week availability lock (e.g. Ray: Tue/Wed only)
+    const allowedDOW = emp.availableDaysOfWeek && emp.availableDaysOfWeek.length > 0
+      ? emp.availableDaysOfWeek : null;
+    if (allowedDOW && !allowedDOW.includes(day)) return null;
     if (empTimeOffDays && empTimeOffDays.has(emp.id + "__" + day)) return null;
     // Qualification gate: employee must be able to fill at least one position in this slot
     if (!getAvailPos(day, shiftId).some(p => emp.qualifications.includes(p))) return null;
     if (isRestViolation(emp, calcRestGap(emp.id, ns, day, shiftId), minRest)) return null;
     if (calcConsecutiveHours(emp.id, ns, day, shiftId, extShiftsArg) > empMaxConsec(emp)) return null;
     if (shiftId === "third" && calcConsecutiveNights(emp.id, ns, day, shiftId) >= maxNights) return null;
-    // Requires: employee must only appear on their required shift — hard block all others
-    if (emp.requiredShift && emp.requiredShift !== shiftId) return null;
+    // Requires: employee must only appear on their required shift — hard block all others.
+    // Exception: crossShiftOT flag overrides this so the employee can fill any shift for OT.
+    if (emp.requiredShift && emp.requiredShift !== shiftId && !emp.crossShiftOT) return null;
     if ((emp.blockedShifts||[]).includes(shiftId)) return null;
     // Supervisor employees: block from regular slot scoring on weekday 1st shift
     // (they fill the dedicated Supervisor slot via a separate path in the fill loop).
@@ -1290,14 +1331,17 @@ function buildAutoFill(sourceEmps, cfg, empTimeOffDays, empPatterns, extShiftsAr
     if (empMaxW !== null && (shiftsWorked[emp.id] || 0) >= empMaxW) return null;
 
     // FT employees are hard-blocked from any shift other than their planned shift.
-    // This prevents shift-hopping in the main fill loop.
+    // Exception: crossShiftOT flag allows FT to work any shift for OT (e.g. Harms).
     // PT employees keep a soft penalty — they fill as last resort across shifts.
-    if (isFT && empPlan && empPlan.shiftId !== shiftId) return null;
+    if (isFT && empPlan && empPlan.shiftId !== shiftId && !emp.crossShiftOT) return null;
 
     const ptPrefMismatch = (!isFT && (emp.preferredShifts||[]).length > 0
       && !(emp.preferredShifts||[]).includes(shiftId)) ? 800 : 0;
     const shiftMismatch = empPlan && empPlan.shiftId === shiftId ? 0 : 20; // PT only now
-    const onPlannedShift = shiftMismatch + ptPrefMismatch;
+    // FT employees with crossShiftOT can work any shift, but are deprioritized on non-planned shifts
+    // (high penalty keeps them as last resort after same-shift staff, same as FT overtime)
+    const crossShiftPenalty = (isFT && emp.crossShiftOT && empPlan && empPlan.shiftId !== shiftId) ? 400 : 0;
+    const onPlannedShift = shiftMismatch + ptPrefMismatch + crossShiftPenalty;
 
     // Strong preference: employee is scheduled to work today in their plan
     // PT: their plan covers all available days, so this penalty rarely fires
@@ -4911,6 +4955,142 @@ function RosterManager() {
   );
 }
 
+function AvailableDaysOfWeekToggle({ val, set }) {
+  const active = val && val.length > 0;
+  const toggle = (day) => {
+    const current = val || [];
+    const next = current.includes(day) ? current.filter(d => d !== day) : [...current, day];
+    set(next.length > 0 ? next : null);
+  };
+  return (
+    <div style={{marginTop:12}}>
+      <div style={{fontSize:11,color:"var(--ss-text-dim)",fontWeight:600,letterSpacing:".04em",marginBottom:6}}>
+        AVAILABLE DAYS OF WEEK
+      </div>
+      <div style={{display:"flex",gap:5,flexWrap:"wrap",marginBottom:4}}>
+        {["Sunday","Monday","Tuesday","Wednesday","Thursday","Friday","Saturday"].map(day => {
+          const on = (val || []).includes(day);
+          return (
+            <button key={day} onClick={()=>toggle(day)} style={{
+              background: on ? "var(--ss-accent-22)" : "var(--ss-surface-alt)",
+              border: "1.5px solid "+(on ? "var(--ss-accent)" : "var(--ss-border)"),
+              color: on ? "var(--ss-accent)" : "var(--ss-text-dim)",
+              padding:"4px 10px", borderRadius:6, cursor:"pointer",
+              fontSize:11, fontWeight:on?700:500, fontFamily:"inherit",
+              transition:"all .15s",
+            }}>{day.slice(0,3)}</button>
+          );
+        })}
+      </div>
+      <div style={{fontSize:10,color: active ? "var(--ss-warning)" : "var(--ss-text-dim)",lineHeight:1.5}}>
+        {active
+          ? `Only available on: ${(val||[]).join(", ")}. Will be hard-blocked on all other days.`
+          : "Available any day of the week (default). Use this for employees like Ray (Tue/Wed only)."}
+      </div>
+    </div>
+  );
+}
+
+function InTrainingToggle({ val, set }) {
+  const active = val === true;
+  return (
+    <div style={{marginTop:12}}>
+      <div style={{fontSize:11,color:"var(--ss-text-dim)",fontWeight:600,letterSpacing:".04em",marginBottom:6}}>
+        TRAINING STATUS
+      </div>
+      <button onClick={()=>set(!active)} style={{
+        background: active ? "#d97706" + "22" : "var(--ss-surface-alt)",
+        border: "1.5px solid "+(active ? "#d97706" : "var(--ss-border)"),
+        color: active ? "#d97706" : "var(--ss-text-dim)",
+        padding:"6px 14px", borderRadius:6, cursor:"pointer",
+        fontSize:11, fontWeight:700, fontFamily:"inherit",
+        display:"flex", alignItems:"center", gap:6, transition:"all .15s",
+      }}>
+        <span style={{width:7,height:7,borderRadius:"50%",flexShrink:0,
+          background:active?"#d97706":"var(--ss-text-dim)",transition:"background .15s"}}/>
+        {active ? "In Training (T) — does not count toward coverage" : "Active — counts toward coverage"}
+      </button>
+      {active && (
+        <div style={{marginTop:5,fontSize:10,color:"#d97706",lineHeight:1.5}}>
+          This employee is in training status. They will appear on the schedule with a T suffix
+          (1T, 2T, 3T) but do NOT count toward slot or shift coverage requirements.
+          The shift still needs a fully qualified independent employee in each required role.
+        </div>
+      )}
+    </div>
+  );
+}
+
+function SwingEligibleToggle({ val, set }) {
+  const SWING_OPTIONS = [
+    { id: "swing-10a-10p", label: "10A–10P", desc: "1000–2200 (weekend 2nd filler)", color: "#b45309" },
+    { id: "swing-10p-10a", label: "10P–10A", desc: "2200–1000 (overnight bridge)",   color: "#1d4ed8" },
+    { id: "swing-2p-2a",   label: "2P–2A",   desc: "1400–0200 (Fri/Sat 2nd+3rd)",   color: "#be185d" },
+    { id: "swing-2a-2p",   label: "2A–2P",   desc: "0200–1400 (late 3rd into 1st)",  color: "#065f46" },
+  ];
+  const eligible = val || [];
+  const toggle = (id) => {
+    const next = eligible.includes(id) ? eligible.filter(x => x !== id) : [...eligible, id];
+    set(next);
+  };
+  return (
+    <div style={{marginTop:12}}>
+      <div style={{fontSize:11,color:"var(--ss-text-dim)",fontWeight:600,letterSpacing:".04em",marginBottom:6}}>
+        SWING SHIFT ELIGIBILITY
+      </div>
+      <div style={{display:"flex",gap:5,flexWrap:"wrap",marginBottom:4}}>
+        {SWING_OPTIONS.map(opt => {
+          const on = eligible.includes(opt.id);
+          return (
+            <button key={opt.id} onClick={()=>toggle(opt.id)} style={{
+              background: on ? opt.color+"22" : "var(--ss-surface-alt)",
+              border: "1.5px solid "+(on ? opt.color : "var(--ss-border)"),
+              color: on ? opt.color : "var(--ss-text-dim)",
+              padding:"5px 12px", borderRadius:6, cursor:"pointer",
+              fontSize:11, fontWeight:on?700:500, fontFamily:"inherit",
+              transition:"all .15s",
+            }}>{opt.label}</button>
+          );
+        })}
+      </div>
+      <div style={{fontSize:10,color:"var(--ss-text-dim)",lineHeight:1.5}}>
+        {eligible.length > 0
+          ? `Eligible for: ${SWING_OPTIONS.filter(o=>eligible.includes(o.id)).map(o=>o.desc).join("; ")}`
+          : "Not eligible for any swing shifts. Only employees with this flag will appear in swing shift suggestions."}
+      </div>
+    </div>
+  );
+}
+
+function CrossShiftOTToggle({ val, set }) {
+  const active = val === true;
+  return (
+    <div style={{marginTop:12}}>
+      <div style={{fontSize:11,color:"var(--ss-text-dim)",fontWeight:600,letterSpacing:".04em",marginBottom:6}}>
+        CROSS-SHIFT OVERTIME
+      </div>
+      <button onClick={()=>set(!active)} style={{
+        background: active ? "var(--ss-warning-22)" : "var(--ss-surface-alt)",
+        border: "1.5px solid "+(active ? "var(--ss-warning)" : "var(--ss-border)"),
+        color: active ? "var(--ss-warning)" : "var(--ss-text-dim)",
+        padding:"6px 14px", borderRadius:6, cursor:"pointer",
+        fontSize:11, fontWeight:700, fontFamily:"inherit",
+        display:"flex", alignItems:"center", gap:6, transition:"all .15s",
+      }}>
+        <span style={{width:7,height:7,borderRadius:"50%",flexShrink:0,
+          background:active?"var(--ss-warning)":"var(--ss-text-dim)",transition:"background .15s"}}/>
+        {active ? "Cross-shift OT allowed — will fill any shift for overtime" : "Shift-locked — assigned shift only"}
+      </button>
+      {active && (
+        <div style={{marginTop:5,fontSize:10,color:"var(--ss-warning)",lineHeight:1.5}}>
+          This employee can be assigned to any shift when coverage is needed, regardless of their primary
+          shift assignment. They will be deprioritized vs. same-shift staff (last resort for OT fills).
+        </div>
+      )}
+    </div>
+  );
+}
+
 function MaxShiftsPerWeekToggle({ val, set }) {
   const t = useTheme();
   const capped = val !== null && val !== undefined;
@@ -5141,7 +5321,7 @@ function EmployeeManager({ onOpenTestModal }) {
   const { schedule, setSchedule, extShifts } = useSchedule();
   const t = useTheme();
   const cfg = useSettings();
-  const EMPTY_NEW = {name:"",quals:["Guard"],type:"full-time",unavail:[],prefShifts:[],blockedShifts:[],requiredShift:null,prefDaysOff:[],overtimePref:"neutral",willing16h:false,maxShiftsPerWeek:null,ext12hPref:null,maxWeekendDays:null};
+  const EMPTY_NEW = {name:"",quals:["Guard"],type:"full-time",unavail:[],prefShifts:[],blockedShifts:[],requiredShift:null,prefDaysOff:[],overtimePref:"neutral",willing16h:false,maxShiftsPerWeek:null,ext12hPref:null,maxWeekendDays:null,availableDaysOfWeek:null,inTraining:false,swingEligible:[],crossShiftOT:false};
   const [newForm,   setNewForm]   = useState(EMPTY_NEW);
   const [editState, setEditState] = useState(null);
   const [errors,    setErrors]    = useState([]);
@@ -5204,7 +5384,7 @@ function EmployeeManager({ onOpenTestModal }) {
     if (!name) return;
     if (!newQuals.length) { setErrors(["Select at least one position."]); setTimeout(()=>setErrors([]),3000); return; }
     if (employees.some(e=>e.name.toLowerCase()===name.toLowerCase())) { setErrors(["Name already exists."]); setTimeout(()=>setErrors([]),3000); return; }
-    setEmployees(p=>[...p,{id:Date.now().toString(),name,qualifications:[...newQuals],employmentType:newType,unavailableDays:[...newUnavail],preferredShifts:[...(newPrefShifts||[])],blockedShifts:[...(newBlockedShifts||[])],requiredShift:newRequiredShift||null,preferredDaysOff:[...newPrefDaysOff],overtimePref:newForm.overtimePref||"neutral",willing16h:newForm.willing16h||false,maxShiftsPerWeek:newForm.maxShiftsPerWeek??null,ext12hPref:newForm.ext12hPref??null}]);
+    setEmployees(p=>[...p,{id:Date.now().toString(),name,qualifications:[...newQuals],employmentType:newType,unavailableDays:[...newUnavail],preferredShifts:[...(newPrefShifts||[])],blockedShifts:[...(newBlockedShifts||[])],requiredShift:newRequiredShift||null,preferredDaysOff:[...newPrefDaysOff],overtimePref:newForm.overtimePref||"neutral",willing16h:newForm.willing16h||false,maxShiftsPerWeek:newForm.maxShiftsPerWeek??null,ext12hPref:newForm.ext12hPref??null,availableDaysOfWeek:newForm.availableDaysOfWeek||null,inTraining:newForm.inTraining||false,swingEligible:[...(newForm.swingEligible||[])],crossShiftOT:newForm.crossShiftOT||false}]);
     setNewForm(EMPTY_NEW); setErrors([]);
   };
 
@@ -5228,12 +5408,16 @@ function EmployeeManager({ onOpenTestModal }) {
       blockedShifts:     [...(s.blockedShifts||[])],
       requiredShift:     s.requiredShift||null,
       preferredDaysOff:  [...(s.prefDaysOff||[])],
-      overtimePref:      s.overtimePref||"neutral",
-      willing16h:        s.willing16h||false,
-      maxShiftsPerWeek:  s.maxShiftsPerWeek??null,
-      ext12hPref:        s.ext12hPref??null,
-      maxWeekendDays:    s.maxWeekendDays!==undefined?s.maxWeekendDays:null,
-      notes:             (s.notes||"").trim(),
+      overtimePref:         s.overtimePref||"neutral",
+      willing16h:           s.willing16h||false,
+      maxShiftsPerWeek:     s.maxShiftsPerWeek??null,
+      ext12hPref:           s.ext12hPref??null,
+      maxWeekendDays:       s.maxWeekendDays!==undefined?s.maxWeekendDays:null,
+      availableDaysOfWeek:  s.availableDaysOfWeek||null,
+      inTraining:           s.inTraining||false,
+      swingEligible:        [...(s.swingEligible||[])],
+      crossShiftOT:         s.crossShiftOT||false,
+      notes:                (s.notes||"").trim(),
     } : e));
     setEditState(null);
   };
@@ -5348,6 +5532,10 @@ function EmployeeManager({ onOpenTestModal }) {
                 <Willing16hToggle val={newForm.willing16h||false} set={v=>setNewForm(f=>({...f,willing16h:v}))}/>
                 <Ext12hPrefToggle val={newForm.ext12hPref??null} set={v=>setNewForm(f=>({...f,ext12hPref:v}))}/>
                 <MaxShiftsPerWeekToggle val={newForm.maxShiftsPerWeek??null} set={v=>setNewForm(f=>({...f,maxShiftsPerWeek:v}))}/>
+                <AvailableDaysOfWeekToggle val={newForm.availableDaysOfWeek||null} set={v=>setNewForm(f=>({...f,availableDaysOfWeek:v}))}/>
+                <InTrainingToggle val={newForm.inTraining||false} set={v=>setNewForm(f=>({...f,inTraining:v}))}/>
+                <SwingEligibleToggle val={newForm.swingEligible||[]} set={v=>setNewForm(f=>({...f,swingEligible:v}))}/>
+                <CrossShiftOTToggle val={newForm.crossShiftOT||false} set={v=>setNewForm(f=>({...f,crossShiftOT:v}))}/>
               </div>
               <button onClick={()=>{addEmployee();setShowAddForm(false);}}
                 style={{background:"var(--ss-accent)",color:"#fff",border:"none",
@@ -5405,6 +5593,10 @@ function EmployeeManager({ onOpenTestModal }) {
                 <Willing16hToggle val={editState?.willing16h||false} set={v=>setEditState(s=>({...s,willing16h:v}))}/>
                 <Ext12hPrefToggle val={editState?.ext12hPref??null} set={v=>setEditState(s=>({...s,ext12hPref:v}))}/>
                 <MaxShiftsPerWeekToggle val={editState?.maxShiftsPerWeek??null} set={v=>setEditState(s=>({...s,maxShiftsPerWeek:v}))}/>
+                <AvailableDaysOfWeekToggle val={editState?.availableDaysOfWeek||null} set={v=>setEditState(s=>({...s,availableDaysOfWeek:v}))}/>
+                <InTrainingToggle val={editState?.inTraining||false} set={v=>setEditState(s=>({...s,inTraining:v}))}/>
+                <SwingEligibleToggle val={editState?.swingEligible||[]} set={v=>setEditState(s=>({...s,swingEligible:v}))}/>
+                <CrossShiftOTToggle val={editState?.crossShiftOT||false} set={v=>setEditState(s=>({...s,crossShiftOT:v}))}/>
                 <div style={{display:"flex",flexDirection:"column",gap:4}}>
                   <label style={{fontSize:10,fontWeight:700,color:"var(--ss-text-dim)",letterSpacing:".06em"}}>NOTES</label>
                   <textarea
@@ -5440,6 +5632,10 @@ function EmployeeManager({ onOpenTestModal }) {
                 maxShiftsPerWeek:emp.maxShiftsPerWeek??null,
                 ext12hPref:emp.ext12hPref??null,
                 maxWeekendDays:emp.maxWeekendDays??null,
+                availableDaysOfWeek:emp.availableDaysOfWeek||null,
+                inTraining:emp.inTraining||false,
+                swingEligible:emp.swingEligible||[],
+                crossShiftOT:emp.crossShiftOT||false,
                 notes:emp.notes||"",
               })}
                 style={{cursor:"pointer",borderBottom:"1px solid var(--ss-border)",
