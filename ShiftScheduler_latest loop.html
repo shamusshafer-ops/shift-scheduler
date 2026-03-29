@@ -9982,10 +9982,11 @@ const ALL_BACKUP_KEYS = [
 ];
 
 function RosterBackup() {
-  const { employees, setEmployees } = useRoster();
-  const { setSchedule, setExtShifts } = useSchedule();
+  const { employees, setEmployees, setEmpPatterns, setSavedRosters } = useRoster();
+  const { setSchedule, setExtShifts, setWeekStart } = useSchedule();
   const { setHistory, setSavedWeeks } = useHistory();
   const { setTimeOffReqs } = useTimeOff();
+  const { setSettings } = useSettings();
   const t = useTheme();
   const [msg,  setMsg]  = useState(null);
   const [busy, setBusy] = useState(false);
