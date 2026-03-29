@@ -3500,6 +3500,7 @@ function ManualPairModal({ initialDay, onApprove, onCancel }) {
   const [mode,    setMode]    = useState("suggest");
 
   const pair = EXT_PAIRS.find(p => p.id === pairId);
+  const isSwing = pair?.isSwing || false;
 
   const alreadyExists = (extShifts||[]).some(e => e.day === day && e.pairId === pairId);
 
@@ -3512,6 +3513,11 @@ function ManualPairModal({ initialDay, onApprove, onCancel }) {
   const empBConflict = empB ? extHalfConflictReason(empB, pairId, 1) : null;
 
   const suggestions = useMemo(() => {
+    if (isSwing) {
+      // Swing: single-employee suggestions filtered by swingEligible
+      return availableA.map(e => ({ a: e, b: null, coversScale: e.qualifications.includes("Scale"),
+        coversMedical: e.qualifications.includes("Medical"), score: 0 })).slice(0, 6);
+    }
     const out = [];
     for (let i = 0; i < available.length; i++) {
       for (let j = i + 1; j < available.length; j++) {
@@ -3532,16 +3538,17 @@ function ManualPairModal({ initialDay, onApprove, onCancel }) {
       }
     }
     return out.sort((x, y) => y.score - x.score).slice(0, 6);
-  }, [available]);
+  }, [available, availableA, isSwing, pairId]);
 
   const empA = employees.find(e => e.id === empAId);
   const empB = employees.find(e => e.id === empBId);
 
-  const combined = empA && empB ? [...new Set([...empA.qualifications, ...empB.qualifications])] : [];
+  const combined = empA && empB ? [...new Set([...empA.qualifications, ...empB.qualifications])]
+    : empA ? [...empA.qualifications] : [];
   const hasScale   = combined.includes("Scale");
   const hasMedical = combined.includes("Medical");
-  const compatible = hasScale && hasMedical;
-  const canSubmit  = empAId && empBId && empAId !== empBId && !alreadyExists;
+  const compatible = isSwing ? !!empAId : hasScale && hasMedical;
+  const canSubmit  = empAId && (isSwing || (empBId && empAId !== empBId)) && !alreadyExists;
 
   const QDot = ({ pos }) => (
     <span style={{width:7,height:7,borderRadius:"50%",background:pC(pos,t),
@@ -3572,7 +3579,7 @@ function ManualPairModal({ initialDay, onApprove, onCancel }) {
       pairId,
       day,
       empAId,
-      empBId,
+      empBId: isSwing ? (empBId || null) : empBId,
       roles: ["Scale","Medical"].filter(r => combined.includes(r)),
       approvedAt: new Date().toLocaleDateString(),
     });
@@ -3593,13 +3600,17 @@ function ManualPairModal({ initialDay, onApprove, onCancel }) {
         <div style={{display:"flex",alignItems:"center",gap:10,marginBottom:6}}>
           <span style={{fontSize:22}}>⏱</span>
           <h2 style={{margin:0,fontSize:16,fontWeight:700,color:"#7c3aed"}}>
-            PAIR EMPLOYEES — 12-HOUR SHIFTS
+            {isSwing ? `SWING SHIFT — ${pair?.label || ""}` : "PAIR EMPLOYEES — 12-HOUR SHIFTS"}
           </h2>
         </div>
         <p style={{margin:"0 0 20px",fontSize:12,color:"var(--ss-text-muted)",lineHeight:1.6}}>
-          Pair two employees to cover a full day with 12-hour shifts.
-          <strong style={{color:"#7c3aed"}}> Day: 0600–1800 · Night: 1800–0600.</strong>
-          {" "}Together they must cover at least Scale and Medical.
+          {isSwing
+            ? <>Assign one employee to a swing window <strong style={{color:"#7c3aed"}}>{pair?.time}</strong>.
+               {" "}Employee must be marked swing-eligible for this type in their roster settings.</>
+            : <>Pair two employees to cover a full day with 12-hour shifts.
+               <strong style={{color:"#7c3aed"}}> Day: 0600–1800 · Night: 1800–0600.</strong>
+               {" "}Together they must cover at least Scale and Medical.</>
+          }
         </p>
 
         {}
@@ -3656,46 +3667,47 @@ function ManualPairModal({ initialDay, onApprove, onCancel }) {
           <div>
             {suggestions.length === 0 ? (
               <div style={{textAlign:"center",padding:"20px 0",color:"var(--ss-text-dim)",fontSize:12}}>
-                No compatible pairs found for {day}. Try Free Pick to override.
+                {isSwing
+                  ? `No employees are marked swing-eligible for ${pair?.label}. Set Swing Eligible in Roster.`
+                  : `No compatible pairs found for ${day}. Try Free Pick to override.`}
               </div>
             ) : (
               <div style={{display:"flex",flexDirection:"column",gap:6}}>
                 {suggestions.map(({a, b, score},i)=>{
-                  const sel = empAId===a.id && empBId===b.id;
-                  const combinedQ = [...new Set([...a.qualifications,...b.qualifications])];
+                  const sel = isSwing ? empAId===a.id : (empAId===a.id && empBId===(b?.id||""));
+                  const combinedQ = b ? [...new Set([...a.qualifications,...b.qualifications])] : [...a.qualifications];
                   return (
                     <div key={i}
-                      onClick={()=>{ setEmpAId(a.id); setEmpBId(b.id); }}
+                      onClick={()=>{ setEmpAId(a.id); setEmpBId(b?.id||""); }}
                       style={{padding:"10px 14px",borderRadius:6,cursor:"pointer",
                         background:sel?"#7c3aed18":"var(--ss-surface-alt)",
                         border:"1.5px solid "+(sel?"#7c3aed":"var(--ss-border)"),
                         transition:"all .15s"}}
                       onMouseEnter={e=>{ if(!sel) e.currentTarget.style.borderColor="#7c3aed60"; }}
                       onMouseLeave={e=>{ if(!sel) e.currentTarget.style.borderColor="var(--ss-border)"; }}>
-                      <div style={{display:"flex",alignItems:"center",gap:8,marginBottom:6}}>
+                      <div style={{display:"flex",alignItems:"center",gap:8,marginBottom:isSwing?0:6}}>
                         <span style={{fontSize:11,fontWeight:700,color:"var(--ss-text)",flex:1}}>
                           {a.name}
-                          <span style={{color:"var(--ss-text-dim)",fontWeight:400}}> + </span>
-                          {b.name}
+                          {!isSwing&&<><span style={{color:"var(--ss-text-dim)",fontWeight:400}}> + </span>{b?.name}</>}
                         </span>
                         {score===2&&<span style={{fontSize:9,background:"#7c3aed",color:"#fff",
                           padding:"1px 7px",borderRadius:10,fontWeight:700}}>BEST</span>}
                         {sel&&<span style={{fontSize:11,color:"#7c3aed",fontWeight:700}}>✓ Selected</span>}
                       </div>
-                      <div style={{display:"flex",gap:8,fontSize:10,color:"var(--ss-text-dim)",flexWrap:"wrap"}}>
+                      {!isSwing&&<div style={{display:"flex",gap:8,fontSize:10,color:"var(--ss-text-dim)",flexWrap:"wrap"}}>
                         <span>
                           <span style={{fontWeight:600,color:"var(--ss-text)"}}>{a.name.split(" ")[0]}:</span>
                           {" "}{pairId==="day"?"0600–1800":"1800–0600"}
                         </span>
                         <span>
-                          <span style={{fontWeight:600,color:"var(--ss-text)"}}>{b.name.split(" ")[0]}:</span>
+                          <span style={{fontWeight:600,color:"var(--ss-text)"}}>{b?.name.split(" ")[0]}:</span>
                           {" "}{pairId==="day"?"1800–0600":"0600–1800"}
                         </span>
                         <span style={{marginLeft:"auto",display:"flex",gap:4,alignItems:"center"}}>
                           Combined:{" "}
                           {combinedQ.map(q=><QDot key={q} pos={q}/>)}
                         </span>
-                      </div>
+                      </div>}
                     </div>
                   );
                 })}
@@ -3706,62 +3718,64 @@ function ManualPairModal({ initialDay, onApprove, onCancel }) {
 
         {}
         {mode==="free" && (
-          <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:12}}>
+          <div style={{display:"grid",gridTemplateColumns:isSwing?"1fr":"1fr 1fr",gap:12}}>
             <div>
               <label style={{display:"block",fontSize:10,color:"var(--ss-text-dim)",fontWeight:700,
                 letterSpacing:".06em",marginBottom:6}}>
-                EMPLOYEE A — {pairId==="day"?"0600–1800":"1800–0600"}
+                {isSwing ? "EMPLOYEE" : `EMPLOYEE A — ${pairId==="day"?"0600–1800":"1800–0600"}`}
               </label>
               <select value={empAId} onChange={e=>setEmpAId(e.target.value)} style={iS}>
                 <option value="">— select —</option>
                 {availableA.map(e=>(
-                  <option key={e.id} value={e.id} disabled={e.id===empBId}>
+                  <option key={e.id} value={e.id} disabled={!isSwing && e.id===empBId}>
                     {e.name} [{e.qualifications.join("/")}]
                   </option>
                 ))}
-                {available.filter(e=>!canWorkExtHalf(e,pairId,0)&&!e.unavailableDays?.includes(day)).length>0&&(
-                  <option disabled value="">── shift-locked (hidden) ──</option>
-                )}
+                {availableA.length===0&&<option disabled value="">── no eligible employees for this swing ──</option>}
               </select>
               {empAConflict&&<div style={{fontSize:10,color:"var(--ss-warning)",fontWeight:700,marginTop:4}}>⚠ {empAConflict}</div>}
-              <EmpRow emp={empA} slot={pairId==="day"?"0600–1800":"1800–0600"}/>
+              <EmpRow emp={empA} slot={isSwing ? pair?.time : pairId==="day"?"0600–1800":"1800–0600"}/>
             </div>
-            <div>
-              <label style={{display:"block",fontSize:10,color:"var(--ss-text-dim)",fontWeight:700,
-                letterSpacing:".06em",marginBottom:6}}>
-                EMPLOYEE B — {pairId==="day"?"1800–0600":"0600–1800"}
-              </label>
-              <select value={empBId} onChange={e=>setEmpBId(e.target.value)} style={iS}>
-                <option value="">— select —</option>
-                {availableB.map(e=>(
-                  <option key={e.id} value={e.id} disabled={e.id===empAId}>
-                    {e.name} [{e.qualifications.join("/")}]
-                  </option>
-                ))}
-                {available.filter(e=>!canWorkExtHalf(e,pairId,1)&&!e.unavailableDays?.includes(day)).length>0&&(
-                  <option disabled value="">── shift-locked (hidden) ──</option>
-                )}
-              </select>
-              {empBConflict&&<div style={{fontSize:10,color:"var(--ss-warning)",fontWeight:700,marginTop:4}}>⚠ {empBConflict}</div>}
-              <EmpRow emp={empB} slot={pairId==="day"?"1800–0600":"0600–1800"}/>
-            </div>
+            {!isSwing && (
+              <div>
+                <label style={{display:"block",fontSize:10,color:"var(--ss-text-dim)",fontWeight:700,
+                  letterSpacing:".06em",marginBottom:6}}>
+                  EMPLOYEE B — {pairId==="day"?"1800–0600":"0600–1800"}
+                </label>
+                <select value={empBId} onChange={e=>setEmpBId(e.target.value)} style={iS}>
+                  <option value="">— select —</option>
+                  {availableB.map(e=>(
+                    <option key={e.id} value={e.id} disabled={e.id===empAId}>
+                      {e.name} [{e.qualifications.join("/")}]
+                    </option>
+                  ))}
+                  {available.filter(e=>!canWorkExtHalf(e,pairId,1)&&!e.unavailableDays?.includes(day)).length>0&&(
+                    <option disabled value="">── shift-locked (hidden) ──</option>
+                  )}
+                </select>
+                {empBConflict&&<div style={{fontSize:10,color:"var(--ss-warning)",fontWeight:700,marginTop:4}}>⚠ {empBConflict}</div>}
+                <EmpRow emp={empB} slot={pairId==="day"?"1800–0600":"0600–1800"}/>
+              </div>
+            )}
           </div>
         )}
 
         {}
-        {mode==="free" && empAId && empBId && (
+        {mode==="free" && empAId && (isSwing || empBId) && (
           <div style={{marginTop:14,padding:"8px 14px",borderRadius:6,fontSize:11,
             background:compatible?"#22c55e18":"var(--ss-danger-18)",
             border:"1px solid "+(compatible?"#22c55e50":"var(--ss-danger-50)"),
             color:compatible?"#22c55e":"var(--ss-danger)",fontWeight:600}}>
-            {compatible
-              ? `✓ Compatible — covers: ${combined.filter(q=>["Scale","Medical"].includes(q)).join(" + ")}`
-              : `⚠ Missing: ${["Scale","Medical"].filter(r=>!combined.includes(r)).join(" + ")} — pair won't meet shift requirements`}
+            {isSwing
+              ? `✓ ${empA?.name} assigned to ${pair?.time}`
+              : compatible
+                ? `✓ Compatible — covers: ${combined.filter(q=>["Scale","Medical"].includes(q)).join(" + ")}`
+                : `⚠ Missing: ${["Scale","Medical"].filter(r=>!combined.includes(r)).join(" + ")} — pair won't meet shift requirements`}
           </div>
         )}
 
         {}
-        {(empAId || (mode==="suggest" && empAId)) && empBId && (
+        {(empAId || (mode==="suggest" && empAId)) && (isSwing || empBId) && (
           <div style={{marginTop:14,background:"var(--ss-surface-alt)",borderRadius:6,overflow:"hidden",
             border:"1px solid var(--ss-border)"}}>
             <div style={{display:"flex",height:28}}>
@@ -3791,7 +3805,7 @@ function ManualPairModal({ initialDay, onApprove, onCancel }) {
             style={{background:canSubmit?"#7c3aed":"var(--ss-border)",color:canSubmit?"#fff":"var(--ss-text-dim)",
               border:"none",padding:"9px 22px",borderRadius:6,cursor:canSubmit?"pointer":"default",
               fontSize:12,fontWeight:700,fontFamily:"inherit",transition:"background .2s"}}>
-            ⏱ CONFIRM PAIRING
+            {isSwing ? "⏱ CONFIRM SWING" : "⏱ CONFIRM PAIRING"}
           </button>
         </div>
       </div>
@@ -8259,6 +8273,32 @@ function ScheduleGrid({ onOpenTestModal }) {
       DAYS.forEach(day => {
         EXT_PAIRS.forEach(pair => {
           if (usedExtPairs.has(day + "__" + pair.id)) return;
+
+          // ── Swing shifts: single-employee, trigger on headcount gap ──────────
+          if (pair.isSwing) {
+            const hasGap = pair.covers.some(shiftId => {
+              const asgn = ns[cellKey(day, shiftId)] || [];
+              const bodies = asgn.filter(a => !(source.find(x => x.id === a.employeeId)?.inTraining)).length;
+              return bodies < REGULAR_SLOTS(day, shiftId);
+            });
+            if (!hasGap) return;
+            const swingCandidates = source.filter(emp => {
+              if ((emp.unavailableDays || []).includes(day)) return false;
+              if (emp.maxShiftsPerWeek !== null && (shiftsWorked[emp.id]||0) >= emp.maxShiftsPerWeek) return false;
+              return canWorkExtHalf(emp, pair.id, 0); // checks swingEligible[]
+            });
+            const swingDesigId = (swingDesig || {})[pair.id];
+            if (swingDesigId) swingCandidates.sort((a, b) => (b.id === swingDesigId ? 1 : 0) - (a.id === swingDesigId ? 1 : 0));
+            if (!swingCandidates.length) return;
+            const empA = swingCandidates[0];
+            autoExtShifts.push({ pairId: pair.id, day, empAId: empA.id, empBId: null,
+              roles: ["Scale","Medical"].filter(r => empA.qualifications.includes(r)),
+              approvedAt: "auto-fill", auto: true });
+            usedExtPairs.add(day + "__" + pair.id);
+            return;
+          }
+
+          // ── Standard 12-hr pairs: two employees, trigger on Scale/Medical gap ─
           const neededRoles = [];
           pair.covers.forEach(shiftId => {
             const asgn = ns[cellKey(day, shiftId)] || [];
@@ -8278,7 +8318,7 @@ function ScheduleGrid({ onOpenTestModal }) {
             if (!emp.willing16h) return false;
             return canWorkExtHalf(emp, pair.id, 0) || canWorkExtHalf(emp, pair.id, 1);
           });
-          // Prioritize designated employee for this swing type
+          // Prioritize designated employee for this pair type
           const desigId = (swingDesig || {})[pair.id];
           if (desigId) candidates.sort((a, b) => (b.id === desigId ? 1 : 0) - (a.id === desigId ? 1 : 0));
           for (let i = 0; i < candidates.length; i++) {
