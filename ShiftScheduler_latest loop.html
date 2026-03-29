@@ -315,7 +315,7 @@ const APP_BUILD_DATE = (() => {
   } catch(_) { return "2026-03-12"; }
 })();
 
-const SCHEMA_VERSION = 2;
+const SCHEMA_VERSION = 3;
 const APP_VERSION_MAJOR = 34;
 // Version auto-combines major (hand-bumped per session) +
 // minor (SCHEMA_VERSION, bumped when data shape changes).
@@ -326,6 +326,13 @@ const SCHEMA_KEY = "shift_schema_version";
 // Each function takes the raw stored array and returns the migrated array.
 const EMP_MIGRATIONS = {
   2: (emps) => emps.map(e => ({ notes: "", ...e })),
+  3: (emps) => emps.map(e => ({
+    availableDaysOfWeek: null,
+    inTraining: false,
+    swingEligible: [],
+    crossShiftOT: false,
+    ...e,
+  })),
 };
 
 // runSchemaMigrations: call once on startup before usePersistentState loads.
@@ -10100,9 +10107,14 @@ function RosterBackup() {
         const parsed = JSON.parse(ev.target.result);
         const snapshot = parsed.data || parsed;
 
-        const emps = snapshot.shift_employees || snapshot.employees;
-        if (!Array.isArray(emps) || !emps.length)
+        const rawEmps = snapshot.shift_employees || snapshot.employees;
+        if (!Array.isArray(rawEmps) || !rawEmps.length)
           throw new Error("No employee data found in file.");
+        // Apply all employee migrations so imported data always has current shape
+        let emps = rawEmps;
+        for (let v = 1; v <= SCHEMA_VERSION; v++) {
+          if (EMP_MIGRATIONS[v]) emps = EMP_MIGRATIONS[v](emps);
+        }
 
         const writes = [
           { key:"shift_employees",     val: emps,                              setter: setEmployees     },

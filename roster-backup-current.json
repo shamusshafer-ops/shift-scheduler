@@ -31,7 +31,11 @@
         "willing16h": false,
         "maxShiftsPerWeek": 1,
         "ext12hPref": null,
-        "maxWeekendDays": null
+        "maxWeekendDays": null,
+        "availableDaysOfWeek": null,
+        "inTraining": false,
+        "swingEligible": [],
+        "crossShiftOT": false
       },
       {
         "notes": "",
@@ -53,7 +57,11 @@
         "willing16h": false,
         "maxShiftsPerWeek": null,
         "ext12hPref": "day",
-        "maxWeekendDays": null
+        "maxWeekendDays": null,
+        "availableDaysOfWeek": null,
+        "inTraining": false,
+        "swingEligible": [],
+        "crossShiftOT": false
       },
       {
         "notes": "",
@@ -74,7 +82,11 @@
         "willing16h": false,
         "maxShiftsPerWeek": null,
         "ext12hPref": "day",
-        "maxWeekendDays": null
+        "maxWeekendDays": null,
+        "availableDaysOfWeek": null,
+        "inTraining": false,
+        "swingEligible": [],
+        "crossShiftOT": false
       },
       {
         "notes": "",
@@ -99,7 +111,11 @@
         "willing16h": false,
         "maxShiftsPerWeek": null,
         "ext12hPref": "day",
-        "maxWeekendDays": null
+        "maxWeekendDays": null,
+        "availableDaysOfWeek": null,
+        "inTraining": false,
+        "swingEligible": [],
+        "crossShiftOT": false
       },
       {
         "notes": "",
@@ -125,7 +141,10 @@
         "maxWeekendDays": null,
         "availableDaysOfWeek": null,
         "inTraining": false,
-        "swingEligible": ["swing-2p-2a", "swing-10a-10p"],
+        "swingEligible": [
+          "swing-2p-2a",
+          "swing-10a-10p"
+        ],
         "crossShiftOT": true
       },
       {
@@ -156,7 +175,11 @@
         "willing16h": false,
         "maxShiftsPerWeek": null,
         "ext12hPref": "day",
-        "maxWeekendDays": null
+        "maxWeekendDays": null,
+        "availableDaysOfWeek": null,
+        "inTraining": false,
+        "swingEligible": [],
+        "crossShiftOT": false
       },
       {
         "notes": "",
@@ -181,7 +204,11 @@
         "willing16h": false,
         "maxShiftsPerWeek": null,
         "ext12hPref": "night",
-        "maxWeekendDays": null
+        "maxWeekendDays": null,
+        "availableDaysOfWeek": null,
+        "inTraining": false,
+        "swingEligible": [],
+        "crossShiftOT": false
       },
       {
         "notes": "",
@@ -203,7 +230,11 @@
         "willing16h": false,
         "maxShiftsPerWeek": null,
         "ext12hPref": "night",
-        "maxWeekendDays": null
+        "maxWeekendDays": null,
+        "availableDaysOfWeek": null,
+        "inTraining": false,
+        "swingEligible": [],
+        "crossShiftOT": false
       },
       {
         "notes": "",
@@ -234,7 +265,10 @@
         "maxShiftsPerWeek": null,
         "ext12hPref": "day",
         "maxWeekendDays": null,
-        "availableDaysOfWeek": ["Tuesday", "Wednesday"],
+        "availableDaysOfWeek": [
+          "Tuesday",
+          "Wednesday"
+        ],
         "inTraining": false,
         "swingEligible": [],
         "crossShiftOT": false
@@ -258,7 +292,11 @@
         "willing16h": false,
         "maxShiftsPerWeek": null,
         "ext12hPref": null,
-        "maxWeekendDays": null
+        "maxWeekendDays": null,
+        "availableDaysOfWeek": null,
+        "inTraining": false,
+        "swingEligible": [],
+        "crossShiftOT": false
       },
       {
         "notes": "",
@@ -279,7 +317,11 @@
         "willing16h": false,
         "maxShiftsPerWeek": null,
         "ext12hPref": null,
-        "maxWeekendDays": null
+        "maxWeekendDays": null,
+        "availableDaysOfWeek": null,
+        "inTraining": false,
+        "swingEligible": [],
+        "crossShiftOT": false
       },
       {
         "notes": "",
@@ -304,7 +346,9 @@
         "maxWeekendDays": null,
         "availableDaysOfWeek": null,
         "inTraining": false,
-        "swingEligible": ["swing-10p-10a"],
+        "swingEligible": [
+          "swing-10p-10a"
+        ],
         "crossShiftOT": false
       },
       {
@@ -326,7 +370,11 @@
         "willing16h": false,
         "maxShiftsPerWeek": 2,
         "ext12hPref": null,
-        "maxWeekendDays": null
+        "maxWeekendDays": null,
+        "availableDaysOfWeek": null,
+        "inTraining": false,
+        "swingEligible": [],
+        "crossShiftOT": false
       },
       {
         "notes": "",
@@ -348,7 +396,11 @@
         "willing16h": false,
         "maxShiftsPerWeek": null,
         "ext12hPref": "night",
-        "maxWeekendDays": null
+        "maxWeekendDays": null,
+        "availableDaysOfWeek": null,
+        "inTraining": false,
+        "swingEligible": [],
+        "crossShiftOT": false
       }
     ],
     "shift_settings": {
