@@ -2454,7 +2454,12 @@ function ExcelPreviewModal({ onDownload, onClose }) {
     }
     const { sid, pos } = result[0];
     const num = {first:"1",second:"2",third:"3"}[sid];
-    const suffix = pos==="Scale"?"-Scale":pos==="Medical"?"-Med":"";
+    const shiftAsgn = schedule[cellKey(day, sid)] || [];
+    const scaleOnShift = shiftAsgn.filter(a => {
+      const e = employees.find(x => x.id === a.employeeId);
+      return a.position === "Scale" || (e && (e.qualifications||[]).includes("Scale"));
+    }).length;
+    const suffix = pos==="Scale" && scaleOnShift > 1 ? "-Scale" : pos==="Medical"?"-Med":"";
     return { text:num+suffix, kind:sid };
   };
 
@@ -2708,7 +2713,12 @@ async function exportToExcel(employees, schedule, extShifts, weekStart) {
     }
     const { sid, pos } = result[0];
     const num = { first:"1", second:"2", third:"3" }[sid];
-    const suffix = pos==="Scale"?"-Scale":pos==="Medical"?"-Med":"";
+    const shiftAsgn = schedule[cellKey(day, sid)] || [];
+    const scaleOnShift = shiftAsgn.filter(a => {
+      const e = employees.find(x => x.id === a.employeeId);
+      return a.position === "Scale" || (e && (e.qualifications||[]).includes("Scale"));
+    }).length;
+    const suffix = pos==="Scale" && scaleOnShift > 1 ? "-Scale" : pos==="Medical"?"-Med":"";
     return { text: num+suffix, kind: sid };
   };
 
@@ -7733,7 +7743,7 @@ function EmpPickerSearch({ day, shift, subSource, unassigned, getAssignable,
 }
 
 function ScheduleGrid({ onOpenTestModal }) {
-  const { employees, afExclude, setAfExclude, empPatterns, setEmpPatterns } = useRoster();
+  const { employees, afExclude, setAfExclude, swingDesig, empPatterns, setEmpPatterns } = useRoster();
   const { schedule, setSchedule, extShifts, setExtShifts, weekStart, setWeekStart, scheduleStale: scheduleStaleP, setScheduleStale: setScheduleStaleProp, empTimeOffDays } = useSchedule();
   const { history, setHistory, savedWeeks, setSavedWeeks } = useHistory();
   const { timeOffReqs } = useTimeOff();
@@ -8261,6 +8271,9 @@ function ScheduleGrid({ onOpenTestModal }) {
             if (!emp.willing16h) return false;
             return canWorkExtHalf(emp, pair.id, 0) || canWorkExtHalf(emp, pair.id, 1);
           });
+          // Prioritize designated employee for this swing type
+          const desigId = (swingDesig || {})[pair.id];
+          if (desigId) candidates.sort((a, b) => (b.id === desigId ? 1 : 0) - (a.id === desigId ? 1 : 0));
           for (let i = 0; i < candidates.length; i++) {
             for (let j = i + 1; j < candidates.length; j++) {
               const [empA, empB] = (() => {
@@ -10745,6 +10758,62 @@ function RosterDiagnostic() {
   );
 }
 
+function SwingDesigPanel() {
+  const { employees, swingDesig, setSwingDesig } = useRoster();
+  const swingTypes = EXT_PAIRS.filter(p => p.isSwing);
+
+  const update = (swingId, empId) =>
+    setSwingDesig(d => ({ ...d, [swingId]: empId || null }));
+
+  const eligibleFor = (swingId) =>
+    employees.filter(e => (e.swingEligible || []).includes(swingId));
+
+  const iS = {
+    background: "var(--ss-surface-alt)", border: "1px solid var(--ss-border)",
+    color: "var(--ss-text)", padding: "6px 10px", borderRadius: 6,
+    fontSize: 13, fontFamily: "'JetBrains Mono',monospace", width: 200,
+  };
+
+  return (
+    <div style={{ background: "var(--ss-surface)", border: "1px solid var(--ss-border)",
+      borderRadius: 8, padding: 20, marginBottom: 20 }}>
+      <h3 style={{ margin: "0 0 8px", fontSize: 13, fontWeight: 700,
+        color: "var(--ss-text-muted)", textTransform: "uppercase", letterSpacing: ".06em" }}>
+        Swing Slot Designations
+      </h3>
+      <p style={{ fontSize: 12, color: "var(--ss-text-dim)", marginBottom: 16, marginTop: 0 }}>
+        Set a preferred employee for each swing type. Auto-fill will prioritize the designated employee when
+        assigning that swing. Only employees marked as swing-eligible for a type appear here. Mark employees
+        eligible under the Swing Eligible setting in the Roster tab.
+      </p>
+      {swingTypes.map(pair => {
+        const options = eligibleFor(pair.id);
+        const current = (swingDesig || {})[pair.id] || "";
+        return (
+          <div key={pair.id} style={{ display: "flex", alignItems: "center", gap: 16,
+            marginBottom: 12, paddingBottom: 12, borderBottom: "1px solid var(--ss-border)" }}>
+            <div style={{ flex: 1, minWidth: 0 }}>
+              <span style={{ fontSize: 13, fontWeight: 700, color: pair.color }}>{pair.label}</span>
+              <span style={{ fontSize: 11, color: "var(--ss-text-dim)", marginLeft: 8 }}>{pair.time}</span>
+            </div>
+            {options.length === 0
+              ? <span style={{ fontSize: 11, color: "var(--ss-text-dim)", fontStyle: "italic" }}>
+                  No eligible employees — set Swing Eligible in Roster
+                </span>
+              : <select value={current} onChange={e => update(pair.id, e.target.value)} style={iS}>
+                  <option value="">Auto (no designation)</option>
+                  {options.map(emp => (
+                    <option key={emp.id} value={emp.id}>{emp.name}</option>
+                  ))}
+                </select>
+            }
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
 function SettingsPanel({ themeName, setThemeName, customTheme, setCustomTheme }) {
   const { setSettings, ...settings } = useSettings();
   const { employees, setEmployees, empPatterns, setEmpPatterns, setSavedRosters } = useRoster();
@@ -10809,6 +10878,7 @@ function SettingsPanel({ themeName, setThemeName, customTheme, setCustomTheme })
   const SP_TABS = [
     {id:"rules",      label:"Rules"},
     {id:"rotation",   label:"Rotation"},
+    {id:"swingslots", label:"Swing Slots"},
     {id:"appearance", label:"Appearance"},
     {id:"diagnostic", label:"Diagnostic"},
     {id:"data",       label:"Data"},
@@ -10934,6 +11004,10 @@ function SettingsPanel({ themeName, setThemeName, customTheme, setCustomTheme })
       </Section>
       )}
 
+      {settingsTab==="swingslots" && (
+        <SwingDesigPanel/>
+      )}
+
       {settingsTab==="diagnostic" && (
         <Section title="Roster & Schedule Diagnostic">
         <Row label="Run diagnostic"
@@ -11023,6 +11097,7 @@ function ShiftSchedulerApp() {
   const [savedRosters,setSavedRosters,rostersLoaded] = usePersistentState("shift_saved_rosters",[]);
   const [timeOffReqs, setTimeOffReqs,timeOffLoaded]= usePersistentState("shift_timeoff",[]);
   const [afExclude,   setAfExclude,  afExcLoaded]  = usePersistentState("shift_af_exclude",[]);
+  const [swingDesig,  setSwingDesig, swingDesigLoaded] = usePersistentState("shift_swing_desig", {});
   const [empPatterns, setEmpPatterns, patternsLoaded] = usePersistentState("shift_patterns",{});
   const [weekStart,   setWeekStart,  weekLoaded]  = usePersistentState("shift_week_start", (() => {
     const now = new Date();
@@ -11259,6 +11334,7 @@ function ShiftSchedulerApp() {
     <RosterCtx.Provider value={{
       employees, setEmployees,
       afExclude, setAfExclude,
+      swingDesig, setSwingDesig,
       empPatterns, setEmpPatterns,
       customSeed, setCustomSeed,
       savedRosters, setSavedRosters,
