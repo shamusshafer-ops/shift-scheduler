@@ -2645,7 +2645,25 @@ function ExcelPreviewModal({ onDownload, onClose }) {
     red:"#CC0000", orange:"#CC6600", lightText:"#E8F0D0",
   };
 
+  // Returns the approved time-off request (non-partial) for an employee on a given day name
+  const approvedTimeOffPrev = (empId, day) =>
+    (timeOffReqs||[]).find(r =>
+      r.status === "approved" && r.empId === empId && r.type !== "partial" &&
+      timeOffCoversSlot(r, day, "first", weekStart)
+    ) || null;
+
   const getShiftLabel = (emp, day) => {
+    // Approved vacation or day-off requests always override schedule display
+    const req = approvedTimeOffPrev(emp.id, day);
+    if (req) {
+      const trnDay = (trainingBlocks||[]).filter(t => t.empId === emp.id && t.day === day);
+      const trnSuffix = trnDay.length > 0
+        ? " +" + trnDay.map(t => { const fh=h=>`${h%12||12}${h<12?"A":"P"}`; return `TRN ${fh(t.startHour)}-${fh((t.startHour+t.durationHours)%24)}`; }).join(",")
+        : "";
+      return req.type === "vacation"
+        ? { text:"Vac"+trnSuffix, kind:"pto" }
+        : { text:"Off"+trnSuffix, kind:"pto" };
+    }
     const result = [];
     for (const shift of SHIFTS) {
       const asgn = (schedule[cellKey(day, shift.id)] || []).find(a => a.employeeId === emp.id);
@@ -2654,12 +2672,19 @@ function ExcelPreviewModal({ onDownload, onClose }) {
     const extDay = (extShifts || []).filter(e => e.day === day);
     if (extDay.some(e => e.empAId === emp.id)) return { text:"6A-6P",  kind:"splitDay"   };
     if (extDay.some(e => e.empBId === emp.id)) return { text:"6P-6A",  kind:"splitNight" };
-    if (!result.length) return (emp.unavailableDays||[]).includes(day)
-      ? { text:"x", kind:"off" } : { text:"", kind:"empty" };
-    if (result.length === 1 && result[0].pos === "PTO") return { text:"PTO", kind:"pto" };
+    const trnDay = (trainingBlocks||[]).filter(t => t.empId === emp.id && t.day === day);
+    const trnSuffix = trnDay.length > 0
+      ? " +" + trnDay.map(t => { const fh=h=>`${h%12||12}${h<12?"A":"P"}`; return `TRN ${fh(t.startHour)}-${fh((t.startHour+t.durationHours)%24)}`; }).join(",")
+      : "";
+    if (!result.length) {
+      if (trnSuffix) return { text: trnSuffix.trim().replace(/^\+/,""), kind:"training" };
+      return { text:"X", kind:"absent" };
+    }
+    if (result.length === 1 && result[0].pos === "PTO") return { text:"Vac"+trnSuffix, kind:"pto" };
+    if (result.length === 1 && result[0].pos === "Off") return { text:"Off"+trnSuffix, kind:"pto" };
     if (result.length === 2) {
       const nums = result.map(r=>({first:"1",second:"2",third:"3"}[r.sid])).join("+");
-      return { text:nums, kind:"multi" };
+      return { text:nums+trnSuffix, kind:"multi" };
     }
     const { sid, pos } = result[0];
     const num = {first:"1",second:"2",third:"3"}[sid];
@@ -2669,7 +2694,7 @@ function ExcelPreviewModal({ onDownload, onClose }) {
       return a.position === "Scale" || (e && (e.qualifications||[]).includes("Scale"));
     }).length;
     const suffix = pos==="Scale" && scaleOnShift > 1 ? "-Scale" : pos==="Medical"?"-Med":"";
-    return { text:num+suffix, kind:sid };
+    return { text:num+suffix+trnSuffix, kind:sid };
   };
 
   const primaryShift = (emp) => {
