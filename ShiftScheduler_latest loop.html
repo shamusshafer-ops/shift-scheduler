@@ -6523,7 +6523,8 @@ function CoverageDashboard({ navigateToWeek }) {
         const asgn     = schedule[cellKey(day, shift.id)] || [];
         const max      = getSlotCount(day, shift.id);
         const hasScale = slotHasRole(asgn, employees, "Scale");
-        const hasMed   = slotHasRole(asgn, employees, "Medical");
+        // Supervisor counts as Medical for coverage display purposes
+        const hasMed   = slotHasRole(asgn, employees, "Medical") || asgn.some(a => a.position === "Supervisor");
         const filled   = asgn.length;
         const openSlots = max - filled;
 
@@ -7607,7 +7608,9 @@ function SchedulePopout({ onClose }) {
     const max  = getSlotCount(day, shiftId);
     const cellExt = (extShifts||[]).filter(e => extCovers(e, day, shiftId));
     const hasScale   = slotHasRole(asgn, employees, "Scale")   || cellExt.some(e => (e.roles||[]).includes("Scale"));
-    const hasMedical = slotHasRole(asgn, employees, "Medical") || cellExt.some(e => (e.roles||[]).includes("Medical"));
+    // Supervisor counts as Medical for coverage display purposes
+    const supOnShift = asgn.some(a => a.position === "Supervisor");
+    const hasMedical = slotHasRole(asgn, employees, "Medical") || cellExt.some(e => (e.roles||[]).includes("Medical")) || supOnShift;
     const missing = [...(!hasScale ? ["Scale"] : []), ...(!hasMedical ? ["Medical"] : [])];
     return { missing, ok: missing.length === 0, count: asgn.length, max };
   };
@@ -8482,7 +8485,9 @@ function ScheduleGrid({ onOpenTestModal }) {
     const extHasScale=cellExtList.some(e=>e.roles.includes("Scale"));
     const extHasMed=cellExtList.some(e=>e.roles.includes("Medical"));
     const hasScale=slotHasRole(a,employees,"Scale")||extHasScale;
-    const hasMed=slotHasRole(a,employees,"Medical")||extHasMed;
+    // Supervisor counts as Medical for coverage display purposes
+    const supOnShift=a.some(x=>x.position==="Supervisor");
+    const hasMed=slotHasRole(a,employees,"Medical")||extHasMed||supOnShift;
     const isFull=a.length>=getEffectiveSlotCount(d,s,extShifts);
     const missing=[...(!hasScale?["Scale"]:[]),...(!hasMed?["Medical"]:[])];
     return{hasScale,hasMedical:hasMed,isFull,missing,ok:missing.length===0,cellExtList};
