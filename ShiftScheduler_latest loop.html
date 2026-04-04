@@ -11796,13 +11796,14 @@ function ShiftSchedulerApp() {
       const a=schedule[cellKey(d,s.id)]||[];
       if(!a.length) return;
       const cellExt    = (extShifts||[]).filter(e=>extCovers(e,d,s.id));
-      const hasScale   = a.some(x=>x.position==="Scale")   || cellExt.some(e=>(e.roles||[]).includes("Scale"));
-      const hasMedical = a.some(x=>x.position==="Medical") || cellExt.some(e=>(e.roles||[]).includes("Medical"));
+      const hasScale   = slotHasRole(a,employees,"Scale")   || cellExt.some(e=>(e.roles||[]).includes("Scale"));
+      const supOnShift = a.some(x=>x.position==="Supervisor");
+      const hasMedical = slotHasRole(a,employees,"Medical") || cellExt.some(e=>(e.roles||[]).includes("Medical")) || supOnShift;
       const smDual     = (!hasScale || !hasMedical) && slotSMDualCoverage(a);
       if(!(hasScale||smDual) || !(hasMedical||smDual)) c++;
     }));
     return c;
-  },[schedule,extShifts,slotSMDualCoverage]);
+  },[schedule,extShifts,employees,slotSMDualCoverage]);
 
   const coverageIssueSlots = useMemo(()=>{
     const result=[];
@@ -11810,8 +11811,9 @@ function ShiftSchedulerApp() {
       const a=schedule[cellKey(d,s.id)]||[];
       if(!a.length) return;
       const cellExt    = (extShifts||[]).filter(e=>extCovers(e,d,s.id));
-      const hasScale   = a.some(x=>x.position==="Scale")   || cellExt.some(e=>(e.roles||[]).includes("Scale"));
-      const hasMedical = a.some(x=>x.position==="Medical") || cellExt.some(e=>(e.roles||[]).includes("Medical"));
+      const hasScale   = slotHasRole(a,employees,"Scale")   || cellExt.some(e=>(e.roles||[]).includes("Scale"));
+      const supOnShift = a.some(x=>x.position==="Supervisor");
+      const hasMedical = slotHasRole(a,employees,"Medical") || cellExt.some(e=>(e.roles||[]).includes("Medical")) || supOnShift;
       const smDual     = (!hasScale || !hasMedical) && slotSMDualCoverage(a);
       const effScale   = hasScale   || smDual;
       const effMedical = hasMedical || smDual;
@@ -11821,7 +11823,7 @@ function ShiftSchedulerApp() {
       }
     }));
     return result;
-  },[schedule,extShifts,slotSMDualCoverage]);
+  },[schedule,extShifts,employees,slotSMDualCoverage]);
   const underHoursCount = useMemo(()=>
     employees.filter(e=>e.employmentType==="full-time"&&calcHours(e.id,schedule)<FT_MIN_HOURS).length
   ,[employees,schedule]);
