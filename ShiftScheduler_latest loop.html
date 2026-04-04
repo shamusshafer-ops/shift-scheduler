@@ -315,8 +315,8 @@ const APP_BUILD_DATE = (() => {
   } catch(_) { return "2026-03-12"; }
 })();
 
-const SCHEMA_VERSION = 3;
-const APP_VERSION_MAJOR = 34;
+const SCHEMA_VERSION = 4;
+const APP_VERSION_MAJOR = 35;
 // Version auto-combines major (hand-bumped per session) +
 // minor (SCHEMA_VERSION, bumped when data shape changes).
 const APP_VERSION = "v" + APP_VERSION_MAJOR + "." + SCHEMA_VERSION;
@@ -333,6 +333,7 @@ const EMP_MIGRATIONS = {
     crossShiftOT: false,
     ...e,
   })),
+  4: (emps) => emps.map(e => ({ ...e, splitShiftEligible: e.splitShiftEligible ?? false })),
 };
 
 // runSchemaMigrations: call once on startup before usePersistentState loads.
@@ -402,11 +403,13 @@ const EXT_PAIRS = [
     id: "day",   label: "Day 12hr",   time: "0600 – 1800",
     covers: ["first","second"],  // which 8-hr shifts this covers
     color: "#7c3aed",            // purple
+    startHour: 6,                // 0600
   },
   {
     id: "night", label: "Night 12hr", time: "1800 – 0600",
     covers: ["second","third"],
     color: "#0e7490",            // teal
+    startHour: 18,               // 1800
   },
   // Swing shifts — single-person 12hr blocks used as coverage tools
   {
@@ -414,24 +417,38 @@ const EXT_PAIRS = [
     covers: ["second"],          // primarily covers 2nd shift (Sat gap filler)
     color: "#b45309",            // amber
     isSwing: true,
+    startHour: 10,               // 1000
   },
   {
     id: "swing-10p-10a", label: "10P–10A", time: "2200 – 1000",
     covers: ["third"],           // primarily covers 3rd shift (Hillenburg Thu/Fri)
     color: "#1d4ed8",            // blue
     isSwing: true,
+    startHour: 22,               // 2200
   },
   {
     id: "swing-2p-2a", label: "2P–2A", time: "1400 – 0200",
     covers: ["second","third"],  // spans 2nd and 3rd (Fri/Sat swing — Harms)
     color: "#be185d",            // rose
     isSwing: true,
+    startHour: 14,               // 1400
   },
   {
     id: "swing-2a-2p", label: "2A–2P", time: "0200 – 1400",
     covers: ["third","first"],   // spans late 3rd into 1st
     color: "#065f46",            // green
     isSwing: true,
+    startHour: 2,                // 0200
+  },
+  // Split pair — TWO employees: empA works 1400–0200 (2nd+half 3rd), empB works 0200–1400 (half 3rd + next day's 1st)
+  {
+    id: "split", label: "Split 2pm\u20132am/2am\u20132pm", time: "1400 \u2013 1400 (+1d)",
+    covers: ["second","third"],  // empA covers 2nd+3rd of day D; empB additionally covers 1st of day D+1
+    crossDayB: "first",          // empB also covers this shift on the NEXT day
+    color: "#b45309",            // amber
+    startHour: 14,               // empA starts at 1400 on stored day
+    startHourB: 2,               // empB starts at 0200
+    nextDayB: true,              // empB's start is on stored day + 1
   },
 ];
 
@@ -441,8 +458,17 @@ const PSI_SEED_ROSTER = []; // Seed roster removed — users import their own vi
 const extKey = (day, pairId) => "EXT__" + day + "__" + pairId;
 
 // Does an extendedShift record cover a given (day, shiftId)?
-const extCovers = (ext, day, shiftId) =>
-  ext.day === day && EXT_PAIRS.find(p => p.id === ext.pairId)?.covers.includes(shiftId);
+const extCovers = (ext, day, shiftId) => {
+  const pair = EXT_PAIRS.find(p => p.id === ext.pairId);
+  if (!pair) return false;
+  if (ext.day === day && pair.covers.includes(shiftId)) return true;
+  // Split pair: empB also covers the first shift of the next calendar day
+  if (pair.crossDayB && pair.crossDayB === shiftId) {
+    const nextDay = DAYS[(DAYS.indexOf(ext.day) + 1) % 7];
+    if (nextDay === day) return true;
+  }
+  return false;
+};
 
 // Get all extended shift records for a day
 const getExtForDay = (extShifts, day) => extShifts.filter(e => e.day === day);
@@ -464,6 +490,13 @@ const canWorkExtHalf = (emp, pairId, slotIndex) => {
   if (pair.isSwing) {
     const eligible = emp.swingEligible || [];
     return eligible.includes(pairId);
+  }
+  // Split pair: check splitShiftEligible flag + no block on the covered shift
+  if (pairId === "split") {
+    if (!emp.splitShiftEligible) return false;
+    // empA (slot 0) covers second; empB (slot 1) covers third + next day first
+    if (slotIndex === 1 && (emp.blockedShifts || []).includes("first")) return false;
+    return true;
   }
   // Original 12hr pairs: check ext12hPref
   // ext12hPref: null=not available, "day"=day half only, "night"=night half only, "both"=either
@@ -488,6 +521,11 @@ const extHalfConflictReason = (emp, pairId, slotIndex) => {
   if (pair.isSwing) {
     const eligible = emp.swingEligible || [];
     if (!eligible.includes(pairId)) return `${emp.name} is not eligible for ${pair.label} swing shifts`;
+    return null;
+  }
+  if (pairId === "split") {
+    if (!emp.splitShiftEligible) return `${emp.name} is not eligible for split shifts`;
+    if (slotIndex === 1 && (emp.blockedShifts || []).includes("first")) return `${emp.name} has 1st shift blocked`;
     return null;
   }
   const pref = emp.ext12hPref || null;
@@ -526,9 +564,17 @@ const getEffectiveSlotCount = (d, s, extShifts) => {
   if (!extShifts || !extShifts.length) return base;
   const extBodies = extShifts.reduce((n, ext) => {
     const pair = EXT_PAIRS.find(p => p.id === ext.pairId);
-    if (!pair || !pair.covers.includes(s)) return n;
-    const idx = pair.covers.indexOf(s);
-    return n + ((idx === 0 ? !!ext.empAId : idx === 1 ? !!ext.empBId : false) ? 1 : 0);
+    if (!pair) return n;
+    if (pair.covers.includes(s) && ext.day === d) {
+      const idx = pair.covers.indexOf(s);
+      return n + ((idx === 0 ? !!ext.empAId : idx === 1 ? !!ext.empBId : false) ? 1 : 0);
+    }
+    // Split cross-day: empB covers next day's first shift
+    if (pair.crossDayB === s && ext.empBId) {
+      const nextDay = DAYS[(DAYS.indexOf(ext.day) + 1) % 7];
+      if (nextDay === d) return n + 1;
+    }
+    return n;
   }, 0);
   return Math.max(0, base - extBodies);
 };
@@ -757,22 +803,37 @@ const SHIFT_START_HOUR = { first: 6, second: 14, third: 22 };
 const SLOT_OFFSET_HOURS = (day, shiftId) =>
   DAYS.indexOf(day) * 24 + SHIFT_START_HOUR[shiftId];
 
-function calcRestGap(empId, schedule, day, shiftId) {
+function calcRestGap(empId, schedule, day, shiftId, extShifts) {
   const myStart = SLOT_OFFSET_HOURS(day, shiftId);
   let prevEnd = -Infinity;
-  // Walk backwards from the slot before ours — stop at first gap or start of week
+  // Walk backwards through regular schedule slots
   const idx = slotIndex(day, shiftId);
   for (let i = idx - 1; i >= 0; i--) {
     const { day: d, shiftId: s } = ALL_SLOTS[i];
     const end = SLOT_OFFSET_HOURS(d, s) + SHIFT_HOURS;
-    if (end > myStart) continue; // overlapping (shouldn't happen but guard it)
+    if (end > myStart) continue;
     const asgn = schedule[cellKey(d, s)] || [];
     if (asgn.some(a => a.employeeId === empId)) {
       if (end > prevEnd) prevEnd = end;
-      break; // found the most recent prior shift — rest gap is relative to it
+      break;
     }
-    // If this slot is more than 24h before us and still no hit, further back is Infinity
     if (myStart - end > 24) break;
+  }
+  // Also check ext shifts (12hr, swing, split) the employee is participating in
+  for (const ext of (extShifts || [])) {
+    if (ext.empAId !== empId && ext.empBId !== empId) continue;
+    const pair = EXT_PAIRS.find(p => p.id === ext.pairId);
+    if (!pair) continue;
+    const di = DAYS.indexOf(ext.day);
+    let startH;
+    if (ext.empAId === empId) {
+      startH = di * 24 + (pair.startHour ?? 6);
+    } else {
+      const dayOffset = pair.nextDayB ? 1 : 0;
+      startH = (di + dayOffset) * 24 + (pair.startHourB ?? pair.startHour ?? 18);
+    }
+    const endH = startH + EXT_SHIFT_HOURS;
+    if (endH <= myStart && endH > prevEnd) prevEnd = endH;
   }
   if (prevEnd === -Infinity) return Infinity;
   return myStart - prevEnd;
@@ -810,13 +871,19 @@ function calcConsecutiveHours(empId, schedule, day, shiftId, extShifts) {
     blocks.push([SLOT_OFFSET_HOURS(d, s), SLOT_OFFSET_HOURS(d, s) + SHIFT_HOURS]);
   }
   for (const ext of (extShifts || [])) {
-    if (ext.empAId === empId || ext.empBId === empId) {
-      const pair = EXT_PAIRS.find(p => p.id === ext.pairId);
-      if (!pair) continue;
-      const di = DAYS.indexOf(ext.day);
-      const startH = ext.pairId === "day" ? di * 24 + 6 : di * 24 + 18;
-      blocks.push([startH, startH + EXT_SHIFT_HOURS]);
+    if (ext.empAId !== empId && ext.empBId !== empId) continue;
+    const pair = EXT_PAIRS.find(p => p.id === ext.pairId);
+    if (!pair) continue;
+    const di = DAYS.indexOf(ext.day);
+    let startH;
+    if (ext.empAId === empId) {
+      startH = di * 24 + (pair.startHour ?? 6);
+    } else {
+      // empB — split pair starts on next calendar day
+      const dayOffset = pair.nextDayB ? 1 : 0;
+      startH = (di + dayOffset) * 24 + (pair.startHourB ?? pair.startHour ?? 18);
     }
+    blocks.push([startH, startH + EXT_SHIFT_HOURS]);
   }
   const propStart = SLOT_OFFSET_HOURS(day, shiftId);
   blocks.push([propStart, propStart + SHIFT_HOURS]);
@@ -1080,6 +1147,8 @@ const isGuardOnly = (e) => {
 function buildAutoFill(sourceEmps, cfg, empTimeOffDays, empPatterns, extShiftsArg, jitter = false) {
   const maxNights = cfg?.maxConsecutiveNights ?? MAX_CONSECUTIVE_NIGHTS;
   const minRest   = cfg?.minRestHours ?? MIN_REST_HOURS;
+  // Wrapper that automatically includes extShiftsArg in rest-gap checks
+  const rg = (id, sched, d, s) => calcRestGap(id, sched, d, s, extShiftsArg);
   const maxShifts = cfg?.maxConsecutiveShifts ?? 5;
   const daysOff   = Math.max(1, 7 - maxShifts); // rest days in the cycle
   const ns          = {};
@@ -1087,6 +1156,13 @@ function buildAutoFill(sourceEmps, cfg, empTimeOffDays, empPatterns, extShiftsAr
   const dayWorked   = {};
   const shiftsWorked = {};
   sourceEmps.forEach(e => { hourTracker[e.id] = 0; dayWorked[e.id] = new Set(); shiftsWorked[e.id] = 0; });
+  // Seed ext shift hours so the algorithm knows these employees are pre-committed.
+  // Without this, an employee with a 12h ext shift still shows 0h and gets a full
+  // regular week assigned on top of it (causing 60h+ overloads like Harms).
+  (extShiftsArg || []).forEach(ext => {
+    if (ext.empAId && hourTracker[ext.empAId] !== undefined) hourTracker[ext.empAId] += EXT_SHIFT_HOURS;
+    if (ext.empBId && hourTracker[ext.empBId] !== undefined) hourTracker[ext.empBId] += EXT_SHIFT_HOURS;
+  });
 
   // ── Step 1: Assign each employee a shift + work-block plan for the week ───
   // "plan[empId]" = { shiftId, workDays: Set<dayName> }
@@ -1314,7 +1390,7 @@ function buildAutoFill(sourceEmps, cfg, empTimeOffDays, empPatterns, extShiftsAr
     if (empTimeOffDays && empTimeOffDays.has(emp.id + "__" + day)) return null;
     // Qualification gate: employee must be able to fill at least one position in this slot
     if (!getAvailPos(day, shiftId).some(p => emp.qualifications.includes(p))) return null;
-    if (isRestViolation(emp, calcRestGap(emp.id, ns, day, shiftId), minRest)) return null;
+    if (isRestViolation(emp, rg(emp.id, ns, day, shiftId), minRest)) return null;
     if (calcConsecutiveHours(emp.id, ns, day, shiftId, extShiftsArg) > empMaxConsec(emp)) return null;
     if (shiftId === "third" && calcConsecutiveNights(emp.id, ns, day, shiftId) >= maxNights) return null;
     // Requires: employee must only appear on their required shift — hard block all others.
@@ -1543,8 +1619,16 @@ function buildAutoFill(sourceEmps, cfg, empTimeOffDays, empPatterns, extShiftsAr
       (extShiftsArg||[]).reduce((n, ext) => {
         const pair = EXT_PAIRS.find(p => p.id === ext.pairId);
         if (!pair) return n;
-        const idx = pair.covers.indexOf(shiftId);
-        return n + ((idx === 0 ? !!ext.empAId : idx === 1 ? !!ext.empBId : false) ? 1 : 0);
+        if (pair.covers.includes(shiftId) && ext.day === day) {
+          const idx = pair.covers.indexOf(shiftId);
+          return n + ((idx === 0 ? !!ext.empAId : idx === 1 ? !!ext.empBId : false) ? 1 : 0);
+        }
+        // Split cross-day: empB covers next day's first shift
+        if (pair.crossDayB === shiftId && ext.empBId) {
+          const nextDay = DAYS[(DAYS.indexOf(ext.day) + 1) % 7];
+          if (nextDay === day) return n + 1;
+        }
+        return n;
       }, 0));
 
   // ── Step 3: CSP fill — process most-constrained slots first (MRV) ─────────
@@ -1574,6 +1658,11 @@ function buildAutoFill(sourceEmps, cfg, empTimeOffDays, empPatterns, extShiftsAr
         const idx = pair.covers.indexOf(shift.id);
         if (idx === 0 && ext.empAId) used.add(ext.empAId);
         if (idx === 1 && ext.empBId) used.add(ext.empBId);
+        // Split cross-day: empB is working next day's first shift
+        if (pair.crossDayB === shift.id && ext.empBId) {
+          const nextDay = DAYS[(DAYS.indexOf(ext.day) + 1) % 7];
+          if (nextDay === day) used.add(ext.empBId);
+        }
       });
 
       // Relaxed scorer: allows FT on rest days — only used when no compliant
@@ -1588,7 +1677,7 @@ function buildAutoFill(sourceEmps, cfg, empTimeOffDays, empPatterns, extShiftsAr
         if ((emp.blockedShifts||[]).includes(shiftId)) return null;
         const myHours = hourTracker[emp.id] || 0;
         if (myHours >= OT_RELIEF_THRESHOLD) return null;
-        if (isRestViolation(emp, calcRestGap(emp.id, ns, day, shiftId), minRest)) return null;
+        if (isRestViolation(emp, rg(emp.id, ns, day, shiftId), minRest)) return null;
         if (calcConsecutiveHours(emp.id, ns, day, shiftId, extShiftsArg) > empMaxConsec(emp)) return null;
         const restDayPenalty = (empPlan && !empPlan.workDays.has(day)) ? 500 : 0;
         const fairPenalty    = Math.max(0, myHours - peerMinHours(emp)) * 15;
@@ -1614,17 +1703,33 @@ function buildAutoFill(sourceEmps, cfg, empTimeOffDays, empPatterns, extShiftsAr
         const pair = EXT_PAIRS.find(p => p.id === ext.pairId);
         if (!pair) return n;
         const shiftIdx = pair.covers.indexOf(shift.id);
-        const hasBody = shiftIdx === 0 ? !!ext.empAId : shiftIdx === 1 ? !!ext.empBId : false;
+        let hasBody = shiftIdx === 0 ? !!ext.empAId : shiftIdx === 1 ? !!ext.empBId : false;
+        // Split cross-day: empB counts as a body for next day's first shift
+        if (!hasBody && pair.crossDayB === shift.id && ext.empBId) {
+          const nextDay = DAYS[(DAYS.indexOf(ext.day) + 1) % 7];
+          if (nextDay === day) hasBody = true;
+        }
         return n + (hasBody ? 1 : 0);
       }, 0);
       // effectiveSlots = cap for REGULAR (non-Supervisor) bodies only.
       const effectiveSlots = Math.max(0, REGULAR_SLOTS(day, shift.id) - extBodyCount);
 
+      // Helper: resolve which employee ID is "present" for an ext shift in this slot
+      const extPresentId = (e, pair) => {
+        const idx = pair.covers.indexOf(shift.id);
+        if (idx === 0) return e.empAId;
+        if (idx === 1) return e.empBId;
+        // Split cross-day: empB covers next day's first shift
+        if (pair.crossDayB === shift.id && e.empBId) {
+          const nextDay = DAYS[(DAYS.indexOf(e.day) + 1) % 7];
+          if (nextDay === day) return e.empBId;
+        }
+        return null;
+      };
       const extAlreadyScale = activeExts.some(e => {
         const pair = EXT_PAIRS.find(p => p.id === e.pairId);
         if (!pair) return false;
-        const idx = pair.covers.indexOf(shift.id);
-        const presentId = idx === 0 ? e.empAId : idx === 1 ? e.empBId : null;
+        const presentId = extPresentId(e, pair);
         const presentEmp = presentId ? sourceEmps.find(x => x.id === presentId) : null;
         const roles = presentEmp
           ? ["Scale","Medical"].filter(r => presentEmp.qualifications.includes(r))
@@ -1634,8 +1739,7 @@ function buildAutoFill(sourceEmps, cfg, empTimeOffDays, empPatterns, extShiftsAr
       const extAlreadyMedical = activeExts.some(e => {
         const pair = EXT_PAIRS.find(p => p.id === e.pairId);
         if (!pair) return false;
-        const idx = pair.covers.indexOf(shift.id);
-        const presentId = idx === 0 ? e.empAId : idx === 1 ? e.empBId : null;
+        const presentId = extPresentId(e, pair);
         const presentEmp = presentId ? sourceEmps.find(x => x.id === presentId) : null;
         const roles = presentEmp
           ? ["Scale","Medical"].filter(r => presentEmp.qualifications.includes(r))
@@ -1712,7 +1816,7 @@ function buildAutoFill(sourceEmps, cfg, empTimeOffDays, empPatterns, extShiftsAr
           if ((emp.qualifications||[]).includes("Supervisor")) continue;
           const remaining = Object.keys(domains[emp.id] || {});
           if (remaining.length !== 1 || remaining[0] !== key) continue;
-          if (isRestViolation(emp, calcRestGap(emp.id, ns, day, shift.id), minRest)) continue;
+          if (isRestViolation(emp, rg(emp.id, ns, day, shift.id), minRest)) continue;
           if (calcConsecutiveHours(emp.id, ns, day, shift.id, extShiftsArg) > empMaxConsec(emp)) continue;
           const ap = getAvailPos(day, shift.id).filter(p => canFillPos(emp, p, day));
           if (!ap.length) continue;
@@ -1848,6 +1952,11 @@ function buildAutoFill(sourceEmps, cfg, empTimeOffDays, empPatterns, extShiftsAr
       const idx = pair.covers.indexOf(shiftId);
       if (idx === 0 && ext.empAId) s.add(ext.empAId);
       if (idx === 1 && ext.empBId) s.add(ext.empBId);
+      // Split cross-day: empB covers next day's first shift
+      if (pair.crossDayB === shiftId && ext.empBId) {
+        const nextDay = DAYS[(DAYS.indexOf(ext.day) + 1) % 7];
+        if (nextDay === day) s.add(ext.empBId);
+      }
     });
     return s;
   };
@@ -1902,7 +2011,7 @@ function buildAutoFill(sourceEmps, cfg, empTimeOffDays, empPatterns, extShiftsAr
             if (empTimeOffDays && empTimeOffDays.has(e.id + "__" + day)) return false;
             if ((e.blockedShifts||[]).includes(shift.id)) return false;
             if (e.requiredShift && e.requiredShift !== shift.id) return false;
-            if (isRestViolation(e, calcRestGap(e.id, ns, day, shift.id), minRest)) return false;
+            if (isRestViolation(e, rg(e.id, ns, day, shift.id), minRest)) return false;
             if (calcConsecutiveHours(e.id, ns, day, shift.id, extShiftsArg) > empMaxConsec(e)) return false;
             if (shift.id === "third" && calcConsecutiveNights(e.id, ns, day, shift.id) >= maxNights) return false;
             if (!getAvailPos(day, shift.id).some(p => e.qualifications.includes(p))) return false;
@@ -1936,10 +2045,91 @@ function buildAutoFill(sourceEmps, cfg, empTimeOffDays, empPatterns, extShiftsAr
     if (!sourceEmps.some(e => e.employmentType === "full-time" && (hourTracker[e.id]||0) < FT_MIN_HOURS)) break;
     fillPass("full-time", { capAt40: true, shiftLocked: sweep < 2 });
   }
+  // ── Step 4b: FT double-shift top-off (willing16h only) ─────────────────────
+  // For FT employees still under 40h who are willing to work 16h, assign them
+  // to the shift adjacent to a day they already work — up to 40h total.
+  {
+    const ADJACENT = { first: ["second"], second: ["first", "third"], third: ["second"] };
+    for (const emp of sourceEmps) {
+      if (emp.employmentType !== "full-time") continue;
+      if (!emp.willing16h) continue;
+      if ((hourTracker[emp.id] || 0) >= FT_MIN_HOURS) continue;
+      const empPlan = plan[emp.id];
+      const plannedShift = empPlan?.shiftId;
+      if (!plannedShift) continue;
+      const adjShifts = ADJACENT[plannedShift] || [];
+      for (const day of DAYS) {
+        if ((hourTracker[emp.id] || 0) >= FT_MIN_HOURS) break;
+        const primaryKey = cellKey(day, plannedShift);
+        const alreadyOnPrimary = (ns[primaryKey] || []).some(a => a.employeeId === emp.id);
+        if (!alreadyOnPrimary) continue;
+        if ((emp.unavailableDays || []).includes(day)) continue;
+        if (empTimeOffDays && empTimeOffDays.has(emp.id + "__" + day)) continue;
+        for (const adjShift of adjShifts) {
+          if ((hourTracker[emp.id] || 0) >= FT_MIN_HOURS) break;
+          if ((emp.blockedShifts || []).includes(adjShift)) continue;
+          const adjKey = cellKey(day, adjShift);
+          const adjAsgn = ns[adjKey] || [];
+          const cap = slotCap(day, adjShift);
+          if (adjAsgn.length >= cap) continue;
+          if (adjAsgn.some(a => a.employeeId === emp.id)) continue;
+          const gap = rg(emp.id, ns, day, adjShift);
+          if (isRestViolation(emp, gap, minRest)) continue;
+          if (calcConsecutiveHours(emp.id, ns, day, adjShift, extShiftsArg) > MAX_CONSECUTIVE_HOURS) continue;
+          const pos = pickPosition(emp, adjAsgn, day, adjShift);
+          if (!pos) continue;
+          hourTracker[emp.id]  = (hourTracker[emp.id]  || 0) + SHIFT_HOURS;
+          shiftsWorked[emp.id] = (shiftsWorked[emp.id] || 0) + 1;
+          dayWorked[emp.id].add(day);
+          adjAsgn.push({ employeeId: emp.id, position: pos });
+          ns[adjKey] = adjAsgn;
+        }
+      }
+    }
+  }
+
   // Step 5: PT fill — preferred shift only
   fillPass("part-time", { shiftLocked: false });
   // Step 5b: On-call fill — last resort
   fillPass("on-call", { shiftLocked: false, isOnCall: true });
+
+  // ── Step 4c: OC→FT substitution pass ────────────────────────────────────────
+  // Find slots where on-call employees fill Guard positions while FT Guard employees
+  // are still under 40h. Swap the on-call out for the FT employee.
+  for (const day of DAYS) {
+    for (const shift of SHIFTS) {
+      const key  = cellKey(day, shift.id);
+      const asgn = ns[key] || [];
+      for (let ai = 0; ai < asgn.length; ai++) {
+        const slot = asgn[ai];
+        const ocEmp = sourceEmps.find(e => e.id === slot.employeeId);
+        if (!ocEmp || ocEmp.employmentType !== "on-call") continue;
+        if (slot.position !== "Guard") continue;
+        const replacement = sourceEmps.find(e => {
+          if (e.employmentType !== "full-time") return false;
+          if ((hourTracker[e.id] || 0) >= FT_MIN_HOURS) return false;
+          if (asgn.some(a => a.employeeId === e.id)) return false;
+          if ((e.unavailableDays || []).includes(day)) return false;
+          if (empTimeOffDays && empTimeOffDays.has(e.id + "__" + day)) return false;
+          if ((e.blockedShifts || []).includes(shift.id)) return false;
+          if (e.requiredShift && e.requiredShift !== shift.id) return false;
+          if (!e.qualifications.includes("Guard")) return false;
+          if (isRestViolation(e, rg(e.id, ns, day, shift.id), minRest)) return false;
+          if (calcConsecutiveHours(e.id, ns, day, shift.id, extShiftsArg) > empMaxConsec(e)) return false;
+          if (shift.id === "third" && calcConsecutiveNights(e.id, ns, day, shift.id) >= maxNights) return false;
+          return true;
+        });
+        if (!replacement) continue;
+        asgn[ai] = { employeeId: replacement.id, position: "Guard" };
+        hourTracker[ocEmp.id]        = Math.max(0, (hourTracker[ocEmp.id] || 0) - SHIFT_HOURS);
+        shiftsWorked[ocEmp.id]       = Math.max(0, (shiftsWorked[ocEmp.id] || 0) - 1);
+        hourTracker[replacement.id]  = (hourTracker[replacement.id] || 0) + SHIFT_HOURS;
+        shiftsWorked[replacement.id] = (shiftsWorked[replacement.id] || 0) + 1;
+        dayWorked[replacement.id].add(day);
+        ns[key] = asgn;
+      }
+    }
+  }
 
   // ── Step 5e: Ripple Effect Cascade ───────────────────────────────────────────
   // When FT employees are still under 40h after all fill passes, cascade-displace
@@ -1984,7 +2174,7 @@ function buildAutoFill(sourceEmps, cfg, empTimeOffDays, empPatterns, extShiftsAr
             // FT employee must be eligible for this slot
             if ((ftEmp.unavailableDays||[]).includes(day)) continue;
             if (empTimeOffDays && empTimeOffDays.has(ftEmp.id + "__" + day)) continue;
-            if (isRestViolation(ftEmp, calcRestGap(ftEmp.id, ns, day, shift.id), minRest)) continue;
+            if (isRestViolation(ftEmp, rg(ftEmp.id, ns, day, shift.id), minRest)) continue;
             if (calcConsecutiveHours(ftEmp.id, ns, day, shift.id, extShiftsArg) > empMaxConsec(ftEmp)) continue;
             if (shift.id === "third" && calcConsecutiveNights(ftEmp.id, ns, day, shift.id) >= maxNights) continue;
             const ftAp = getAvailPos(day, shift.id).filter(p => canFillPos(ftEmp, p, day));
@@ -2018,7 +2208,7 @@ function buildAutoFill(sourceEmps, cfg, empTimeOffDays, empPatterns, extShiftsAr
                 if (empTimeOffDays && empTimeOffDays.has(displacedEmp.id + "__" + rDay)) continue;
                 if ((displacedEmp.blockedShifts||[]).includes(rShift.id)) continue;
                 if (displacedEmp.requiredShift && displacedEmp.requiredShift !== rShift.id) continue;
-                if (isRestViolation(displacedEmp, calcRestGap(displacedEmp.id, ns, rDay, rShift.id), minRest)) continue;
+                if (isRestViolation(displacedEmp, rg(displacedEmp.id, ns, rDay, rShift.id), minRest)) continue;
                 if (calcConsecutiveHours(displacedEmp.id, ns, rDay, rShift.id, extShiftsArg) > empMaxConsec(displacedEmp)) continue;
                 const rAp = getAvailPos(rDay, rShift.id).filter(p => canFillPos(displacedEmp, p, rDay));
                 if (!rAp.length) continue;
@@ -2104,7 +2294,7 @@ function buildAutoFill(sourceEmps, cfg, empTimeOffDays, empPatterns, extShiftsAr
           if (empTimeOffDays && empTimeOffDays.has(e.id + "__" + day)) return false;
           if ((e.blockedShifts||[]).includes(shift.id)) return false;
           if (e.requiredShift && e.requiredShift !== shift.id) return false;
-          if (isRestViolation(e, calcRestGap(e.id, ns, day, shift.id), minRest)) return false;
+          if (isRestViolation(e, rg(e.id, ns, day, shift.id), minRest)) return false;
           if (calcConsecutiveHours(e.id, ns, day, shift.id, extShiftsArg) > empMaxConsec(e)) return false;
           return true;
         });
@@ -2185,7 +2375,7 @@ function buildAutoFill(sourceEmps, cfg, empTimeOffDays, empPatterns, extShiftsAr
           if (empTimeOffDays && empTimeOffDays.has(donor.id + "__" + gapDay)) continue;
           if ((donor.blockedShifts||[]).includes(gapShift.id)) continue;
           if (donor.requiredShift && donor.requiredShift !== gapShift.id) continue;
-          if (isRestViolation(donor, calcRestGap(donor.id, ns, gapDay, gapShift.id), minRest)) continue;
+          if (isRestViolation(donor, rg(donor.id, ns, gapDay, gapShift.id), minRest)) continue;
           if (calcConsecutiveHours(donor.id, ns, gapDay, gapShift.id, extShiftsArg) > empMaxConsec(donor)) continue;
 
           // Already filling the gap slot? Skip.
@@ -2227,7 +2417,7 @@ function buildAutoFill(sourceEmps, cfg, empTimeOffDays, empPatterns, extShiftsAr
             // Check the sub can fill the vacated role (or at least Guard)
             const subAp = getAvailPos(donorSourceDay, donorSourceShift.id).filter(p => canFillPos(sub, p, donorSourceDay));
             if (!subAp.includes(vacatedPosition) && !subAp.includes("Guard")) return false;
-            if (isRestViolation(sub, calcRestGap(sub.id, ns, donorSourceDay, donorSourceShift.id), minRest)) return false;
+            if (isRestViolation(sub, rg(sub.id, ns, donorSourceDay, donorSourceShift.id), minRest)) return false;
             if (calcConsecutiveHours(sub.id, ns, donorSourceDay, donorSourceShift.id, extShiftsArg) > empMaxConsec(sub)) return false;
             // Respect weekly shift cap
             const subCap = sub.maxShiftsPerWeek;
@@ -2351,18 +2541,27 @@ function violationMinimizerPass(ns, sourceEmps, cfg, empTimeOffDays, extShiftsAr
       if (ext.empAId) extBodiesBySlot.get(k).add(ext.empAId);
       if (ext.empBId) extBodiesBySlot.get(k).add(ext.empBId);
     }
+    // Split cross-day: empB also covers next day's first shift
+    if (pair.crossDayB && ext.empBId) {
+      const nextDay = DAYS[(DAYS.indexOf(ext.day) + 1) % 7];
+      const k = nextDay + "__" + pair.crossDayB;
+      if (!extBodiesBySlot.has(k)) extBodiesBySlot.set(k, new Set());
+      extBodiesBySlot.get(k).add(ext.empBId);
+    }
   }
 
   const isClean = (emp, day, shiftId, sched) => {
     if ((emp.unavailableDays||[]).includes(day)) return false;
     if (empTimeOffDays && empTimeOffDays.has(emp.id + "__" + day)) return false;
+    const allowedDOW = emp.availableDaysOfWeek && emp.availableDaysOfWeek.length > 0 ? emp.availableDaysOfWeek : null;
+    if (allowedDOW && !allowedDOW.includes(day)) return false;
     if ((emp.blockedShifts||[]).includes(shiftId)) return false;
-    if (emp.requiredShift && emp.requiredShift !== shiftId) return false;
+    if (emp.requiredShift && emp.requiredShift !== shiftId && !emp.crossShiftOT) return false;
     if (isFT(emp) && !isSup(emp)) {
       const p = plan[emp.id];
       if (p && p.shiftId !== shiftId) return false;
     }
-    if (isRestViolation(emp, calcRestGap(emp.id, sched, day, shiftId), minRest)) return false;
+    if (isRestViolation(emp, calcRestGap(emp.id, sched, day, shiftId, extShiftsArg), minRest)) return false;
     if (calcConsecutiveHours(emp.id, sched, day, shiftId, extShiftsArg) > empMaxConsec(emp)) return false;
     if (shiftId === "third" && calcConsecutiveNights(emp.id, sched, day, shiftId) >= maxNights) return false;
     return true;
@@ -2371,8 +2570,10 @@ function violationMinimizerPass(ns, sourceEmps, cfg, empTimeOffDays, extShiftsAr
   const severity = (emp, day, shiftId) => {
     if ((emp.unavailableDays||[]).includes(day)) return 100;
     if (empTimeOffDays && empTimeOffDays.has(emp.id + "__" + day)) return 95;
+    const allowedDOW2 = emp.availableDaysOfWeek && emp.availableDaysOfWeek.length > 0 ? emp.availableDaysOfWeek : null;
+    if (allowedDOW2 && !allowedDOW2.includes(day)) return 93;
     if ((emp.blockedShifts||[]).includes(shiftId)) return 90;
-    if (emp.requiredShift && emp.requiredShift !== shiftId) return 80;
+    if (emp.requiredShift && emp.requiredShift !== shiftId && !emp.crossShiftOT) return 80;
     if (isFT(emp) && !isSup(emp)) {
       const p = plan[emp.id];
       if (p && p.shiftId !== shiftId) return 70;
@@ -2496,10 +2697,12 @@ function ExcelPreviewModal({ onDownload, onClose }) {
   };
 
   const shiftRank = {first:0,second:1,third:2};
+  const isSupervisor = (e) => (e.qualifications||[]).includes("Supervisor");
   const sortedEmps = [...employees].sort((a,b) => {
-    const aS = a.qualifications.includes("Supervisor_REMOVED") ? -1 : shiftRank[primaryShift(a)]||0;
-    const bS = b.qualifications.includes("Supervisor_REMOVED") ? -1 : shiftRank[primaryShift(b)]||0;
-    return aS - bS;
+    // Supervisor on 1st shift always sorts to top row
+    const aRank = isSupervisor(a) && primaryShift(a) === "first" ? -1 : shiftRank[primaryShift(a)]||0;
+    const bRank = isSupervisor(b) && primaryShift(b) === "first" ? -1 : shiftRank[primaryShift(b)]||0;
+    return aRank - bRank;
   });
 
   const [wy,wm,wd] = (weekStart||"2024-01-07").split("-").map(Number);
@@ -2745,10 +2948,12 @@ async function exportToExcel(employees, schedule, extShifts, weekStart) {
     return Object.entries(counts).sort((a,b)=>b[1]-a[1])[0]?.[0] || "first";
   };
   const shiftRank = { first:0, second:1, third:2 };
+  const isSupervisor = (e) => (e.qualifications||[]).includes("Supervisor");
   const sortedEmps = [...employees].sort((a,b) => {
-    const aS = a.qualifications.includes("Supervisor_REMOVED") ? -1 : shiftRank[primaryShift(a)] || 0;
-    const bS = b.qualifications.includes("Supervisor_REMOVED") ? -1 : shiftRank[primaryShift(b)] || 0;
-    return aS - bS;
+    // Supervisor on 1st shift always sorts to top row
+    const aRank = isSupervisor(a) && primaryShift(a) === "first" ? -1 : shiftRank[primaryShift(a)] || 0;
+    const bRank = isSupervisor(b) && primaryShift(b) === "first" ? -1 : shiftRank[primaryShift(b)] || 0;
+    return aRank - bRank;
   });
   const rowBgFor = (emp) => {
     if (primaryShift(emp)==="first") return CLR.rowBlue;
@@ -3631,7 +3836,7 @@ function ManualPairModal({ initialDay, onApprove, onCancel }) {
               border:"1px solid var(--ss-border)",height:36}}>
               {EXT_PAIRS.map(p=>(
                 <button key={p.id} onClick={()=>setPairId(p.id)} style={{
-                  flex:1,background:pairId===p.id?"#7c3aed":"var(--ss-surface-alt)",
+                  flex:1,background:pairId===p.id?(p.color||"#7c3aed"):"var(--ss-surface-alt)",
                   color:pairId===p.id?"#fff":"var(--ss-text-muted)",border:"none",
                   cursor:"pointer",fontSize:11,fontWeight:700,fontFamily:"inherit"}}>
                   {p.label}
@@ -3697,11 +3902,11 @@ function ManualPairModal({ initialDay, onApprove, onCancel }) {
                       {!isSwing&&<div style={{display:"flex",gap:8,fontSize:10,color:"var(--ss-text-dim)",flexWrap:"wrap"}}>
                         <span>
                           <span style={{fontWeight:600,color:"var(--ss-text)"}}>{a.name.split(" ")[0]}:</span>
-                          {" "}{pairId==="day"?"0600–1800":"1800–0600"}
+                          {" "}{pairId==="day"?"0600–1800":pairId==="split"?"1400–0200":"1800–0600"}
                         </span>
                         <span>
                           <span style={{fontWeight:600,color:"var(--ss-text)"}}>{b?.name.split(" ")[0]}:</span>
-                          {" "}{pairId==="day"?"1800–0600":"0600–1800"}
+                          {" "}{pairId==="day"?"1800–0600":pairId==="split"?"0200–1400 (+1d)":"0600–1800"}
                         </span>
                         <span style={{marginLeft:"auto",display:"flex",gap:4,alignItems:"center"}}>
                           Combined:{" "}
@@ -3722,7 +3927,7 @@ function ManualPairModal({ initialDay, onApprove, onCancel }) {
             <div>
               <label style={{display:"block",fontSize:10,color:"var(--ss-text-dim)",fontWeight:700,
                 letterSpacing:".06em",marginBottom:6}}>
-                {isSwing ? "EMPLOYEE" : `EMPLOYEE A — ${pairId==="day"?"0600–1800":"1800–0600"}`}
+                {isSwing ? "EMPLOYEE" : `EMPLOYEE A — ${pairId==="day"?"0600–1800":pairId==="split"?"1400–0200":"1800–0600"}`}
               </label>
               <select value={empAId} onChange={e=>setEmpAId(e.target.value)} style={iS}>
                 <option value="">— select —</option>
@@ -3734,13 +3939,13 @@ function ManualPairModal({ initialDay, onApprove, onCancel }) {
                 {availableA.length===0&&<option disabled value="">── no eligible employees for this swing ──</option>}
               </select>
               {empAConflict&&<div style={{fontSize:10,color:"var(--ss-warning)",fontWeight:700,marginTop:4}}>⚠ {empAConflict}</div>}
-              <EmpRow emp={empA} slot={isSwing ? pair?.time : pairId==="day"?"0600–1800":"1800–0600"}/>
+              <EmpRow emp={empA} slot={isSwing ? pair?.time : pairId==="day"?"0600–1800":pairId==="split"?"1400–0200":"1800–0600"}/>
             </div>
             {!isSwing && (
               <div>
                 <label style={{display:"block",fontSize:10,color:"var(--ss-text-dim)",fontWeight:700,
                   letterSpacing:".06em",marginBottom:6}}>
-                  EMPLOYEE B — {pairId==="day"?"1800–0600":"0600–1800"}
+                  EMPLOYEE B — {pairId==="day"?"1800–0600":pairId==="split"?"0200–1400 (+1d)":"0600–1800"}
                 </label>
                 <select value={empBId} onChange={e=>setEmpBId(e.target.value)} style={iS}>
                   <option value="">— select —</option>
@@ -3754,7 +3959,7 @@ function ManualPairModal({ initialDay, onApprove, onCancel }) {
                   )}
                 </select>
                 {empBConflict&&<div style={{fontSize:10,color:"var(--ss-warning)",fontWeight:700,marginTop:4}}>⚠ {empBConflict}</div>}
-                <EmpRow emp={empB} slot={pairId==="day"?"1800–0600":"0600–1800"}/>
+                <EmpRow emp={empB} slot={pairId==="day"?"1800–0600":pairId==="split"?"0200–1400 (+1d)":"0600–1800"}/>
               </div>
             )}
           </div>
@@ -3782,12 +3987,12 @@ function ManualPairModal({ initialDay, onApprove, onCancel }) {
               <div style={{flex:1,background:"#7c3aed30",borderRight:"2px solid #7c3aed",
                 display:"flex",alignItems:"center",justifyContent:"center",fontSize:9,
                 fontWeight:700,color:"#7c3aed"}}>
-                {employees.find(e=>e.id===empAId)?.name.split(" ")[0]} · {pairId==="day"?"0600–1800":"1800–0600"}
+                {employees.find(e=>e.id===empAId)?.name.split(" ")[0]} · {pairId==="day"?"0600–1800":pairId==="split"?"1400–0200":"1800–0600"}
               </div>
               <div style={{flex:1,background:"#0e749018",
                 display:"flex",alignItems:"center",justifyContent:"center",fontSize:9,
                 fontWeight:700,color:"#0e7490"}}>
-                {employees.find(e=>e.id===empBId)?.name.split(" ")[0]} · {pairId==="day"?"1800–0600":"0600–1800"}
+                {employees.find(e=>e.id===empBId)?.name.split(" ")[0]} · {pairId==="day"?"1800–0600":pairId==="split"?"0200–1400 (+1d)":"0600–1800"}
               </div>
             </div>
           </div>
@@ -5306,6 +5511,30 @@ function Ext12hPrefToggle({ val, set }) {
   );
 }
 
+function SplitShiftEligibleToggle({ val, set }) {
+  const t = useTheme();
+  const active = !!val;
+  return (
+    <div style={{marginTop:8}}>
+      <button onClick={()=>set(!active)} style={{
+        width:"100%",padding:"8px 12px",borderRadius:6,border:"1.5px solid",
+        borderColor:active?"#b45309":"#6b7280",
+        background:active?"#b4530918":"transparent",
+        color:active?"#b45309":"#9ca3af",
+        cursor:"pointer",fontSize:11,fontWeight:700,fontFamily:"inherit",
+        display:"flex",alignItems:"center",gap:6,textAlign:"left"}}>
+        <span style={{fontSize:14}}>{active?"✓":"○"}</span>
+        {active ? "Split eligible — 2pm–2am / 2am–2pm" : "Not eligible for split shifts"}
+      </button>
+      {active && (
+        <div style={{fontSize:10,color:"#b45309",marginTop:4,paddingLeft:4}}>
+          ⚠ May be assigned to a 12h split crossing shift boundaries (Medical/Scale).
+        </div>
+      )}
+    </div>
+  );
+}
+
 function AvailabilityEditor({ emp, onUpdate }) {
   const t = useTheme();
   const unavail = emp.unavailableDays || [];
@@ -5352,7 +5581,7 @@ function EmployeeManager({ onOpenTestModal }) {
   const { schedule, setSchedule, extShifts } = useSchedule();
   const t = useTheme();
   const cfg = useSettings();
-  const EMPTY_NEW = {name:"",quals:["Guard"],type:"full-time",unavail:[],prefShifts:[],blockedShifts:[],requiredShift:null,prefDaysOff:[],overtimePref:"neutral",willing16h:false,maxShiftsPerWeek:null,ext12hPref:null,maxWeekendDays:null,availableDaysOfWeek:null,inTraining:false,swingEligible:[],crossShiftOT:false};
+  const EMPTY_NEW = {name:"",quals:["Guard"],type:"full-time",unavail:[],prefShifts:[],blockedShifts:[],requiredShift:null,prefDaysOff:[],overtimePref:"neutral",willing16h:false,maxShiftsPerWeek:null,ext12hPref:null,maxWeekendDays:null,availableDaysOfWeek:null,inTraining:false,swingEligible:[],crossShiftOT:false,splitShiftEligible:false};
   const [newForm,   setNewForm]   = useState(EMPTY_NEW);
   const [editState, setEditState] = useState(null);
   const [errors,    setErrors]    = useState([]);
@@ -5415,7 +5644,7 @@ function EmployeeManager({ onOpenTestModal }) {
     if (!name) return;
     if (!newQuals.length) { setErrors(["Select at least one position."]); setTimeout(()=>setErrors([]),3000); return; }
     if (employees.some(e=>e.name.toLowerCase()===name.toLowerCase())) { setErrors(["Name already exists."]); setTimeout(()=>setErrors([]),3000); return; }
-    setEmployees(p=>[...p,{id:Date.now().toString(),name,qualifications:[...newQuals],employmentType:newType,unavailableDays:[...newUnavail],preferredShifts:[...(newPrefShifts||[])],blockedShifts:[...(newBlockedShifts||[])],requiredShift:newRequiredShift||null,preferredDaysOff:[...newPrefDaysOff],overtimePref:newForm.overtimePref||"neutral",willing16h:newForm.willing16h||false,maxShiftsPerWeek:newForm.maxShiftsPerWeek??null,ext12hPref:newForm.ext12hPref??null,availableDaysOfWeek:newForm.availableDaysOfWeek||null,inTraining:newForm.inTraining||false,swingEligible:[...(newForm.swingEligible||[])],crossShiftOT:newForm.crossShiftOT||false}]);
+    setEmployees(p=>[...p,{id:Date.now().toString(),name,qualifications:[...newQuals],employmentType:newType,unavailableDays:[...newUnavail],preferredShifts:[...(newPrefShifts||[])],blockedShifts:[...(newBlockedShifts||[])],requiredShift:newRequiredShift||null,preferredDaysOff:[...newPrefDaysOff],overtimePref:newForm.overtimePref||"neutral",willing16h:newForm.willing16h||false,maxShiftsPerWeek:newForm.maxShiftsPerWeek??null,ext12hPref:newForm.ext12hPref??null,availableDaysOfWeek:newForm.availableDaysOfWeek||null,inTraining:newForm.inTraining||false,swingEligible:[...(newForm.swingEligible||[])],crossShiftOT:newForm.crossShiftOT||false,splitShiftEligible:newForm.splitShiftEligible||false}]);
     setNewForm(EMPTY_NEW); setErrors([]);
   };
 
@@ -5448,6 +5677,7 @@ function EmployeeManager({ onOpenTestModal }) {
       inTraining:           s.inTraining||false,
       swingEligible:        [...(s.swingEligible||[])],
       crossShiftOT:         s.crossShiftOT||false,
+      splitShiftEligible:   s.splitShiftEligible||false,
       notes:                (s.notes||"").trim(),
     } : e));
     setEditState(null);
@@ -5562,6 +5792,7 @@ function EmployeeManager({ onOpenTestModal }) {
                 <OtPrefToggle val={newForm.overtimePref||"neutral"} set={v=>setNewForm(f=>({...f,overtimePref:v}))} isFT={newType==="full-time"}/>
                 <Willing16hToggle val={newForm.willing16h||false} set={v=>setNewForm(f=>({...f,willing16h:v}))}/>
                 <Ext12hPrefToggle val={newForm.ext12hPref??null} set={v=>setNewForm(f=>({...f,ext12hPref:v}))}/>
+                <SplitShiftEligibleToggle val={newForm.splitShiftEligible||false} set={v=>setNewForm(f=>({...f,splitShiftEligible:v}))}/>
                 <MaxShiftsPerWeekToggle val={newForm.maxShiftsPerWeek??null} set={v=>setNewForm(f=>({...f,maxShiftsPerWeek:v}))}/>
                 <AvailableDaysOfWeekToggle val={newForm.availableDaysOfWeek||null} set={v=>setNewForm(f=>({...f,availableDaysOfWeek:v}))}/>
                 <InTrainingToggle val={newForm.inTraining||false} set={v=>setNewForm(f=>({...f,inTraining:v}))}/>
@@ -5623,6 +5854,7 @@ function EmployeeManager({ onOpenTestModal }) {
 
                 <Willing16hToggle val={editState?.willing16h||false} set={v=>setEditState(s=>({...s,willing16h:v}))}/>
                 <Ext12hPrefToggle val={editState?.ext12hPref??null} set={v=>setEditState(s=>({...s,ext12hPref:v}))}/>
+                <SplitShiftEligibleToggle val={editState?.splitShiftEligible||false} set={v=>setEditState(s=>({...s,splitShiftEligible:v}))}/>
                 <MaxShiftsPerWeekToggle val={editState?.maxShiftsPerWeek??null} set={v=>setEditState(s=>({...s,maxShiftsPerWeek:v}))}/>
                 <AvailableDaysOfWeekToggle val={editState?.availableDaysOfWeek||null} set={v=>setEditState(s=>({...s,availableDaysOfWeek:v}))}/>
                 <InTrainingToggle val={editState?.inTraining||false} set={v=>setEditState(s=>({...s,inTraining:v}))}/>
@@ -5667,6 +5899,7 @@ function EmployeeManager({ onOpenTestModal }) {
                 inTraining:emp.inTraining||false,
                 swingEligible:emp.swingEligible||[],
                 crossShiftOT:emp.crossShiftOT||false,
+                splitShiftEligible:emp.splitShiftEligible||false,
                 notes:emp.notes||"",
               })}
                 style={{cursor:"pointer",borderBottom:"1px solid var(--ss-border)",
@@ -11241,7 +11474,7 @@ function ShiftSchedulerApp() {
       e.preferredDaysOff === undefined || e.overtimePref === undefined ||
       e.preferredShifts === undefined || e.blockedShifts === undefined ||
       e.willing16h === undefined || e.maxShiftsPerWeek === undefined ||
-      e.ext12hPref === undefined
+      e.ext12hPref === undefined || e.splitShiftEligible === undefined
     );
     if (needsMigration) {
       setEmployees(employees.map(e => ({
@@ -11258,6 +11491,7 @@ function ShiftSchedulerApp() {
         maxShiftsPerWeek: e.maxShiftsPerWeek !== undefined ? e.maxShiftsPerWeek : null,
         ext12hPref: e.ext12hPref !== undefined ? e.ext12hPref : null,
         maxWeekendDays: e.maxWeekendDays !== undefined ? e.maxWeekendDays : null,
+        splitShiftEligible: e.splitShiftEligible !== undefined ? e.splitShiftEligible : false,
       })));
     }
   }, [empLoaded]);
