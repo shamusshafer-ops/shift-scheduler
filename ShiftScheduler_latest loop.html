@@ -2693,7 +2693,14 @@ function ExcelPreviewModal({ onDownload, onClose }) {
       const e = employees.find(x => x.id === a.employeeId);
       return a.position === "Scale" || (e && (e.qualifications||[]).includes("Scale"));
     }).length;
-    const suffix = pos==="Scale" && scaleOnShift > 1 ? "-Scale" : pos==="Medical"?"-Med":"";
+    // Supervisor counts as Medical-qualified for the purposes of the "-Med" annotation only
+    const medOnShift = shiftAsgn.filter(a => {
+      const e = employees.find(x => x.id === a.employeeId);
+      return a.position === "Medical" || a.position === "Supervisor"
+        || (e && ((e.qualifications||[]).includes("Medical") || (e.qualifications||[]).includes("Supervisor")));
+    }).length;
+    const suffix = pos==="Scale" && scaleOnShift > 1 ? "-Scale"
+                 : pos==="Medical" && medOnShift > 1 ? "-Med" : "";
     return { text:num+suffix+trnSuffix, kind:sid };
   };
 
@@ -2979,7 +2986,14 @@ async function exportToExcel(employees, schedule, extShifts, weekStart, training
       const e = employees.find(x => x.id === a.employeeId);
       return a.position === "Scale" || (e && (e.qualifications||[]).includes("Scale"));
     }).length;
-    const suffix = pos==="Scale" && scaleOnShift > 1 ? "-Scale" : pos==="Medical"?"-Med":"";
+    // Supervisor counts as Medical-qualified for the purposes of the "-Med" annotation only
+    const medOnShift = shiftAsgn.filter(a => {
+      const e = employees.find(x => x.id === a.employeeId);
+      return a.position === "Medical" || a.position === "Supervisor"
+        || (e && ((e.qualifications||[]).includes("Medical") || (e.qualifications||[]).includes("Supervisor")));
+    }).length;
+    const suffix = pos==="Scale" && scaleOnShift > 1 ? "-Scale"
+                 : pos==="Medical" && medOnShift > 1 ? "-Med" : "";
     return { text: num+suffix+trnSuffix, kind: sid };
   };
 
