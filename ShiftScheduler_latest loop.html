@@ -9085,13 +9085,6 @@ function ScheduleGrid({ onOpenTestModal }) {
       })()}
 
 
-      <div style={{display:"flex",alignItems:"center",gap:8,marginBottom:16,padding:"8px 14px",
-        background:"var(--ss-accent-10)",border:"1px solid var(--ss-accent-25)",borderRadius:6,fontSize:11,color:"var(--ss-text-muted)"}}>
-        <span style={{color:"var(--ss-accent)",fontWeight:700}}>ℹ</span>
-        Every shift requires at least one <span style={{color:"var(--ss-scale)",fontWeight:700,margin:"0 3px"}}>Scale</span> and one
-        <span style={{color:"var(--ss-medical)",fontWeight:700,margin:"0 3px"}}>Medical</span>.
-        FT employees must reach {FT_MIN_HOURS}h/week. Max {cfg?.maxConsecutiveNights??MAX_CONSECUTIVE_NIGHTS} consecutive night shifts. Min {cfg?.minRestHours??MIN_REST_HOURS}h rest between shifts. Default OT: {cfg?.defaultOvertimePref||'neutral'}.
-      </div>
 
       {}
       {!isReadOnly && <div style={{display:"flex",gap:6,flexWrap:"wrap",marginBottom:16,padding:"10px 14px",
@@ -9119,11 +9112,16 @@ function ScheduleGrid({ onOpenTestModal }) {
           );
         })}
         <div style={{width:"100%",borderTop:"1px solid var(--ss-border)",marginTop:6,paddingTop:6,
-          display:"flex",gap:14,flexWrap:"wrap"}}>
-          {ALL_POSITIONS.map(p=>(<span key={p} style={{display:"flex",alignItems:"center",gap:5}}>
-            <span style={{width:9,height:9,borderRadius:2,background:pC(p,t),flexShrink:0}}/>
-            <span style={{fontSize:10,color:"var(--ss-text-muted)"}}>{p}</span>
-          </span>))}
+          display:"flex",flexDirection:"column",alignItems:"center",gap:4}}>
+          <div style={{display:"flex",gap:14,flexWrap:"wrap",justifyContent:"center"}}>
+            {ALL_POSITIONS.map(p=>(<span key={p} style={{display:"flex",alignItems:"center",gap:5}}>
+              <span style={{width:9,height:9,borderRadius:2,background:pC(p,t),flexShrink:0}}/>
+              <span style={{fontSize:10,color:"var(--ss-text-muted)"}}>{p}</span>
+            </span>))}
+          </div>
+          <div style={{fontSize:9,color:"var(--ss-text-dim)",textAlign:"center"}}>
+            Max {cfg?.maxConsecutiveNights??MAX_CONSECUTIVE_NIGHTS} consec. nights · Min {cfg?.minRestHours??MIN_REST_HOURS}h rest · OT default: {cfg?.defaultOvertimePref||'neutral'}
+          </div>
         </div>
       </div>}
 
