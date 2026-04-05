@@ -11883,11 +11883,14 @@ function ShiftSchedulerApp() {
         </div>
 
         {}
-        <div style={{display:"flex",padding:"0 28px",background:"var(--ss-surface)",borderBottom:"1px solid var(--ss-border)"}}>
+        <div style={{display:"flex",justifyContent:"center",padding:"8px 28px",background:"var(--ss-surface)",borderBottom:"1px solid var(--ss-border)",gap:6}}>
           {[{id:"employees",label:"\u25a3 Employees"},{id:"schedule",label:"\u25a6 Schedule"},{id:"dashboard",label:"\u25a4 Dashboard"},{id:"timeoff",label:"📅 Time Off"},{id:"settings",label:"\u2699 Settings"}].map(tab=>(
-            <button key={tab.id} onClick={()=>setActiveTab(tab.id)} style={{background:"transparent",border:"none",
-              borderBottom:activeTab===tab.id?"2px solid "+"var(--ss-accent)":"2px solid transparent",
-              color:activeTab===tab.id?"var(--ss-text)":"var(--ss-text-muted)",padding:"12px 24px",cursor:"pointer",
+            <button key={tab.id} onClick={()=>setActiveTab(tab.id)} style={{
+              background:activeTab===tab.id?"var(--ss-accent-18)":"transparent",
+              border:"1px solid "+(activeTab===tab.id?"var(--ss-accent)":"var(--ss-border)"),
+              borderRadius:6,
+              color:activeTab===tab.id?"var(--ss-accent)":"var(--ss-text-muted)",
+              padding:"8px 20px",cursor:"pointer",
               fontSize:13,fontWeight:600,fontFamily:"inherit",letterSpacing:".05em",
               textTransform:"uppercase",transition:"all .2s",display:"flex",alignItems:"center",gap:7}}>
               {tab.label}
@@ -12137,7 +12140,7 @@ function ShiftSchedulerApp() {
           {underHoursCount>0&&<span><span style={{color:"var(--ss-danger)"}}>\u26a0 UNDER 40H:</span> <span style={{color:"var(--ss-danger)",fontWeight:700}}>{underHoursCount} FT</span></span>}
           {fatigueCount>0&&<span><span style={{color:"var(--ss-fatigue)"}}>⚠ FATIGUE:</span> <span style={{color:"var(--ss-fatigue)",fontWeight:700}}>{fatigueCount} staff</span></span>}
           {prefViolCount>0&&<span><span style={{color:"var(--ss-warning)"}}>⚠ PREF VIOLATIONS:</span> <span style={{color:"var(--ss-warning)",fontWeight:700}}>{prefViolCount} staff</span></span>}
-          {savedWeeks.length>0&&<span><span style={{color:"var(--ss-text-muted)"}}>SAVED WEEKS:</span> <span style={{color:"var(--ss-accent)",fontWeight:700}}>{savedWeeks.length}</span></span>}          <span style={{marginLeft:"auto",color:"var(--ss-text-dim)",fontSize:10}}>Auto-saved across sessions</span>
+          {savedWeeks.length>0&&<span><span style={{color:"var(--ss-text-muted)"}}>SAVED WEEKS:</span> <span style={{color:"var(--ss-accent)",fontWeight:700}}>{savedWeeks.length}</span></span>}
         </div>
 
         {}
