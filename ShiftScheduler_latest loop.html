@@ -9254,7 +9254,7 @@ function ScheduleGrid({ onOpenTestModal }) {
                     onDragLeave={e=>{if(!e.currentTarget.contains(e.relatedTarget)){e.currentTarget.style.borderColor=borderColor;e.currentTarget.style.boxShadow="none";}}}
                     onDrop={e=>{e.preventDefault();e.currentTarget.style.borderColor=borderColor;e.currentTarget.style.boxShadow="none";if(!isReadOnly)handleDrop(day,shift.id);}}
                     style={{background:bgColor,border:"1px solid "+borderColor,borderRadius:4,
-                      padding:8,minHeight:105,display:"flex",flexDirection:"column",gap:4,transition:"border-color .2s"}}>
+                      padding:8,minHeight:105,display:"flex",flexDirection:"column",gap:4,transition:"border-color .2s",minWidth:0,overflow:"hidden"}}>
 
                     {(warn||cellFatigue.length>0||cellExt.length>0)&&(
                       <div style={{display:"flex",gap:3,flexWrap:"wrap",marginBottom:2}}>
@@ -9320,7 +9320,7 @@ function ScheduleGrid({ onOpenTestModal }) {
                           onClick={!isReadOnly ? (e=>handleChipClick(a.employeeId,day,shift.id,a.position,e)) : undefined}
                           style={{display:"flex",alignItems:"center",gap:5,padding:"4px 6px",
                             background:swapBg,border:swapBorder,borderRadius:4,fontSize:11,
-                            opacity:swapOpacity,
+                            opacity:swapOpacity,overflow:"hidden",minWidth:0,
                             cursor:isReadOnly?"default":isSwapBlocked?"not-allowed":"pointer",
                             transition:"opacity .15s, border .1s, background .1s"}}>
                           <span style={{width:6,height:6,borderRadius:"50%",background:dotCol,flexShrink:0}}/>
