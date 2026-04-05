@@ -11888,23 +11888,6 @@ function ShiftSchedulerApp() {
 
           </div>
           <div style={{display:"flex",gap:8,alignItems:"center"}}>
-            <button onClick={()=>setShowExcelPreviewApp(true)} disabled={!Object.keys(schedule).length}
-              style={{background:"var(--ss-scale-18)",border:"1px solid var(--ss-scale-45)",
-                color:!Object.keys(schedule).length?"var(--ss-text-dim)":"var(--ss-scale)",
-                padding:"8px 14px",borderRadius:6,cursor:!Object.keys(schedule).length?"not-allowed":"pointer",
-                fontSize:12,fontWeight:700,fontFamily:"inherit",display:"flex",alignItems:"center",gap:6,transition:"background .2s"}}
-              onMouseEnter={e=>{if(Object.keys(schedule).length)e.currentTarget.style.background="var(--ss-scale-30)";}}
-              onMouseLeave={e=>e.currentTarget.style.background="var(--ss-scale-18)"}>
-              ↓ Export Excel
-            </button>
-            <button onClick={()=>setShowTestModal(true)}
-              style={{background:"var(--ss-accent-18)",border:"1px solid var(--ss-accent-45)",color:"var(--ss-accent)",
-                padding:"8px 14px",borderRadius:6,cursor:"pointer",fontSize:12,fontWeight:700,
-                fontFamily:"inherit",display:"flex",alignItems:"center",gap:6,transition:"background .2s"}}
-              onMouseEnter={e=>e.currentTarget.style.background="var(--ss-accent-30)"}
-              onMouseLeave={e=>e.currentTarget.style.background="var(--ss-accent-18)"}>
-              🧪 Test Roster
-            </button>
             <button onClick={()=>setThemeName(p=>p==="dark"?"light":"dark")} title="Toggle theme"
               style={{background:"var(--ss-surface-alt)",border:"1px solid var(--ss-border)",color:"var(--ss-text-muted)",
                 padding:"8px 14px",borderRadius:6,cursor:"pointer",fontSize:14,fontFamily:"inherit",
@@ -11914,6 +11897,31 @@ function ShiftSchedulerApp() {
               {themeName==="dark"?"\u2600":"\u263d"}
             </button>
           </div>
+        </div>
+
+        {}
+        <div style={{display:"flex",padding:"0 28px",background:"var(--ss-surface)",borderBottom:"1px solid var(--ss-border)"}}>
+          {[{id:"employees",label:"\u25a3 Employees"},{id:"schedule",label:"\u25a6 Schedule"},{id:"dashboard",label:"\u25a4 Dashboard"},{id:"timeoff",label:"📅 Time Off"},{id:"settings",label:"\u2699 Settings"}].map(tab=>(
+            <button key={tab.id} onClick={()=>setActiveTab(tab.id)} style={{background:"transparent",border:"none",
+              borderBottom:activeTab===tab.id?"2px solid "+"var(--ss-accent)":"2px solid transparent",
+              color:activeTab===tab.id?"var(--ss-text)":"var(--ss-text-muted)",padding:"12px 24px",cursor:"pointer",
+              fontSize:13,fontWeight:600,fontFamily:"inherit",letterSpacing:".05em",
+              textTransform:"uppercase",transition:"all .2s",display:"flex",alignItems:"center",gap:7}}>
+              {tab.label}
+              {tab.id==="dashboard"&&(unmetReqs>0||underHoursCount>0||fatigueCount>0||prefViolCount>0)&&(
+                <span style={{background:"var(--ss-danger)",color:"#fff",fontSize:9,fontWeight:800,
+                  padding:"1px 6px",borderRadius:10,lineHeight:1.4}}>
+                  {unmetReqs+underHoursCount+fatigueCount+prefViolCount}
+                </span>
+              )}
+              {tab.id==="timeoff"&&(timeOffReqs||[]).filter(r=>r.status==="pending").length>0&&(
+                <span style={{background:"var(--ss-warning)",color:"#000",fontSize:9,fontWeight:800,
+                  padding:"1px 6px",borderRadius:10,lineHeight:1.4}}>
+                  {(timeOffReqs||[]).filter(r=>r.status==="pending").length}
+                </span>
+              )}
+            </button>
+          ))}
         </div>
 
         {}
@@ -12147,31 +12155,6 @@ function ShiftSchedulerApp() {
           {fatigueCount>0&&<span><span style={{color:"var(--ss-fatigue)"}}>⚠ FATIGUE:</span> <span style={{color:"var(--ss-fatigue)",fontWeight:700}}>{fatigueCount} staff</span></span>}
           {prefViolCount>0&&<span><span style={{color:"var(--ss-warning)"}}>⚠ PREF VIOLATIONS:</span> <span style={{color:"var(--ss-warning)",fontWeight:700}}>{prefViolCount} staff</span></span>}
           {savedWeeks.length>0&&<span><span style={{color:"var(--ss-text-muted)"}}>SAVED WEEKS:</span> <span style={{color:"var(--ss-accent)",fontWeight:700}}>{savedWeeks.length}</span></span>}          <span style={{marginLeft:"auto",color:"var(--ss-text-dim)",fontSize:10}}>Auto-saved across sessions</span>
-        </div>
-
-        {}
-        <div style={{display:"flex",padding:"0 28px",background:"var(--ss-surface)",borderBottom:"1px solid var(--ss-border)"}}>
-          {[{id:"employees",label:"\u25a3 Employees"},{id:"schedule",label:"\u25a6 Schedule"},{id:"dashboard",label:"\u25a4 Dashboard"},{id:"timeoff",label:"📅 Time Off"},{id:"settings",label:"\u2699 Settings"}].map(tab=>(
-            <button key={tab.id} onClick={()=>setActiveTab(tab.id)} style={{background:"transparent",border:"none",
-              borderBottom:activeTab===tab.id?"2px solid "+"var(--ss-accent)":"2px solid transparent",
-              color:activeTab===tab.id?"var(--ss-text)":"var(--ss-text-muted)",padding:"12px 24px",cursor:"pointer",
-              fontSize:13,fontWeight:600,fontFamily:"inherit",letterSpacing:".05em",
-              textTransform:"uppercase",transition:"all .2s",display:"flex",alignItems:"center",gap:7}}>
-              {tab.label}
-              {tab.id==="dashboard"&&(unmetReqs>0||underHoursCount>0||fatigueCount>0||prefViolCount>0)&&(
-                <span style={{background:"var(--ss-danger)",color:"#fff",fontSize:9,fontWeight:800,
-                  padding:"1px 6px",borderRadius:10,lineHeight:1.4}}>
-                  {unmetReqs+underHoursCount+fatigueCount+prefViolCount}
-                </span>
-              )}
-              {tab.id==="timeoff"&&(timeOffReqs||[]).filter(r=>r.status==="pending").length>0&&(
-                <span style={{background:"var(--ss-warning)",color:"#000",fontSize:9,fontWeight:800,
-                  padding:"1px 6px",borderRadius:10,lineHeight:1.4}}>
-                  {(timeOffReqs||[]).filter(r=>r.status==="pending").length}
-                </span>
-              )}
-            </button>
-          ))}
         </div>
 
         {}
