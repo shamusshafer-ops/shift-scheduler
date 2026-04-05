@@ -9084,19 +9084,6 @@ function ScheduleGrid({ onOpenTestModal }) {
         );
       })()}
 
-      {}
-      <div style={{display:"flex",gap:20,marginBottom:12,fontSize:12,flexWrap:"wrap"}}>
-        {ALL_POSITIONS.map(p=>(<span key={p} style={{display:"flex",alignItems:"center",gap:6}}>
-          <span style={{width:10,height:10,borderRadius:2,background:pC(p,t)}}/>
-          <span style={{color:"var(--ss-text-muted)"}}>{p}</span>
-        </span>))}
-        <span style={{color:"var(--ss-text-dim)"}}>|</span>
-        {SHIFTS.map(s=>(<span key={s.id} style={{display:"flex",alignItems:"center",gap:6}}>
-          <span style={{width:10,height:3,borderRadius:1,background:sC(s.id,t)}}/>
-          <span style={{color:"var(--ss-text-muted)"}}>{s.label} ({s.time})</span>
-        </span>))}
-        <span style={{color:"var(--ss-text-dim)"}}>|</span>
-      </div>
 
       <div style={{display:"flex",alignItems:"center",gap:8,marginBottom:16,padding:"8px 14px",
         background:"var(--ss-accent-10)",border:"1px solid var(--ss-accent-25)",borderRadius:6,fontSize:11,color:"var(--ss-text-muted)"}}>
@@ -9131,6 +9118,13 @@ function ScheduleGrid({ onOpenTestModal }) {
             </span>
           );
         })}
+        <div style={{width:"100%",borderTop:"1px solid var(--ss-border)",marginTop:6,paddingTop:6,
+          display:"flex",gap:14,flexWrap:"wrap"}}>
+          {ALL_POSITIONS.map(p=>(<span key={p} style={{display:"flex",alignItems:"center",gap:5}}>
+            <span style={{width:9,height:9,borderRadius:2,background:pC(p,t),flexShrink:0}}/>
+            <span style={{fontSize:10,color:"var(--ss-text-muted)"}}>{p}</span>
+          </span>))}
+        </div>
       </div>}
 
       {}
