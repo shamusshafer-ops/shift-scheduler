@@ -7770,8 +7770,8 @@ function EmpPicker({emp,day,sid,st,assign,getPos,subSource,onSub}) {
     assign(day,sid,emp.id,position);
   };
 
-  const badge = isUnavailable ? "OFF" : tooManyNights ? `${consNights}N` : shortRest ? `${Math.round(restGap)}h` : null;
-  const badgeColor = isUnavailable ? "var(--ss-danger)" : "var(--ss-fatigue)";
+  const badge = shortRest ? `${Math.round(restGap)}h` : null;
+  const badgeColor = "var(--ss-fatigue)";
 
   if (sel===null) return (
     <button onClick={()=>{
@@ -9103,14 +9103,6 @@ function ScheduleGrid({ onOpenTestModal }) {
           <span style={{color:"var(--ss-text-muted)"}}>{s.label} ({s.time})</span>
         </span>))}
         <span style={{color:"var(--ss-text-dim)"}}>|</span>
-        <span style={{display:"flex",alignItems:"center",gap:5,fontSize:10}}>
-          <span style={{background:"var(--ss-fatigue-20)",border:"1px solid var(--ss-fatigue-50)",padding:"1px 5px",borderRadius:3,color:"var(--ss-fatigue)",fontWeight:700}}>OFF</span>
-          <span style={{color:"var(--ss-text-muted)"}}>unavailable</span>
-        </span>
-        <span style={{display:"flex",alignItems:"center",gap:5,fontSize:10}}>
-          <span style={{background:"var(--ss-fatigue-20)",border:"1px solid var(--ss-fatigue-50)",padding:"1px 5px",borderRadius:3,color:"var(--ss-fatigue)",fontWeight:700}}>3N</span>
-          <span style={{color:"var(--ss-text-muted)"}}>consec. nights</span>
-        </span>
       </div>
 
       <div style={{display:"flex",alignItems:"center",gap:8,marginBottom:16,padding:"8px 14px",
