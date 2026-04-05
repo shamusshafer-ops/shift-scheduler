@@ -8171,6 +8171,7 @@ function ScheduleGrid({ onOpenTestModal }) {
   const [swapSource,        setSwapSource]        = useState(null);
   const [subSource,         setSubSource]         = useState(null);
   const [dragEmp,          setDragEmp]         = useState(null);
+  const [dragBarOpen,      setDragBarOpen]      = useState(true);
   const [overtimeItems,    setOvertimeItems]   = useState(null);
   const [pendingSchedule,  setPendingSchedule] = useState(null);
   const [supervisorItems,  setSupervisorItems] = useState(null);
@@ -9089,45 +9090,6 @@ function ScheduleGrid({ onOpenTestModal }) {
 
 
       {}
-      {!isReadOnly && <div style={{display:"flex",gap:6,flexWrap:"wrap",marginBottom:16,padding:"10px 14px",
-        background:"var(--ss-surface-alt)",border:"1px solid var(--ss-border)",borderRadius:6}}>
-        <span style={{fontSize:10,color:"var(--ss-text-dim)",fontWeight:600,alignSelf:"center",marginRight:8}}>DRAG:</span>
-        {stableEmpOrder.map(emp => {
-          const hours     = calcHours(emp.id, schedule);
-          const isFT      = emp.employmentType==="full-time";
-          const fatigueN  = getFatigueIssues(emp.id, schedule, cfg, employees, extShifts||[]).length;
-          const borderCol = fatigueN>0 ? "var(--ss-fatigue)" : isFT&&hours>40 ? "var(--ss-warning)" : "var(--ss-border)";
-          return (
-            <span key={emp.id} draggable onDragStart={()=>setDragEmp(emp)} onDragEnd={()=>setDragEmp(null)}
-              style={{fontSize:10,fontWeight:600,padding:"4px 10px",borderRadius:4,background:"var(--ss-surface)",
-                border:"1px solid "+borderCol,cursor:"grab",color:"var(--ss-text)",display:"flex",alignItems:"center",gap:4}}>
-              {emp.name}
-              {!isFT&&<span style={{fontSize:8,fontWeight:800,color:"var(--ss-text-muted)",
-                background:"var(--ss-surface)",border:"1px solid var(--ss-border)",padding:"0 3px",
-                borderRadius:2,letterSpacing:".03em"}}>PT</span>}
-              <span style={{fontSize:9,color:isFT&&hours<40?"var(--ss-danger)":isFT&&hours>40?"var(--ss-warning)":"var(--ss-text-dim)"}}>{hours}h</span>
-              {fatigueN>0&&<span style={{fontSize:8,color:"var(--ss-fatigue)",fontWeight:800}}>⚠</span>}
-              <span style={{display:"flex",gap:2}}>{emp.qualifications.map(q=>(
-                <span key={q} style={{width:5,height:5,borderRadius:"50%",background:pC(q,t)}}/>
-              ))}</span>
-            </span>
-          );
-        })}
-        <div style={{width:"100%",borderTop:"1px solid var(--ss-border)",marginTop:6,paddingTop:6,
-          display:"flex",flexDirection:"column",alignItems:"center",gap:4}}>
-          <div style={{display:"flex",gap:14,flexWrap:"wrap",justifyContent:"center"}}>
-            {ALL_POSITIONS.map(p=>(<span key={p} style={{display:"flex",alignItems:"center",gap:5}}>
-              <span style={{width:9,height:9,borderRadius:2,background:pC(p,t),flexShrink:0}}/>
-              <span style={{fontSize:10,color:"var(--ss-text-muted)"}}>{p}</span>
-            </span>))}
-          </div>
-          <div style={{fontSize:9,color:"var(--ss-text-dim)",textAlign:"center"}}>
-            Max {cfg?.maxConsecutiveNights??MAX_CONSECUTIVE_NIGHTS} consec. nights · Min {cfg?.minRestHours??MIN_REST_HOURS}h rest · OT default: {cfg?.defaultOvertimePref||'neutral'}
-          </div>
-        </div>
-      </div>}
-
-      {}
       <HistoryBar viewingHistory={viewingHistory} setViewingHistory={setViewingHistory} liveSchedule={liveSchedule} liveWeekStart={liveWeekStart} />
 
       {}
@@ -9487,8 +9449,154 @@ function ScheduleGrid({ onOpenTestModal }) {
               })}
             </div>
           ))}
+
+          {}
+          <div style={{display:"grid",gridTemplateColumns:"64px repeat(7,1fr)",gap:2,marginTop:4}}>
+            <div style={{display:"flex",alignItems:"center",justifyContent:"center",
+              background:"var(--ss-surface-alt)",borderRadius:4,padding:"6px 4px"}}>
+              <span style={{fontSize:8,fontWeight:700,color:"var(--ss-text-dim)",
+                textTransform:"uppercase",letterSpacing:".06em",
+                writingMode:"vertical-rl",transform:"rotate(180deg)"}}>Daily</span>
+            </div>
+            {DAYS.map(day => {
+              const rows = SHIFTS.map(shift => {
+                const base      = getSlotCount(day, shift.id);
+                const effective = getEffectiveSlotCount(day, shift.id, extShifts);
+                const extBodies = base - effective;
+                const count     = getAsgn(day, shift.id).length;
+                const total     = count + extBodies;
+                const st        = getStatus(day, shift.id);
+                const isEmpty   = total === 0;
+                const color     = isEmpty
+                  ? "var(--ss-text-dim)"
+                  : !st.isFull
+                    ? "var(--ss-danger)"
+                    : !st.ok
+                      ? "var(--ss-warning)"
+                      : "var(--ss-scale)";
+                return { shift, base, total, st, color, isEmpty };
+              });
+              const anyDanger  = rows.some(r => !r.isEmpty && !r.st.isFull);
+              const anyWarning = !anyDanger && rows.some(r => !r.isEmpty && !r.st.ok);
+              const borderColor = anyDanger ? "var(--ss-danger)" : anyWarning ? "var(--ss-warning)" : "var(--ss-border)";
+              return (
+                <div key={day} style={{background:"var(--ss-surface)",borderRadius:4,
+                  padding:"5px 8px",display:"flex",flexDirection:"column",gap:3,
+                  border:"1px solid "+borderColor}}>
+                  {rows.map(({shift,base,total,st,color,isEmpty}) => (
+                    <div key={shift.id} style={{display:"flex",alignItems:"center",gap:3}}>
+                      <span style={{fontSize:8,fontWeight:700,color:sC(shift.id),
+                        letterSpacing:".03em",minWidth:20,flexShrink:0}}>
+                        {shift.label.replace(" Shift","")}
+                      </span>
+                      <span style={{fontSize:10,fontWeight:700,color,marginLeft:"auto",lineHeight:1}}>
+                        {total}/{base}
+                      </span>
+                      <span style={{fontSize:8,lineHeight:1,width:8,textAlign:"center",flexShrink:0}}>
+                        {!isEmpty && !st.isFull
+                          ? <span style={{color:"var(--ss-danger)"}}>✗</span>
+                          : !isEmpty && !st.ok
+                            ? <span style={{color:"var(--ss-warning)"}}>⚠</span>
+                            : st.isFull && st.ok
+                              ? <span style={{color:"var(--ss-scale)"}}>✓</span>
+                              : null}
+                      </span>
+                    </div>
+                  ))}
+                </div>
+              );
+            })}
+          </div>
+
         </div>
       </div>
+
+      {}
+      {!isReadOnly && (() => {
+        const primarySh = (emp) => {
+          if (emp.requiredShift) return emp.requiredShift;
+          if ((emp.preferredShifts||[]).length===1) return emp.preferredShifts[0];
+          const counts = { first:0, second:0, third:0 };
+          DAYS.forEach(day => SHIFTS.forEach(s => {
+            if ((schedule[cellKey(day,s.id)]||[]).some(a=>a.employeeId===emp.id)) counts[s.id]++;
+          }));
+          return Object.entries(counts).sort((a,b)=>b[1]-a[1])[0]?.[0] || "first";
+        };
+        const groups = SHIFTS.map(sh => ({
+          shift: sh,
+          emps: stableEmpOrder.filter(e => primarySh(e) === sh.id)
+        }));
+        const renderPill = (emp) => {
+          const hours     = calcHours(emp.id, schedule);
+          const isFT      = emp.employmentType==="full-time";
+          const fatigueN  = getFatigueIssues(emp.id, schedule, cfg, employees, extShifts||[]).length;
+          const borderCol = fatigueN>0 ? "var(--ss-fatigue)" : isFT&&hours>40 ? "var(--ss-warning)" : "var(--ss-border)";
+          return (
+            <span key={emp.id} draggable onDragStart={()=>setDragEmp(emp)} onDragEnd={()=>setDragEmp(null)}
+              style={{fontSize:10,fontWeight:600,padding:"4px 10px",borderRadius:4,background:"var(--ss-surface)",
+                border:"1px solid "+borderCol,cursor:"grab",color:"var(--ss-text)",display:"flex",alignItems:"center",gap:4}}>
+              {emp.name}
+              {!isFT&&<span style={{fontSize:8,fontWeight:800,color:"var(--ss-text-muted)",
+                background:"var(--ss-surface)",border:"1px solid var(--ss-border)",padding:"0 3px",
+                borderRadius:2,letterSpacing:".03em"}}>PT</span>}
+              <span style={{fontSize:9,color:isFT&&hours<40?"var(--ss-danger)":isFT&&hours>40?"var(--ss-warning)":"var(--ss-text-dim)"}}>{hours}h</span>
+              {fatigueN>0&&<span style={{fontSize:8,color:"var(--ss-fatigue)",fontWeight:800}}>⚠</span>}
+              <span style={{display:"flex",gap:2}}>{emp.qualifications.map(q=>(
+                <span key={q} style={{width:5,height:5,borderRadius:"50%",background:pC(q,t)}}/>
+              ))}</span>
+            </span>
+          );
+        };
+        return (
+          <div style={{marginTop:12,border:"1px solid var(--ss-border)",borderRadius:6,overflow:"hidden"}}>
+            <div onClick={()=>setDragBarOpen(o=>!o)}
+              style={{display:"flex",alignItems:"center",gap:8,padding:"6px 14px",
+                background:"var(--ss-surface-alt)",cursor:"pointer",userSelect:"none",
+                borderBottom: dragBarOpen ? "1px solid var(--ss-border)" : "none"}}>
+              <span style={{fontSize:10,fontWeight:800,color:"var(--ss-text-dim)",letterSpacing:".06em",textTransform:"uppercase"}}>
+                Roster
+              </span>
+              <span style={{fontSize:9,color:"var(--ss-text-dim)"}}>drag to assign</span>
+              <span style={{fontSize:10,color:"var(--ss-text-dim)",marginLeft:"auto",lineHeight:1}}>
+                {dragBarOpen ? "▲" : "▼"}
+              </span>
+            </div>
+            {dragBarOpen && (
+              <div>
+                {groups.map(({shift, emps}) => emps.length===0 ? null : (
+                  <div key={shift.id} style={{borderBottom:"1px solid var(--ss-border)"}}>
+                    <div style={{display:"flex",alignItems:"center",gap:8,padding:"4px 14px",
+                      background:"var(--ss-surface-alt)",borderBottom:"1px solid var(--ss-border)"}}>
+                      <span style={{fontSize:9,fontWeight:800,color:sC(shift.id),letterSpacing:".08em",textTransform:"uppercase"}}>
+                        {shift.label}
+                      </span>
+                      <span style={{fontSize:9,color:"var(--ss-text-dim)"}}>{shift.time}</span>
+                      <span style={{fontSize:9,color:"var(--ss-text-dim)",marginLeft:"auto"}}>
+                        {emps.length} employee{emps.length!==1?"s":""}
+                      </span>
+                    </div>
+                    <div style={{display:"flex",gap:6,flexWrap:"wrap",padding:"8px 14px",background:"var(--ss-surface)"}}>
+                      {emps.map(renderPill)}
+                    </div>
+                  </div>
+                ))}
+                <div style={{padding:"8px 14px",background:"var(--ss-surface-alt)",
+                  display:"flex",flexDirection:"column",gap:4}}>
+                  <div style={{display:"flex",gap:14,flexWrap:"wrap"}}>
+                    {ALL_POSITIONS.map(p=>(<span key={p} style={{display:"flex",alignItems:"center",gap:5}}>
+                      <span style={{width:9,height:9,borderRadius:2,background:pC(p,t),flexShrink:0}}/>
+                      <span style={{fontSize:10,color:"var(--ss-text-muted)"}}>{p}</span>
+                    </span>))}
+                  </div>
+                  <div style={{fontSize:9,color:"var(--ss-text-dim)"}}>
+                    Max {cfg?.maxConsecutiveNights??MAX_CONSECUTIVE_NIGHTS} consec. nights · Min {cfg?.minRestHours??MIN_REST_HOURS}h rest · OT default: {cfg?.defaultOvertimePref||'neutral'}
+                  </div>
+                </div>
+              </div>
+            )}
+          </div>
+        );
+      })()}
 
       {}
       {swapSource && (
@@ -11271,7 +11379,7 @@ function SwingDesigPanel() {
   );
 }
 
-function SettingsPanel({ themeName, setThemeName, customTheme, setCustomTheme }) {
+function SettingsPanel({ themeName, setThemeName, customTheme, setCustomTheme, settingsTab: settingsTabProp, setSettingsTab: setSettingsTabProp }) {
   const { setSettings, ...settings } = useSettings();
   const { employees, setEmployees, empPatterns, setEmpPatterns, setSavedRosters } = useRoster();
   const { schedule, setSchedule, extShifts, setExtShifts, setWeekStart } = useSchedule();
@@ -11279,7 +11387,9 @@ function SettingsPanel({ themeName, setThemeName, customTheme, setCustomTheme })
   const { setTimeOffReqs } = useTimeOff();
   const t = useTheme();
   const cfg = useSettings();
-  const [settingsTab, setSettingsTab] = useState("rules");
+  const [settingsTabLocal, setSettingsTabLocal] = useState("rules");
+  const settingsTab    = settingsTabProp    ?? settingsTabLocal;
+  const setSettingsTab = setSettingsTabProp ?? setSettingsTabLocal;
 
   const update = (key, val) => setSettings(s => ({ ...DEFAULT_SETTINGS, ...s, [key]: val }));
   const reset  = () => setSettings(DEFAULT_SETTINGS);
@@ -11604,6 +11714,8 @@ function ShiftSchedulerApp() {
     return s;
   }, [timeOffReqs, weekStart]);
   const [activeTab,       setActiveTab]       = useState("schedule");
+  const [settingsTab,     setSettingsTab]     = useState("rules");
+  const [showThemeMenu,   setShowThemeMenu]   = useState(false);
   const [showTestModal,   setShowTestModal]   = useState(false);
   const [pendingAutoFill, setPendingAutoFill] = useState(null);
   const [highlightSlot,   setHighlightSlot]   = useState(null);
@@ -11842,14 +11954,62 @@ function ShiftSchedulerApp() {
             </div>
           </div>
           <div style={{display:"flex",gap:8,alignItems:"center",position:"absolute",right:28}}>
-            <button onClick={()=>setThemeName(p=>p==="dark"?"light":"dark")} title="Toggle theme"
-              style={{background:"var(--ss-surface-alt)",border:"1px solid var(--ss-border)",color:"var(--ss-text-muted)",
-                padding:"8px 14px",borderRadius:6,cursor:"pointer",fontSize:14,fontFamily:"inherit",
-                display:"flex",alignItems:"center",gap:6,transition:"all .2s"}}
-              onMouseEnter={e=>{e.currentTarget.style.borderColor="var(--ss-accent)";e.currentTarget.style.color="var(--ss-accent)";}}
-              onMouseLeave={e=>{e.currentTarget.style.borderColor="var(--ss-border)";e.currentTarget.style.color="var(--ss-text-muted)";}}>
-              {themeName==="dark"?"\u2600":"\u263d"}
-            </button>
+            <div style={{position:"relative"}}>
+              <div style={{display:"flex",border:"1px solid var(--ss-border)",borderRadius:6,overflow:"hidden"}}>
+                <button onClick={()=>setThemeName(p=>p==="dark"?"light":"dark")} title="Toggle dark/light theme"
+                  style={{background:"var(--ss-surface-alt)",border:"none",borderRight:"1px solid var(--ss-border)",
+                    color:"var(--ss-text-muted)",padding:"8px 14px",cursor:"pointer",fontSize:14,fontFamily:"inherit",
+                    display:"flex",alignItems:"center",transition:"color .15s"}}
+                  onMouseEnter={e=>{e.currentTarget.style.color="var(--ss-accent)";}}
+                  onMouseLeave={e=>{e.currentTarget.style.color="var(--ss-text-muted)";}}>
+                  {themeName==="dark"?"\u2600":"\u263d"}
+                </button>
+                <button onClick={()=>setShowThemeMenu(o=>!o)} title="Theme options"
+                  style={{background:"var(--ss-surface-alt)",border:"none",color:"var(--ss-text-muted)",
+                    padding:"8px 9px",cursor:"pointer",fontSize:9,fontFamily:"inherit",
+                    display:"flex",alignItems:"center",transition:"color .15s"}}
+                  onMouseEnter={e=>{e.currentTarget.style.color="var(--ss-accent)";}}
+                  onMouseLeave={e=>{e.currentTarget.style.color="var(--ss-text-muted)";}}>
+                  ▾
+                </button>
+              </div>
+              {showThemeMenu && (
+                <>
+                  <div onClick={()=>setShowThemeMenu(false)}
+                    style={{position:"fixed",inset:0,zIndex:998}}/>
+                  <div style={{position:"absolute",right:0,top:"calc(100% + 6px)",zIndex:999,
+                    background:"var(--ss-surface)",border:"1px solid var(--ss-border)",borderRadius:6,
+                    boxShadow:"0 4px 20px rgba(0,0,0,.35)",minWidth:190,overflow:"hidden"}}>
+                    <button onClick={()=>{setThemeName(p=>p==="dark"?"light":"dark");setShowThemeMenu(false);}}
+                      style={{width:"100%",display:"flex",alignItems:"center",gap:8,padding:"10px 14px",
+                        background:"transparent",border:"none",cursor:"pointer",fontFamily:"inherit",
+                        fontSize:12,fontWeight:600,color:"var(--ss-text)",textAlign:"left"}}
+                      onMouseEnter={e=>e.currentTarget.style.background="var(--ss-surface-alt)"}
+                      onMouseLeave={e=>e.currentTarget.style.background="transparent"}>
+                      {themeName==="dark" ? "\u2600 Switch to Light" : "\u263d Switch to Dark"}
+                    </button>
+                    <div style={{height:1,background:"var(--ss-border)"}}/>
+                    <button onClick={()=>{setActiveTab("settings");setSettingsTab("appearance");setShowThemeMenu(false);}}
+                      style={{width:"100%",display:"flex",alignItems:"center",gap:8,padding:"10px 14px",
+                        background:"transparent",border:"none",cursor:"pointer",fontFamily:"inherit",
+                        fontSize:12,fontWeight:600,color:"var(--ss-text)",textAlign:"left"}}
+                      onMouseEnter={e=>e.currentTarget.style.background="var(--ss-surface-alt)"}
+                      onMouseLeave={e=>e.currentTarget.style.background="transparent"}>
+                      🎨 Customize Colors
+                    </button>
+                    <div style={{height:1,background:"var(--ss-border)"}}/>
+                    <button onClick={()=>{setCustomTheme({});setShowThemeMenu(false);}}
+                      style={{width:"100%",display:"flex",alignItems:"center",gap:8,padding:"10px 14px",
+                        background:"transparent",border:"none",cursor:"pointer",fontFamily:"inherit",
+                        fontSize:12,fontWeight:600,color:"var(--ss-danger)",textAlign:"left"}}
+                      onMouseEnter={e=>e.currentTarget.style.background="var(--ss-surface-alt)"}
+                      onMouseLeave={e=>e.currentTarget.style.background="transparent"}>
+                      ↺ Reset to Default
+                    </button>
+                  </div>
+                </>
+              )}
+            </div>
           </div>
         </div>
 
@@ -12196,7 +12356,8 @@ function ShiftSchedulerApp() {
           {activeTab==="settings"&&(
             <SettingsPanel
                 themeName={themeName} setThemeName={setThemeName}
-                customTheme={customTheme} setCustomTheme={setCustomTheme}/>
+                customTheme={customTheme} setCustomTheme={setCustomTheme}
+                settingsTab={settingsTab} setSettingsTab={setSettingsTab}/>
           )}
         </div>
       {showExcelPreviewApp && (
