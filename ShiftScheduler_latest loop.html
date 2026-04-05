@@ -803,7 +803,7 @@ const SHIFT_START_HOUR = { first: 6, second: 14, third: 22 };
 const SLOT_OFFSET_HOURS = (day, shiftId) =>
   DAYS.indexOf(day) * 24 + SHIFT_START_HOUR[shiftId];
 
-function calcRestGap(empId, schedule, day, shiftId, extShifts) {
+function calcRestGap(empId, schedule, day, shiftId, extShifts, prevWeekPatterns) {
   const myStart = SLOT_OFFSET_HOURS(day, shiftId);
   let prevEnd = -Infinity;
   // Walk backwards through regular schedule slots
@@ -834,6 +834,17 @@ function calcRestGap(empId, schedule, day, shiftId, extShifts) {
     }
     const endH = startH + EXT_SHIFT_HOURS;
     if (endH <= myStart && endH > prevEnd) prevEnd = endH;
+  }
+  // Cross-week boundary: if nothing was found in this week, check the previous week's
+  // last assignment. Offset by -168h (one week) to express it in this week's time scale.
+  // Example: prev Saturday 3rd shift ends at hour 174 → 174-168 = 6h this week.
+  //          New Sunday 1st shift starts at hour 6 → gap = 0h → correctly flagged.
+  if (prevEnd === -Infinity && prevWeekPatterns) {
+    const slot = prevWeekPatterns[empId]?.prevWeekLastSlot;
+    if (slot) {
+      const crossEnd = SLOT_OFFSET_HOURS(slot.day, slot.shiftId) + SHIFT_HOURS - 168;
+      prevEnd = crossEnd;
+    }
   }
   if (prevEnd === -Infinity) return Infinity;
   return myStart - prevEnd;
@@ -1144,11 +1155,41 @@ const isGuardOnly = (e) => {
   return q.includes("Guard") && !q.includes("Scale") && !q.includes("Medical");
 };
 
+// Extracts cross-week boundary data from a previous week's saved schedule.
+// Returns { trailingDays, prevWeekLastSlot } keyed by employeeId.
+//   trailingDays[id]    — consecutive days worked at the END of that week (for streak counting)
+//   prevWeekLastSlot[id] — { day, shiftId } of the last slot they worked (for rest-gap checking)
+function buildPrevWeekData(prevSchedule) {
+  if (!prevSchedule) return null;
+  const trailingDays    = {};
+  const prevWeekLastSlot = {};
+  const empIds = new Set();
+  Object.values(prevSchedule).forEach(asgn => asgn.forEach(a => empIds.add(a.employeeId)));
+  for (const empId of empIds) {
+    // Trailing days: walk backward from Saturday
+    let count = 0;
+    for (let i = DAYS.length - 1; i >= 0; i--) {
+      const worked = SHIFTS.some(s => (prevSchedule[cellKey(DAYS[i], s.id)] || []).some(a => a.employeeId === empId));
+      if (worked) count++; else break;
+    }
+    if (count > 0) trailingDays[empId] = count;
+    // Last slot: latest ALL_SLOTS entry worked
+    for (let i = ALL_SLOTS.length - 1; i >= 0; i--) {
+      const { day, shiftId } = ALL_SLOTS[i];
+      if ((prevSchedule[cellKey(day, shiftId)] || []).some(a => a.employeeId === empId)) {
+        prevWeekLastSlot[empId] = { day, shiftId };
+        break;
+      }
+    }
+  }
+  return { trailingDays, prevWeekLastSlot };
+}
+
 function buildAutoFill(sourceEmps, cfg, empTimeOffDays, empPatterns, extShiftsArg, jitter = false) {
   const maxNights = cfg?.maxConsecutiveNights ?? MAX_CONSECUTIVE_NIGHTS;
   const minRest   = cfg?.minRestHours ?? MIN_REST_HOURS;
   // Wrapper that automatically includes extShiftsArg in rest-gap checks
-  const rg = (id, sched, d, s) => calcRestGap(id, sched, d, s, extShiftsArg);
+  const rg = (id, sched, d, s) => calcRestGap(id, sched, d, s, extShiftsArg, empPatterns);
   const maxShifts = cfg?.maxConsecutiveShifts ?? 5;
   const daysOff   = Math.max(1, 7 - maxShifts); // rest days in the cycle
   const ns          = {};
@@ -8663,10 +8704,43 @@ function ScheduleGrid({ onOpenTestModal }) {
     const source = allSource.filter(e => !excludeSet.has(e.id));
     if (!source.length) return;
 
+    // ── Cross-week awareness: look up previous week in history ───────────────
+    // Compute ISO date for the week immediately before the current weekStart.
+    const prevWeekStart = (() => {
+      if (!weekStart) return null;
+      const [y, m, d] = weekStart.split("-").map(Number);
+      const dt = new Date(y, m - 1, d);
+      dt.setDate(dt.getDate() - 7);
+      return [
+        dt.getFullYear(),
+        String(dt.getMonth() + 1).padStart(2, "0"),
+        String(dt.getDate()).padStart(2, "0"),
+      ].join("-");
+    })();
+    // Prefer the most recent non-auto-save for that week; fall back to auto-save.
+    const prevEntry = prevWeekStart
+      ? ([...(history || [])].reverse().find(h => h.weekStart === prevWeekStart && !h.isAutoSave)
+         || [...(history || [])].reverse().find(h => h.weekStart === prevWeekStart))
+      : null;
+    const prevWeekData = prevEntry ? buildPrevWeekData(prevEntry.schedule) : null;
+
+    // Merge cross-week data into a fresh patterns object (don't mutate persisted state).
+    const enrichedPatterns = { ...(empPatterns || {}) };
+    if (prevWeekData) {
+      source.forEach(emp => {
+        const existing = enrichedPatterns[emp.id] || {};
+        enrichedPatterns[emp.id] = {
+          ...existing,
+          trailingDays:     prevWeekData.trailingDays[emp.id]     ?? existing.trailingDays     ?? 0,
+          prevWeekLastSlot: prevWeekData.prevWeekLastSlot[emp.id] ?? existing.prevWeekLastSlot ?? null,
+        };
+      });
+    }
+
     // ── Single-attempt worker — pure function, no side effects ───────────────
     const attempt = (jitter) => {
       const manualExtShifts = (extShifts||[]).filter(e => e.approvedAt !== "auto-fill");
-      const {schedule:ns, hourTracker, shiftsWorked, usedPatterns} = buildAutoFill(source, cfg, empTimeOffDays, empPatterns, manualExtShifts, jitter);
+      const {schedule:ns, hourTracker, shiftsWorked, usedPatterns} = buildAutoFill(source, cfg, empTimeOffDays, enrichedPatterns, manualExtShifts, jitter);
 
       const autoExtShifts = [];
       const usedExtPairs  = new Set();
@@ -8868,7 +8942,7 @@ function ScheduleGrid({ onOpenTestModal }) {
     };
 
     setTimeout(tick, 0);
-  }, [employees, setSchedule, setExtShifts, cfg, empTimeOffDays, empPatterns, extShifts, schedule]);
+  }, [employees, setSchedule, setExtShifts, cfg, empTimeOffDays, empPatterns, extShifts, schedule, weekStart, history]);
 
   useEffect(()=>{
     if(pendingAutoFill&&pendingAutoFill.length>0){
