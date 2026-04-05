@@ -9544,36 +9544,6 @@ function ScheduleGrid({ onOpenTestModal }) {
         </div>
       )}
 
-      {}
-      {Object.values(schedule||{}).some(a=>a.length>0) && (
-        <div style={{display:"grid",gridTemplateColumns:"64px repeat(7,1fr)",gap:2,marginTop:4,marginBottom:4}}>
-          <div style={{padding:"4px 8px",fontSize:9,fontWeight:700,color:"var(--ss-text-dim)",
-            letterSpacing:".06em",display:"flex",alignItems:"center"}}>DAILY</div>
-          {DAYS.map(day => {
-            const totals = SHIFTS.map(shift => {
-              const a = getAsgn(day, shift.id);
-              const cap = getEffectiveSlotCount(day, shift.id, extShifts);
-              const sup = isWeekday(day) && shift.id==="first" ? 1 : 0;
-              const need = cap + sup;
-              const bodies = a.length;
-              const ok = bodies >= need && getStatus(day,shift.id).ok;
-              const gap = bodies < need;
-              return {ok, gap, bodies, need};
-            });
-            const anyGap = totals.some(t=>t.gap);
-            const allOk  = totals.every(t=>t.ok);
-            const col    = anyGap ? "var(--ss-danger)" : allOk ? "var(--ss-scale)" : "var(--ss-warning)";
-            const total  = totals.reduce((s,t)=>s+t.bodies,0);
-            const needed = totals.reduce((s,t)=>s+t.need,0);
-            return (
-              <div key={day} style={{padding:"3px 6px",borderRadius:3,textAlign:"center",
-                background:col+"14",border:"1px solid "+col+"40"}}>
-                <span style={{fontSize:9,fontWeight:800,color:col}}>{total}/{needed}</span>
-              </div>
-            );
-          })}
-        </div>
-      )}
 
       {}
       <div style={{display:"flex",flexDirection:"column",gap:8,marginTop:20,alignItems:"center"}}>
