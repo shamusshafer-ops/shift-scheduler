@@ -237,7 +237,7 @@ input,select,textarea,button{font-family:inherit}
 .ss-modal{background:var(--ss-surface);border:1px solid var(--ss-border);border-radius:12px;padding:28px;max-width:620px;width:100%;box-shadow:0 24px 64px rgba(0,0,0,.55)}
 
 /* ── Schedule grid ──────────────────────────────────────────────────────── */
-.ss-grid-week{display:grid;grid-template-columns:100px repeat(7,1fr);gap:2px;margin-bottom:2px}
+.ss-grid-week{display:grid;grid-template-columns:64px repeat(7,1fr);gap:2px;margin-bottom:2px}
 .ss-grid-week-narrow{display:grid;grid-template-columns:68px repeat(7,1fr);gap:3px;margin-bottom:3px}
 .ss-shift-label{display:flex;flex-direction:column;justify-content:center;padding:12px 10px;border-radius:4px 0 0 4px}
 .ss-cell{border-radius:4px;padding:8px;min-height:105px;display:flex;flex-direction:column;gap:4px;transition:border-color .2s}
@@ -9158,8 +9158,8 @@ function ScheduleGrid({ onOpenTestModal }) {
 
       {}
       <div style={{overflowX:"auto"}}>
-        <div style={{minWidth:900}}>
-          <div style={{display:"grid",gridTemplateColumns:"100px repeat(7,1fr)",gap:2,marginBottom:2}}>
+        <div style={{minWidth:760}}>
+          <div style={{display:"grid",gridTemplateColumns:"64px repeat(7,1fr)",gap:2,marginBottom:2}}>
             <div/>
             {DAYS.map((d,di)=>{
               const dateStr = (window.__schedWeekDates||[])[di]||"";
@@ -9201,11 +9201,11 @@ function ScheduleGrid({ onOpenTestModal }) {
           </div>
 
           {SHIFTS.map(shift => (
-            <div key={shift.id} style={{display:"grid",gridTemplateColumns:"100px repeat(7,1fr)",gap:2,marginBottom:2}}>
-              <div style={{background:"var(--ss-surface)",padding:"12px 10px",display:"flex",flexDirection:"column",
+            <div key={shift.id} style={{display:"grid",gridTemplateColumns:"64px repeat(7,1fr)",gap:2,marginBottom:2}}>
+              <div style={{background:"var(--ss-surface)",padding:"8px 6px",display:"flex",flexDirection:"column",
                 justifyContent:"center",borderLeft:"3px solid "+sC(shift.id,t),borderRadius:"4px 0 0 4px"}}>
-                <div style={{fontSize:12,fontWeight:700}}>{shift.label}</div>
-                <div style={{fontSize:10,color:"var(--ss-text-dim)",marginTop:2}}>{shift.time}</div>
+                <div style={{fontSize:10,fontWeight:700}}>{shift.label}</div>
+                <div style={{fontSize:9,color:"var(--ss-text-dim)",marginTop:1}}>{shift.time}</div>
               </div>
 
               {DAYS.map(day => {
@@ -9552,7 +9552,7 @@ function ScheduleGrid({ onOpenTestModal }) {
 
       {}
       {Object.values(schedule||{}).some(a=>a.length>0) && (
-        <div style={{display:"grid",gridTemplateColumns:"100px repeat(7,1fr)",gap:2,marginTop:4,marginBottom:4}}>
+        <div style={{display:"grid",gridTemplateColumns:"64px repeat(7,1fr)",gap:2,marginTop:4,marginBottom:4}}>
           <div style={{padding:"4px 8px",fontSize:9,fontWeight:700,color:"var(--ss-text-dim)",
             letterSpacing:".06em",display:"flex",alignItems:"center"}}>DAILY</div>
           {DAYS.map(day => {
