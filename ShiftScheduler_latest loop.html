@@ -8212,6 +8212,7 @@ function ScheduleGrid({ onOpenTestModal }) {
   const [swapSource,        setSwapSource]        = useState(null);
   const [subSource,         setSubSource]         = useState(null);
   const [dragEmp,          setDragEmp]         = useState(null);
+  const [dragChip,         setDragChip]         = useState(null); // {employeeId,day,shiftId,position}
   const [dragBarOpen,      setDragBarOpen]      = useState(true);
   const [overtimeItems,    setOvertimeItems]   = useState(null);
   const [pendingSchedule,  setPendingSchedule] = useState(null);
@@ -8238,11 +8239,12 @@ function ScheduleGrid({ onOpenTestModal }) {
       if (swapSource)   { setSwapSource(null); e.preventDefault(); return; }
       if (subSource)    { setSubSource(null); setEditingCell(null); e.preventDefault(); return; }
       if (dragEmp)      { setDragEmp(null); e.preventDefault(); return; }
+      if (dragChip)     { setDragChip(null); e.preventDefault(); return; }
       if (editingCell)  { setEditingCell(null); e.preventDefault(); return; }
     };
     document.addEventListener("keydown", handler);
     return () => document.removeEventListener("keydown", handler);
-  }, [swapSource, subSource, dragEmp, editingCell]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [swapSource, subSource, dragEmp, dragChip, editingCell]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const autoSaveToHistory = useCallback((ws, sched) => {
     const hasAssignments = Object.values(sched).some(a => a.length > 0);
@@ -8462,6 +8464,35 @@ function ScheduleGrid({ onOpenTestModal }) {
       return ns;
     });
     setSwapSource(null);
+  };
+
+  // Move a chip from one cell to another with available space — one atomic undo step.
+  const moveChip = (srcDay, srcShift, tgtDay, tgtShift, empId, srcPos) => {
+    if (isReadOnly) return;
+    if (srcDay === tgtDay && srcShift === tgtShift) return;
+    const tgtAsgn = getAsgn(tgtDay, tgtShift);
+    const tgtCap  = getEffectiveSlotCount(tgtDay, tgtShift, extShifts);
+    if (tgtAsgn.length >= tgtCap) return;           // target full
+    if (tgtAsgn.some(a => a.employeeId === empId)) return; // already there
+    const emp = employees.find(e => e.id === empId);
+    if (!emp) return;
+    const ap = getAssignable(emp, tgtDay, tgtShift);
+    if (!ap.length) return;                          // not qualified for target slot
+    const tgtSt = getStatus(tgtDay, tgtShift);
+    let pos = ap.includes(srcPos) ? srcPos : null;  // keep same role if possible
+    if (!pos) {
+      if (!tgtSt.hasScale   && ap.includes("Scale"))   pos = "Scale";
+      else if (!tgtSt.hasMedical && ap.includes("Medical")) pos = "Medical";
+      else if (ap.includes("Guard"))                        pos = "Guard";
+      else pos = ap[0];
+    }
+    pushUndo();
+    setSchedule(prev => {
+      const ns = { ...prev };
+      ns[cellKey(srcDay, srcShift)] = (prev[cellKey(srcDay, srcShift)] || []).filter(a => a.employeeId !== empId);
+      ns[cellKey(tgtDay, tgtShift)] = [...(prev[cellKey(tgtDay, tgtShift)] || []), { employeeId: empId, position: pos }];
+      return ns;
+    });
   };
 
   const executeSub = (subSrc, newEmpId, newPosition) => {
@@ -9328,10 +9359,32 @@ function ScheduleGrid({ onOpenTestModal }) {
                 return (
                   <div key={day}
                     ref={el => { if(el) cellRefs.current[cellKey(day,shift.id)] = el; }}
-                    onDragEnter={e=>{if(isReadOnly||!dragEmp)return;e.preventDefault();e.currentTarget.style.borderColor="var(--ss-accent)";e.currentTarget.style.boxShadow="0 0 0 2px "+"var(--ss-accent-40)";}}
-                    onDragOver={e=>{if(isReadOnly||!dragEmp)return;e.preventDefault();}}
+                    onDragEnter={e=>{
+                      if(isReadOnly) return;
+                      const chipSameCell = dragChip && dragChip.day===day && dragChip.shiftId===shift.id;
+                      if(!dragEmp && !dragChip || chipSameCell) return;
+                      e.preventDefault();
+                      e.currentTarget.style.borderColor="var(--ss-accent)";
+                      e.currentTarget.style.boxShadow="0 0 0 2px var(--ss-accent-40)";
+                    }}
+                    onDragOver={e=>{
+                      if(isReadOnly) return;
+                      const chipSameCell = dragChip && dragChip.day===day && dragChip.shiftId===shift.id;
+                      if(!dragEmp && !dragChip || chipSameCell) return;
+                      e.preventDefault();
+                    }}
                     onDragLeave={e=>{if(!e.currentTarget.contains(e.relatedTarget)){e.currentTarget.style.borderColor=borderColor;e.currentTarget.style.boxShadow="none";}}}
-                    onDrop={e=>{e.preventDefault();e.currentTarget.style.borderColor=borderColor;e.currentTarget.style.boxShadow="none";if(!isReadOnly)handleDrop(day,shift.id);}}
+                    onDrop={e=>{
+                      e.preventDefault();
+                      e.currentTarget.style.borderColor=borderColor;
+                      e.currentTarget.style.boxShadow="none";
+                      if(isReadOnly) return;
+                      if(dragEmp) { handleDrop(day,shift.id); return; }
+                      if(dragChip) {
+                        moveChip(dragChip.day, dragChip.shiftId, day, shift.id, dragChip.employeeId, dragChip.position);
+                        setDragChip(null);
+                      }
+                    }}
                     style={{background:bgColor,border:"1px solid "+borderColor,borderRadius:4,
                       padding:8,minHeight:105,display:"flex",flexDirection:"column",gap:4,transition:"border-color .2s",minWidth:0,overflow:"hidden"}}>
 
@@ -9384,23 +9437,68 @@ function ScheduleGrid({ onOpenTestModal }) {
                       const isSwapSelected = swapSource?.employeeId===a.employeeId && swapSource?.day===day && swapSource?.shiftId===shift.id;
                       const isSwapBlocked  = swapSource && !isSwapSelected && isSwapHardBlocked(a.employeeId, day, shift.id, a.position);
                       const isSwapTarget   = swapSource && !isSwapSelected && !isSwapBlocked;
+                      const isDragSource   = dragChip?.employeeId===a.employeeId && dragChip?.day===day && dragChip?.shiftId===shift.id;
+                      const isDragSwapTarget = dragChip && !isDragSource && !isSwapHardBlocked(a.employeeId, day, shift.id, a.position);
                       const swapBorder = isSwapSelected ? "2px solid #f59e0b"
                                        : isSwapBlocked  ? "1px solid var(--ss-border)"
                                        : isSwapTarget   ? "1.5px dashed #22c55e"
+                                       : isDragSource   ? "1px dashed var(--ss-accent)"
+                                       : isDragSwapTarget ? "1.5px dashed #22c55e"
                                        : (isOnCallSlot?"1.5px dashed ":"1px solid ")+borderCol;
                       const swapBg     = isSwapSelected ? "#f59e0b22"
                                        : isSwapBlocked  ? bgCol
                                        : isSwapTarget   ? "#22c55e0a"
+                                       : isDragSwapTarget ? "#22c55e0a"
                                        : bgCol;
-                      const swapOpacity = isSwapBlocked ? 0.35 : 1;
+                      const swapOpacity = isSwapBlocked ? 0.35 : isDragSource ? 0.45 : 1;
                       return (
                         <Fragment key={a.employeeId}>
                         <div
+                          draggable={!isReadOnly && !swapSource && !subSource}
+                          onDragStart={e=>{
+                            if(isReadOnly||swapSource||subSource){e.preventDefault();return;}
+                            e.stopPropagation();
+                            setDragChip({employeeId:a.employeeId,day,shiftId:shift.id,position:a.position});
+                            setDragEmp(null);
+                          }}
+                          onDragEnd={()=>setDragChip(null)}
+                          onDragEnter={e=>{
+                            if(!dragChip||isDragSource||isReadOnly) return;
+                            e.preventDefault(); e.stopPropagation();
+                          }}
+                          onDragOver={e=>{
+                            if(!dragChip||isDragSource||isReadOnly) return;
+                            e.preventDefault(); e.stopPropagation();
+                          }}
+                          onDrop={e=>{
+                            if(!dragChip||isDragSource||isReadOnly) return;
+                            e.preventDefault(); e.stopPropagation();
+                            e.currentTarget.closest("[data-cell]")?.dispatchEvent
+                              ? null : null; // no-op — handled below
+                            const viols = getSwapViolations(
+                              employees.find(x=>x.id===dragChip.employeeId), dragChip.day, dragChip.shiftId, dragChip.position,
+                              employees.find(x=>x.id===a.employeeId),        day,            shift.id,          a.position
+                            );
+                            const hard = viols.filter(v=>v.hard);
+                            const soft = viols.filter(v=>!v.hard);
+                            if(hard.length){
+                              alert("Swap blocked:\n\n"+hard.map(v=>"• "+v.msg).join("\n")+(soft.length?"\n\nAlso note:\n"+soft.map(v=>"• "+v.msg).join("\n"):""));
+                              setDragChip(null); return;
+                            }
+                            if(soft.length && !window.confirm("Swap warnings — approve to continue:\n\n"+soft.map(v=>"⚠ "+v.msg).join("\n")+"\n\nProceed?")){
+                              setDragChip(null); return;
+                            }
+                            executeSwap(
+                              {employeeId:dragChip.employeeId, day:dragChip.day, shiftId:dragChip.shiftId, position:dragChip.position},
+                              {employeeId:a.employeeId,        day,              shiftId:shift.id,          position:a.position}
+                            );
+                            setDragChip(null);
+                          }}
                           onClick={!isReadOnly ? (e=>handleChipClick(a.employeeId,day,shift.id,a.position,e)) : undefined}
                           style={{display:"flex",alignItems:"center",gap:5,padding:"4px 6px",
                             background:swapBg,border:swapBorder,borderRadius:4,fontSize:11,
                             opacity:swapOpacity,overflow:"hidden",minWidth:0,
-                            cursor:isReadOnly?"default":isSwapBlocked?"not-allowed":"pointer",
+                            cursor:isReadOnly?"default":isSwapBlocked?"not-allowed":!swapSource&&!subSource?"grab":"pointer",
                             transition:"opacity .15s, border .1s, background .1s"}}>
                           <span style={{width:6,height:6,borderRadius:"50%",background:dotCol,flexShrink:0}}/>
                           <span style={{flex:1,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap",
