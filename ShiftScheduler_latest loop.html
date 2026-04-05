@@ -8091,6 +8091,7 @@ function WeekPickerBar({ weekStart, setWeekStart, stepWeek, t }) {
     return mm+"/"+dd;
   };
   const monthName = sun.toLocaleString("default", { month:"long", year:"numeric" });
+  window.__schedWeekDates = [0,1,2,3,4,5,6].map(fmtHeader);
   return (
     <div style={{display:"flex",alignItems:"center",gap:10,marginBottom:12,fontSize:11,flexWrap:"wrap"}}>
       <button onClick={() => stepWeek(-1)}
@@ -8119,14 +8120,6 @@ function WeekPickerBar({ weekStart, setWeekStart, stepWeek, t }) {
         style={{fontSize:11,padding:"3px 6px",borderRadius:4,border:"1px solid var(--ss-border)",
           background:"var(--ss-surface-alt)",color:"var(--ss-text)"}}
       />
-      <div style={{marginLeft:"auto",display:"flex",gap:4}}>
-        {[0,1,2,3,4,5,6].map(offset => (
-          <span key={offset} style={{fontSize:9,color:"var(--ss-text-dim)",padding:"1px 4px",
-            background:"var(--ss-surface-alt)",borderRadius:3,border:"1px solid var(--ss-border-60)"}}>
-            {["Su","Mo","Tu","We","Th","Fr","Sa"][offset]} {fmtHeader(offset)}
-          </span>
-        ))}
-      </div>
     </div>
   );
 }
