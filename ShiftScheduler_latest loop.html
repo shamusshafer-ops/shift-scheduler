@@ -5901,23 +5901,8 @@ function EmployeeManager({ onOpenTestModal }) {
 
   return (
     <div>
-      <RosterManager />
-      <div style={{borderTop:"1px solid var(--ss-border)",marginBottom:24}}/>
       {errors.length>0&&<div style={{background:"var(--ss-danger-dim)",border:"1px solid var(--ss-danger)",borderRadius:6,
         padding:"10px 16px",marginBottom:16,fontSize:13,color:"var(--ss-danger-readable)"}}>{errors[0]}</div>}
-
-      {}
-      <div style={{marginBottom:20,padding:"14px 18px",background:"var(--ss-accent-0a)",
-        border:"1px dashed var(--ss-accent-55)",borderRadius:8,
-        display:"flex",alignItems:"center",justifyContent:"space-between",gap:12,flexWrap:"wrap"}}>
-        <div>
-          <div style={{fontSize:13,fontWeight:700,color:"var(--ss-accent)",marginBottom:3}}>🧪 Test Mode</div>
-          <div style={{fontSize:11,color:"var(--ss-text-dim)"}}>Instantly generate a randomized roster and auto-fill the schedule to preview staffing coverage.</div>
-        </div>
-        <button onClick={onOpenTestModal} style={{background:"var(--ss-accent)",color:"#fff",border:"none",
-          padding:"9px 18px",borderRadius:6,cursor:"pointer",fontSize:12,fontWeight:700,
-          fontFamily:"inherit",whiteSpace:"nowrap",flexShrink:0}}>GENERATE TEST ROSTER</button>
-      </div>
 
       {}
       <div style={{marginBottom:16}}>
@@ -6223,6 +6208,23 @@ function EmployeeManager({ onOpenTestModal }) {
           ))}
         </div>
       </div>
+
+      {}
+      <div style={{borderTop:"1px solid var(--ss-border)",margin:"24px 0"}}/>
+      <div style={{marginBottom:20,padding:"14px 18px",background:"var(--ss-accent-0a)",
+        border:"1px dashed var(--ss-accent-55)",borderRadius:8,
+        display:"flex",alignItems:"center",justifyContent:"space-between",gap:12,flexWrap:"wrap"}}>
+        <div>
+          <div style={{fontSize:13,fontWeight:700,color:"var(--ss-accent)",marginBottom:3}}>🧪 Test Mode</div>
+          <div style={{fontSize:11,color:"var(--ss-text-dim)"}}>Instantly generate a randomized roster and auto-fill the schedule to preview staffing coverage.</div>
+        </div>
+        <button onClick={onOpenTestModal} style={{background:"var(--ss-accent)",color:"#fff",border:"none",
+          padding:"9px 18px",borderRadius:6,cursor:"pointer",fontSize:12,fontWeight:700,
+          fontFamily:"inherit",whiteSpace:"nowrap",flexShrink:0}}>GENERATE TEST ROSTER</button>
+      </div>
+
+      {}
+      <RosterManager />
     </div>
   );
 }
