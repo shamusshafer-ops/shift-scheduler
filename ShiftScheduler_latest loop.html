@@ -4602,7 +4602,7 @@ function ViolationMinimizeButton({ onClick }) {
   return (
     <button onClick={onClick} title={count === 0 ? "No violations" : `${count} violation${count!==1?"s":""} — click to minimize`}
       style={{background:"transparent",color:col,border:"1px solid "+borderCol,
-        padding:"10px 20px",borderRadius:6,cursor:"pointer",fontSize:13,
+        padding:"9px 18px",borderRadius:6,cursor:"pointer",fontSize:12,
         fontWeight:600,fontFamily:"inherit",display:"flex",alignItems:"center",gap:7,
         transition:"all .2s"}}>
       🔧 Minimize
@@ -9582,16 +9582,18 @@ function ScheduleGrid({ onOpenTestModal }) {
       )}
 
       {}
-      <div style={{display:"flex",gap:12,marginTop:20,flexWrap:"wrap",alignItems:"center"}}>
+      <div style={{display:"flex",flexDirection:"column",gap:8,marginTop:20,alignItems:"center"}}>
+        {}
+        <div style={{display:"flex",gap:10,flexWrap:"wrap",justifyContent:"center",alignItems:"center"}}>
         {!isReadOnly && <>
           {autoFillRunning ? (
             <div style={{display:"flex",alignItems:"center",gap:10}}>
               <button onClick={()=>{ autoFillCancelRef.current = true; }}
                 style={{background:"var(--ss-danger)",color:"#fff",border:"none",
-                  padding:"10px 20px",borderRadius:6,cursor:"pointer",fontSize:13,fontWeight:600,fontFamily:"inherit",
+                  padding:"9px 18px",borderRadius:6,cursor:"pointer",fontSize:12,fontWeight:600,fontFamily:"inherit",
                   display:"flex",alignItems:"center",gap:8}}>
                 <span style={{display:"inline-block",width:10,height:10,background:"#fff",borderRadius:2}}/>
-                STOP
+                Stop
               </button>
               {autoFillProgress && (
                 <span style={{fontSize:11,color:"var(--ss-text-dim)"}}>
@@ -9605,14 +9607,14 @@ function ScheduleGrid({ onOpenTestModal }) {
             </div>
           ) : (
             <button onClick={()=>runAutoFill()} style={{background:"var(--ss-scale)",color:"#fff",border:"none",
-              padding:"10px 20px",borderRadius:6,cursor:"pointer",fontSize:13,fontWeight:600,fontFamily:"inherit"}}>⚡ AUTO-FILL</button>
+              padding:"9px 18px",borderRadius:6,cursor:"pointer",fontSize:12,fontWeight:600,fontFamily:"inherit"}}>⚡ AUTOFILL</button>
           )}
           <button onClick={()=>{setSchedule({});setExtShifts([]);setEmpPatterns({});setScheduleIssues(null);setScheduleStale(false);}} style={{background:"transparent",color:"var(--ss-danger)",
-            border:"1px solid var(--ss-danger)",padding:"10px 20px",borderRadius:6,cursor:"pointer",fontSize:13,fontWeight:600,fontFamily:"inherit"}}>CLEAR</button>
+            border:"1px solid var(--ss-danger)",padding:"9px 18px",borderRadius:6,cursor:"pointer",fontSize:12,fontWeight:600,fontFamily:"inherit"}}>Clear</button>
           <button onClick={()=>setManualPairDay(DAYS[1])}
             title="Pair two employees for 12-hour Day/Night shifts"
             style={{background:"#7c3aed18",color:"#7c3aed",border:"1px solid #7c3aed55",
-              padding:"10px 20px",borderRadius:6,cursor:"pointer",fontSize:13,fontWeight:600,
+              padding:"9px 18px",borderRadius:6,cursor:"pointer",fontSize:12,fontWeight:600,
               fontFamily:"inherit",display:"flex",alignItems:"center",gap:6}}
             onMouseEnter={e=>e.currentTarget.style.background="#7c3aed30"}
             onMouseLeave={e=>e.currentTarget.style.background="#7c3aed18"}>
@@ -9638,36 +9640,40 @@ function ScheduleGrid({ onOpenTestModal }) {
                 setShowHistSave(false);
               }}
               style={{background:"var(--ss-warning)",color:"#000",border:"none",padding:"4px 10px",
-                borderRadius:4,cursor:"pointer",fontSize:11,fontWeight:700,fontFamily:"inherit"}}>SAVE</button>
+                borderRadius:4,cursor:"pointer",fontSize:11,fontWeight:700,fontFamily:"inherit"}}>Save</button>
             <button onClick={()=>{setShowHistSave(false);setHistSaveLabel("");}}
               style={{background:"transparent",border:"none",color:"var(--ss-text-dim)",cursor:"pointer",fontSize:13,padding:"2px 4px"}}>✕</button>
           </div>
         ) : (
           <button onClick={()=>setShowHistSave(true)}
             style={{background:"transparent",color:"var(--ss-warning)",border:"1px solid var(--ss-warning-55)",
-              padding:"10px 20px",borderRadius:6,cursor:"pointer",fontSize:13,fontWeight:600,fontFamily:"inherit",
+              padding:"9px 18px",borderRadius:6,cursor:"pointer",fontSize:12,fontWeight:600,fontFamily:"inherit",
               display:"flex",alignItems:"center",gap:6}}>
             ★ Save Snapshot
           </button>
         ))}
         {!isReadOnly && <button onClick={()=>setShowCopyModal(true)}
           style={{background:"transparent",color:"var(--ss-text-muted)",border:"1px solid var(--ss-border)",
-            padding:"10px 20px",borderRadius:6,cursor:"pointer",fontSize:13,fontWeight:600,fontFamily:"inherit",
+            padding:"9px 18px",borderRadius:6,cursor:"pointer",fontSize:12,fontWeight:600,fontFamily:"inherit",
             display:"flex",alignItems:"center",gap:6}}>
           💾 Saved Weeks{savedWeeks.length>0&&<span style={{background:"var(--ss-accent)",color:"#fff",
             fontSize:10,fontWeight:800,padding:"1px 6px",borderRadius:10}}>{savedWeeks.length}</span>}
         </button>}
-        <button onClick={()=>setShowExcelPreview(true)} style={{background:"transparent",color:"var(--ss-scale)",
-          border:"1px solid var(--ss-scale-55)",padding:"10px 20px",borderRadius:6,cursor:"pointer",fontSize:13,fontWeight:600,fontFamily:"inherit"}}>↓ Export Excel</button>
-        <button onClick={()=>setShowPublish(true)} style={{background:"transparent",color:"var(--ss-accent)",
-          border:"1px solid var(--ss-accent-55)",padding:"10px 20px",borderRadius:6,cursor:"pointer",fontSize:13,fontWeight:600,fontFamily:"inherit"}}>📋 Publish</button>
         {!isReadOnly && <button onClick={onOpenTestModal} style={{background:"transparent",color:"var(--ss-accent)",
-          border:"1px solid var(--ss-accent-55)",padding:"10px 20px",borderRadius:6,cursor:"pointer",fontSize:13,fontWeight:600,fontFamily:"inherit",marginLeft:"auto"}}>🧪 New Test Roster</button>}
+          border:"1px solid var(--ss-accent-55)",padding:"9px 18px",borderRadius:6,cursor:"pointer",fontSize:12,fontWeight:600,fontFamily:"inherit"}}>🧪 New Test Roster</button>}
         {isReadOnly && <button onClick={()=>setViewingHistory(null)}
-          style={{background:"var(--ss-warning)",color:"#000",border:"none",padding:"10px 20px",borderRadius:6,
-            cursor:"pointer",fontSize:13,fontWeight:700,fontFamily:"inherit",marginLeft:"auto"}}>
+          style={{background:"var(--ss-warning)",color:"#000",border:"none",padding:"9px 18px",borderRadius:6,
+            cursor:"pointer",fontSize:12,fontWeight:700,fontFamily:"inherit"}}>
           ↩ Back to Live Schedule
         </button>}
+        </div>
+        {}
+        <div style={{display:"flex",gap:10,justifyContent:"center",alignItems:"center"}}>
+          <button onClick={()=>setShowExcelPreview(true)} style={{background:"transparent",color:"var(--ss-scale)",
+            border:"1px solid var(--ss-scale-55)",padding:"9px 18px",borderRadius:6,cursor:"pointer",fontSize:12,fontWeight:600,fontFamily:"inherit"}}>↓ Export Excel</button>
+          <button onClick={()=>setShowPublish(true)} style={{background:"transparent",color:"var(--ss-accent)",
+            border:"1px solid var(--ss-accent-55)",padding:"9px 18px",borderRadius:6,cursor:"pointer",fontSize:12,fontWeight:600,fontFamily:"inherit"}}>📋 Publish</button>
+        </div>
       </div>
 
       {}
