@@ -11461,34 +11461,36 @@ function SettingsPanel({ themeName, setThemeName, customTheme, setCustomTheme })
       )}
       {settingsTab==="rotation" && (
         <Section title="Weekly Rotation">
-        <Row label="Rotation mode"
-          desc="Fixed: same days off every week. Rolling: days off advance each week.">
-          <div style={{display:"flex",gap:8,flexDirection:"column"}}>
-            {["fixed","rolling"].map(mode => {
-              const active = (cfg.rotationMode ?? "fixed") === mode;
-              const color  = mode === "rolling" ? "var(--ss-scale)" : "var(--ss-text-muted)";
-              return (
-                <button key={mode} onClick={() => update("rotationMode", mode)}
-                  style={{display:"flex",alignItems:"center",gap:10,padding:"9px 14px",
-                    borderRadius:6,cursor:"pointer",fontFamily:"inherit",
-                    border:"1.5px solid "+(active?color:"var(--ss-border)"),
-                    background:active?color+"18":"var(--ss-surface-alt)",transition:"all .15s"}}>
-                  <span style={{width:9,height:9,borderRadius:"50%",flexShrink:0,
-                    background:active?color:"var(--ss-text-dim)"}}/>
-                  <div style={{fontSize:12,fontWeight:700,color:active?color:"var(--ss-text)"}}>
-                    {mode === "fixed" ? "Fixed — same days off every week" : "Rolling — advances each week"}
-                  </div>
-                  {active&&<span style={{marginLeft:"auto",fontSize:10,fontWeight:700,color}}>✓ Active</span>}
-                </button>
-              );
-            })}
+          <div style={{marginBottom:8}}>
+            <div style={{fontWeight:600,fontSize:13,color:"var(--ss-text)",marginBottom:2}}>Rotation mode</div>
+            <div style={{fontSize:11,color:"var(--ss-text-dim)",marginBottom:10}}>Fixed: same days off every week. Rolling: days off advance each week.</div>
+            <div style={{display:"flex",gap:8,flexDirection:"column",maxWidth:360}}>
+              {["fixed","rolling"].map(mode => {
+                const active = (cfg.rotationMode ?? "fixed") === mode;
+                const color  = mode === "rolling" ? "var(--ss-scale)" : "var(--ss-text-muted)";
+                return (
+                  <button key={mode} onClick={() => update("rotationMode", mode)}
+                    style={{display:"flex",alignItems:"center",gap:10,padding:"9px 14px",
+                      borderRadius:6,cursor:"pointer",fontFamily:"inherit",
+                      border:"1.5px solid "+(active?color:"var(--ss-border)"),
+                      background:active?color+"18":"var(--ss-surface-alt)",transition:"all .15s"}}>
+                    <span style={{width:9,height:9,borderRadius:"50%",flexShrink:0,
+                      background:active?color:"var(--ss-text-dim)"}}/>
+                    <div style={{fontSize:12,fontWeight:700,color:active?color:"var(--ss-text)"}}>
+                      {mode === "fixed" ? "Fixed — same days off every week" : "Rolling — advances each week"}
+                    </div>
+                    {active&&<span style={{marginLeft:"auto",fontSize:10,fontWeight:700,color}}>✓ Active</span>}
+                  </button>
+                );
+              })}
+            </div>
           </div>
-        </Row>
-        <Row label="4-week preview"
-          desc="Shows each FT employee's projected days off for the next 4 autofill runs.">
-          <RotationPreview/>
-        </Row>
-      </Section>
+          <div style={{borderTop:"1px solid var(--ss-border)",paddingTop:16,marginTop:16}}>
+            <div style={{fontWeight:600,fontSize:13,color:"var(--ss-text)",marginBottom:2}}>4-week preview</div>
+            <div style={{fontSize:11,color:"var(--ss-text-dim)",marginBottom:10}}>Shows each FT employee's projected days off for the next 4 autofill runs.</div>
+            <RotationPreview/>
+          </div>
+        </Section>
       )}
 
       {settingsTab==="swingslots" && (
