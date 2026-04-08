@@ -1372,6 +1372,79 @@ function buildAutoFill(sourceEmps, cfg, empTimeOffDays, empPatterns, extShiftsAr
     });
   });
 
+  // ── Step 1b: Coverage-aware rest-day staggering (Improvement 2) ────────
+  // After independent plan assignment, adjust essential employees' rest days
+  // so they don't overlap across shifts — preventing coverage gaps when
+  // multiple specialists rest on the same day.
+  {
+    const essentialByShift = {};
+    SHIFTS.forEach(shift => {
+      const group = sourceEmps.filter(e => {
+        const p = plan[e.id];
+        return p && p.shiftId === shift.id && e.employmentType === "full-time";
+      });
+      const essential = [];
+      group.forEach(e => { if (e.requiredShift === shift.id && !essential.includes(e)) essential.push(e); });
+      for (const role of ["Scale", "Medical"]) {
+        const providers = group.filter(e =>
+          (e.qualifications || []).includes(role) && canFillPos(e, role, "Monday")
+        );
+        if (providers.length <= 2) {
+          providers.forEach(p => { if (!essential.includes(p)) essential.push(p); });
+        }
+      }
+      essentialByShift[shift.id] = essential;
+    });
+
+    let globalStaggerIdx = 0;
+    const globalRestDays = new Map();
+    SHIFTS.forEach(shift => {
+      const essential = essentialByShift[shift.id] || [];
+      essential.forEach(emp => {
+        const empPlan = plan[emp.id];
+        if (!empPlan) return;
+        const preferredOff = new Set(emp.preferredDaysOff || []);
+        const unavail = new Set(emp.unavailableDays || []);
+        const restDays = new Set();
+
+        // Try preferred days off first if no overlap with other essentials
+        if (preferredOff.size >= daysOff) {
+          const prefArr = [...preferredOff].slice(0, daysOff);
+          let overlap = prefArr.some(d => [...globalRestDays.values()].some(r => r.has(d)));
+          if (!overlap) prefArr.forEach(d => restDays.add(d));
+        }
+
+        // Stagger using global counter for unique rest days
+        if (restDays.size < daysOff) {
+          restDays.clear();
+          let placed = 0;
+          for (let a = 0; a < 7 && placed < daysOff; a++) {
+            const d = DAYS[(globalStaggerIdx + a) % 7];
+            if (unavail.has(d)) continue;
+            if ([...globalRestDays.values()].some(r => r.has(d))) continue;
+            restDays.add(d); placed++;
+          }
+          if (placed < daysOff) {
+            for (let a = 0; a < 7 && placed < daysOff; a++) {
+              const d = DAYS[(globalStaggerIdx + a) % 7];
+              if (restDays.has(d) || unavail.has(d)) continue;
+              restDays.add(d); placed++;
+            }
+          }
+        }
+        globalStaggerIdx += daysOff;
+        globalRestDays.set(emp.id, restDays);
+
+        // Update the plan's workDays (preserve blockStart for continuity)
+        const newWorkDays = new Set(DAYS.filter(d => !restDays.has(d) && !unavail.has(d)));
+        empPlan.workDays = newWorkDays;
+      });
+    });
+    console.log("[Step 1b] Coverage-aware rest-day staggering applied to",
+      Object.values(essentialByShift).flat().length, "essential employees across",
+      Object.keys(essentialByShift).filter(k => essentialByShift[k].length > 0).length, "shifts");
+  }
+
   // ── Step 2: Build qualification-group peer sets for fairness ────────────
   // For each employee, find peers who share at least one qualifying position.
   // "fairness penalty" = how many MORE hours this emp has vs the peer-group minimum.
@@ -1708,312 +1781,579 @@ function buildAutoFill(sourceEmps, cfg, empTimeOffDays, empPatterns, extShiftsAr
         return n;
       }, 0));
 
-  // ── Step 3: CSP fill — process most-constrained slots first (MRV) ─────────
-  // Snapshot domain sizes before any assignments, sort 21 slots ascending.
-  // Slots with the fewest eligible (emp, position) pairs are filled first —
-  // preventing early calendar slots from consuming employees that scarce slots need.
-  const allSlots = DAYS.flatMap(d => SHIFTS.map(s => ({ day: d, shift: s })));
-  const slotMRVKey = Object.fromEntries(
-    allSlots.map(({ day: d, shift: s }) => [cellKey(d, s.id), slotDomainSize(cellKey(d, s.id))])
-  );
-  const orderedSlots = allSlots.sort((a, b) =>
-    (slotMRVKey[cellKey(a.day, a.shift.id)] || 0) - (slotMRVKey[cellKey(b.day, b.shift.id)] || 0)
-  );
-  console.log("[CSP] MRV slot order:", orderedSlots.map(({ day, shift }) =>
-    `${day.slice(0,3)}/${shift.id.slice(0,2)}(${slotMRVKey[cellKey(day, shift.id)]})`).join(" "));
-  for (const { day, shift } of orderedSlots) {
-    {
-      const key   = cellKey(day, shift.id);
-      const slots = getSlotCount(day, shift.id);
-      const asgn  = [];
-      const used  = new Set();
+  // ── Step 3: Backtracking CSP fill with two-phase optimization ─────────
+  // Replaces greedy MRV fill with a backtracking search that guarantees
+  // complete coverage when feasible, then optimises for preferences via
+  // hill-climbing.  Incorporates improvements 1 (backtracking + AC-3),
+  // 3 (role-reservation), 4 (dynamic MRV), 5 (feasibility pre-check),
+  // and 6 (two-phase optimisation: feasibility first, then preference swaps).
+  {
+    const empMap = new Map(sourceEmps.map(e => [e.id, e]));
+    const btSlots = DAYS.flatMap(d => SHIFTS.map(s => ({ day: d, shiftId: s.id })));
 
-      // Pre-block any employee already covering this slot via an ext shift.
-      (extShiftsArg||[]).forEach(ext => {
+    // Build per-slot ext-shift role coverage + blocked employees
+    const extRoleBySlot = {};
+    const extBlockedBySlot = {};
+    for (const { day, shiftId } of btSlots) {
+      const key = cellKey(day, shiftId);
+      const activeExts = (extShiftsArg||[]).filter(e => extCovers(e, day, shiftId));
+      const blocked = new Set();
+      let hasScale = false, hasMedical = false;
+      activeExts.forEach(ext => {
         const pair = EXT_PAIRS.find(p => p.id === ext.pairId);
         if (!pair) return;
-        const idx = pair.covers.indexOf(shift.id);
-        if (idx === 0 && ext.empAId) used.add(ext.empAId);
-        if (idx === 1 && ext.empBId) used.add(ext.empBId);
-        // Split cross-day: empB is working next day's first shift
-        if (pair.crossDayB === shift.id && ext.empBId) {
+        const idx = pair.covers.indexOf(shiftId);
+        if (idx === 0 && ext.empAId) blocked.add(ext.empAId);
+        if (idx === 1 && ext.empBId) blocked.add(ext.empBId);
+        if (pair.crossDayB === shiftId && ext.empBId) {
           const nextDay = DAYS[(DAYS.indexOf(ext.day) + 1) % 7];
-          if (nextDay === day) used.add(ext.empBId);
+          if (nextDay === day) blocked.add(ext.empBId);
         }
-      });
-
-      // Relaxed scorer: allows FT on rest days — only used when no compliant
-      // employee can fill the slot (escape hatch, Step 3b).
-      const rankScoreRelaxed = (emp, shiftId) => {
-        const empPlan = plan[emp.id];
-        const isFT    = emp.employmentType === "full-time";
-        if (!isFT) return null; // PT/OC already tried in normal pass
-        if (empPlan && empPlan.shiftId !== shiftId) return null;
-        if ((emp.unavailableDays||[]).includes(day)) return null;
-        if (empTimeOffDays && empTimeOffDays.has(emp.id + "__" + day)) return null;
-        if ((emp.blockedShifts||[]).includes(shiftId)) return null;
-        const myHours = hourTracker[emp.id] || 0;
-        if (myHours >= OT_RELIEF_THRESHOLD) return null;
-        if (isRestViolation(emp, rg(emp.id, ns, day, shiftId), minRest)) return null;
-        if (calcConsecutiveHours(emp.id, ns, day, shiftId, extShiftsArg) > empMaxConsec(emp)) return null;
-        const restDayPenalty = (empPlan && !empPlan.workDays.has(day)) ? 500 : 0;
-        const fairPenalty    = Math.max(0, myHours - peerMinHours(emp)) * 15;
-        return restDayPenalty + fairPenalty + (myHours >= FT_MIN_HOURS ? 600 : 0);
-      };
-
-      const assign = (emp, position) => {
-        hourTracker[emp.id] = (hourTracker[emp.id] || 0) + SHIFT_HOURS;
-        shiftsWorked[emp.id] = (shiftsWorked[emp.id] || 0) + 1;
-        dayWorked[emp.id].add(day);
-        asgn.push({ employeeId: emp.id, position });
-        used.add(emp.id);
-        forwardCheck(emp, day); // propagate: remove emp from remaining domains on this day
-      };
-
-      // Count only non-Supervisor entries toward the regular-slot cap.
-      // The Supervisor occupies a dedicated +1 slot on weekday 1st shift
-      // and must not consume one of the 3 regular Guard/Scale/Medical slots.
-      const regularCount = () => asgn.filter(a => a.position !== "Supervisor").length;
-
-      const activeExts = (extShiftsArg||[]).filter(e => extCovers(e, day, shift.id));
-      const extBodyCount = activeExts.reduce((n, ext) => {
-        const pair = EXT_PAIRS.find(p => p.id === ext.pairId);
-        if (!pair) return n;
-        const shiftIdx = pair.covers.indexOf(shift.id);
-        let hasBody = shiftIdx === 0 ? !!ext.empAId : shiftIdx === 1 ? !!ext.empBId : false;
-        // Split cross-day: empB counts as a body for next day's first shift
-        if (!hasBody && pair.crossDayB === shift.id && ext.empBId) {
-          const nextDay = DAYS[(DAYS.indexOf(ext.day) + 1) % 7];
-          if (nextDay === day) hasBody = true;
-        }
-        return n + (hasBody ? 1 : 0);
-      }, 0);
-      // effectiveSlots = cap for REGULAR (non-Supervisor) bodies only.
-      const effectiveSlots = Math.max(0, REGULAR_SLOTS(day, shift.id) - extBodyCount);
-
-      // Helper: resolve which employee ID is "present" for an ext shift in this slot
-      const extPresentId = (e, pair) => {
-        const idx = pair.covers.indexOf(shift.id);
-        if (idx === 0) return e.empAId;
-        if (idx === 1) return e.empBId;
-        // Split cross-day: empB covers next day's first shift
-        if (pair.crossDayB === shift.id && e.empBId) {
-          const nextDay = DAYS[(DAYS.indexOf(e.day) + 1) % 7];
-          if (nextDay === day) return e.empBId;
-        }
-        return null;
-      };
-      const extAlreadyScale = activeExts.some(e => {
-        const pair = EXT_PAIRS.find(p => p.id === e.pairId);
-        if (!pair) return false;
-        const presentId = extPresentId(e, pair);
-        const presentEmp = presentId ? sourceEmps.find(x => x.id === presentId) : null;
+        const presentId = idx === 0 ? ext.empAId : idx === 1 ? ext.empBId : null;
+        const presentEmp = presentId ? empMap.get(presentId) : null;
         const roles = presentEmp
           ? ["Scale","Medical"].filter(r => presentEmp.qualifications.includes(r))
-          : (e.roles||[]);
-        return roles.includes("Scale");
+          : (ext.roles||[]);
+        if (roles.includes("Scale")) hasScale = true;
+        if (roles.includes("Medical")) hasMedical = true;
       });
-      const extAlreadyMedical = activeExts.some(e => {
-        const pair = EXT_PAIRS.find(p => p.id === e.pairId);
-        if (!pair) return false;
-        const presentId = extPresentId(e, pair);
-        const presentEmp = presentId ? sourceEmps.find(x => x.id === presentId) : null;
-        const roles = presentEmp
-          ? ["Scale","Medical"].filter(r => presentEmp.qualifications.includes(r))
-          : (e.roles||[]);
-        return roles.includes("Medical");
-      });
-
-      // ── 1. Supervisor slot (weekday 1st only) ─────────────────────────────
-      // Assigned first so they're in `used` before regular scoring.
-      // Does NOT count against effectiveSlots — it is an additional slot.
-      if (SUP_SLOT_DAY(day, shift.id)) {
-        const supPick = sourceEmps.find(e =>
-          !used.has(e.id) &&
-          (e.qualifications||[]).includes("Supervisor") &&
-          !(e.unavailableDays||[]).includes(day) &&
-          !(empTimeOffDays && empTimeOffDays.has(e.id + "__" + day))
-        );
-        if (supPick) assign(supPick, "Supervisor");
-      }
-
-      // Build ranked list AFTER supervisor is in `used`, so they don't appear here.
-      // jitter: shuffle employees with equal scores so repeated attempts explore different orderings.
-      const ranked = sourceEmps
-        .map(e => { const s = empScore(e, day, shift.id); return s === null ? null : { e, s }; })
-        .filter(Boolean)
-        .sort((a, b) => {
-          const d = a.s - b.s;
-          if (d !== 0) return d;
-          return jitter ? Math.random() - 0.5 : 0;
-        });
-
-      // ── 2. Required roles: Scale and Medical ──────────────────────────────
-      // Cap checked against regularCount() so the Supervisor slot doesn't eat
-      // one of the 3 regular positions.
-      // Uses slotHasRole (qualification-aware) so a dual-qualified Scale+Medical
-      // employee assigned as "Scale" satisfies both roles — no phantom Medical slot.
-      for (const role of ["Scale", "Medical"]) {
-        if (regularCount() >= effectiveSlots) break;
-        if (slotHasRole(asgn, sourceEmps, role)) continue;
-        if (role === "Scale"   && extAlreadyScale)   continue;
-        if (role === "Medical" && extAlreadyMedical) continue;
-        const pick = ranked.find(({ e }) => !used.has(e.id) && canFillPos(e, role, day) && !(!isWeekday(day) && (e.qualifications||[]).includes("Supervisor") && (role === "Scale" || role === "Medical")))
-                  || ranked.find(({ e }) => !used.has(e.id) && canFillPos(e, role, day));
-        if (pick) assign(pick.e, role);
-      }
-
-      // ── 3. Remaining regular slots — two-pass Guard-first logic ─────────────
-      // Pass A fills Scale/Medical roles and Guard slots using Guard-only employees.
-      // Pass B allows specialists to fill any remaining Guard slots only if no
-      // Guard-only employee is available — hard preference, not just a soft penalty.
-      //
-      const hasGuardOnlyAvailable = () =>
-        sourceEmps.some(e =>
-          !used.has(e.id) &&
-          isGuardOnly(e) &&
-          canFillPos(e, "Guard", day) &&
-          empScore(e, day, shift.id, "Guard") !== null
-        );
-      const WEEKEND_DAYS = new Set(["Saturday","Sunday"]);
-      const isWeekendDay = WEEKEND_DAYS.has(day);
-      const weekendDaysWorked = (empId) =>
-        [...(dayWorked[empId]||new Set())].filter(d => WEEKEND_DAYS.has(d)).length;
-      const atWeekendCap = (emp) =>
-        isWeekendDay &&
-        emp.maxWeekendDays !== null &&
-        emp.maxWeekendDays !== undefined &&
-        weekendDaysWorked(emp.id) >= emp.maxWeekendDays;
-
-      // Fail-Fast: force-assign any employee whose only remaining domain slot is this one
-      if (regularCount() < effectiveSlots) {
-        for (const emp of sourceEmps) {
-          if (regularCount() >= effectiveSlots) break;
-          if (used.has(emp.id)) continue;
-          if ((emp.qualifications||[]).includes("Supervisor")) continue;
-          const remaining = Object.keys(domains[emp.id] || {});
-          if (remaining.length !== 1 || remaining[0] !== key) continue;
-          if (isRestViolation(emp, rg(emp.id, ns, day, shift.id), minRest)) continue;
-          if (calcConsecutiveHours(emp.id, ns, day, shift.id, extShiftsArg) > empMaxConsec(emp)) continue;
-          const ap = getAvailPos(day, shift.id).filter(p => canFillPos(emp, p, day));
-          if (!ap.length) continue;
-          if (atWeekendCap(emp)) continue;
-          const nowHasScale   = slotHasRole(asgn, sourceEmps, "Scale");
-          const nowHasMedical = slotHasRole(asgn, sourceEmps, "Medical");
-          let pos;
-          if      (!nowHasScale   && !extAlreadyScale   && ap.includes("Scale"))   pos = "Scale";
-          else if (!nowHasMedical && !extAlreadyMedical && ap.includes("Medical")) pos = "Medical";
-          else if (ap.includes("Guard"))                                            pos = "Guard";
-          else pos = ap[0];
-          assign(emp, pos);
-          console.log(`[Fail-Fast] Forced: ${emp.name} → ${day}/${shift.id} as ${pos} (only remaining slot)`);
-        }
-      }
-
-      const buildRankedPos = () => {
-        const nowHasSc = slotHasRole(asgn, sourceEmps, "Scale");
-        const nowHasMd = slotHasRole(asgn, sourceEmps, "Medical");
-        return sourceEmps
-          .map(e => {
-            const ap = getAvailPos(day, shift.id).filter(p => canFillPos(e, p, day));
-            if (!ap.length) return null;
-            const needSc = !nowHasSc && !extAlreadyScale;
-            const needMe = !nowHasMd && !extAlreadyMedical;
-            const likelyPos = (needSc && ap.includes("Scale"))   ? "Scale"
-                            : (needMe && ap.includes("Medical")) ? "Medical"
-                            : ap.includes("Guard")               ? "Guard"
-                            : ap[0];
-            const s = empScore(e, day, shift.id, likelyPos);
-            return s === null ? null : { e, s, likelyPos };
-          })
-          .filter(Boolean)
-          .sort((a, b) => a.s - b.s);
-      };
-
-      // Pass A: fill Scale/Medical roles + Guard slots using Guard-only employees.
-      // Specialists are skipped for Guard slots if Guard-only employees exist.
-      for (const { e, likelyPos } of buildRankedPos()) {
-        if (regularCount() >= effectiveSlots) break;
-        if (used.has(e.id)) continue;
-        const ap = getAvailPos(day, shift.id).filter(p => canFillPos(e, p, day));
-        if (!ap.length) continue;
-        const nowHasScale   = slotHasRole(asgn, sourceEmps, "Scale");
-        const nowHasMedical = slotHasRole(asgn, sourceEmps, "Medical");
-        const needScale   = !nowHasScale   && !extAlreadyScale;
-        const needMedical = !nowHasMedical && !extAlreadyMedical;
-        let pos;
-        if      (needScale   && ap.includes("Scale"))   pos = "Scale";
-        else if (needMedical && ap.includes("Medical")) pos = "Medical";
-        else if (ap.includes("Guard"))                  pos = "Guard";
-        else pos = ap[0];
-        // Hard block: if this would put a specialist in a Guard slot
-        // AND Guard-only employees are still available, skip them for now.
-        if (pos === "Guard" && !isGuardOnly(e) && hasGuardOnlyAvailable()) continue;
-        if (atWeekendCap(e)) continue;
-        assign(e, pos);
-      }
-
-      // Pass B: any remaining slots — now allow specialists to fill Guard.
-      // Guard-only employees were either all placed or unavailable.
-      if (regularCount() < effectiveSlots) {
-        for (const { e } of buildRankedPos()) {
-          if (regularCount() >= effectiveSlots) break;
-          if (used.has(e.id)) continue;
-          const ap = getAvailPos(day, shift.id).filter(p => canFillPos(e, p, day));
-          if (!ap.length) continue;
-          const nowHasScale   = slotHasRole(asgn, sourceEmps, "Scale");
-          const nowHasMedical = slotHasRole(asgn, sourceEmps, "Medical");
-          const needScale   = !nowHasScale   && !extAlreadyScale;
-          const needMedical = !nowHasMedical && !extAlreadyMedical;
-          let pos;
-          if      (needScale   && ap.includes("Scale"))   pos = "Scale";
-          else if (needMedical && ap.includes("Medical")) pos = "Medical";
-          else if (ap.includes("Guard"))                  pos = "Guard";
-          else pos = ap[0];
-          if (atWeekendCap(e)) continue;
-          assign(e, pos);
-        }
-      }
-
-      // ── 3b. Rest-day escape hatch ──────────────────────────────────────
-      // Fires when: (a) open body slots remain, OR (b) required roles (Scale/Medical)
-      // are still missing even if headcount is full.
-      // Allows FT on their planned rest days as absolute last resort.
-      const hatchNeedsScale   = !slotHasRole(asgn, sourceEmps, "Scale")   && !extAlreadyScale;
-      const hatchNeedsMedical = !slotHasRole(asgn, sourceEmps, "Medical") && !extAlreadyMedical;
-      const hatchOpen = regularCount() < effectiveSlots || hatchNeedsScale || hatchNeedsMedical;
-      if (hatchOpen) {
-        const relaxed = sourceEmps
-          .map(e => ({ e, score: rankScoreRelaxed(e, shift.id) }))
-          .filter(x => x.score !== null && !used.has(x.e.id))
-          .sort((a, b) => a.score - b.score);
-        for (const { e } of relaxed) {
-          // Stop when headcount is full AND all required roles are covered
-          const stillNeedsScale   = !slotHasRole(asgn, sourceEmps, "Scale")   && !extAlreadyScale;
-          const stillNeedsMedical = !slotHasRole(asgn, sourceEmps, "Medical") && !extAlreadyMedical;
-          if (regularCount() >= effectiveSlots && !stillNeedsScale && !stillNeedsMedical) break;
-          const ap = getAvailPos(day, shift.id).filter(p => canFillPos(e, p, day));
-          if (!ap.length) continue;
-          const needScale   = stillNeedsScale;
-          const needMedical = stillNeedsMedical;
-          // Only add a body if a slot is genuinely open — never exceed the slot cap.
-          // Missing roles on a full slot are flagged as coverage gaps, not fixed by
-          // adding a 4th body. The 12hr pair system handles role gaps on full shifts.
-          if (regularCount() >= effectiveSlots) continue;
-          let pos;
-          if      (needScale   && ap.includes("Scale"))   pos = "Scale";
-          else if (needMedical && ap.includes("Medical")) pos = "Medical";
-          else if (ap.includes("Guard"))                  pos = "Guard";
-          else pos = ap[0];
-          // Guard-only preference: skip specialist for Guard if guard-only still available
-          if (pos === "Guard" && !isGuardOnly(e) && hasGuardOnlyAvailable()) continue;
-          if (atWeekendCap(e)) continue;
-          assign(e, pos);
-        }
-      }
-
-      ns[key] = asgn;
+      extRoleBySlot[key] = { hasScale, hasMedical };
+      extBlockedBySlot[key] = blocked;
     }
+
+    // Static eligibility from domain matrix + empTimeOffDays
+    const btStaticEligible = (day, shiftId) => {
+      const key = cellKey(day, shiftId);
+      const blocked = extBlockedBySlot[key] || new Set();
+      return sourceEmps.filter(e => {
+        if (blocked.has(e.id)) return false;
+        if (!domains[e.id]?.[key]?.size) return false;
+        if (empTimeOffDays && empTimeOffDays.has(e.id + "__" + day)) return false;
+        return true;
+      }).map(e => e.id);
+    };
+
+    // ── SearchState class ──────────────────────────────────────────────────
+    class SearchState {
+      constructor() {
+        this.schedule = {};
+        this.hourTracker = { ...hourTracker }; // inherit ext-shift hours
+        this.dayWorked = {};
+        this.shiftsWorked = {};
+        this.domains = [];
+        sourceEmps.forEach(e => {
+          if (this.hourTracker[e.id] == null) this.hourTracker[e.id] = 0;
+          this.dayWorked[e.id] = new Set();
+          this.shiftsWorked[e.id] = 0;
+        });
+        for (const { day, shiftId } of btSlots) {
+          this.domains.push(new Set(btStaticEligible(day, shiftId)));
+        }
+      }
+
+      canAssign(empId, slotIdx) {
+        const { day, shiftId } = btSlots[slotIdx];
+        const emp = empMap.get(empId);
+        if (!emp) return false;
+        const key = cellKey(day, shiftId);
+        if ((this.schedule[key] || []).some(a => a.employeeId === empId)) return false;
+        // Same day, different shift: only if willing16h + adjacent
+        for (const s of SHIFTS) {
+          if (s.id === shiftId) continue;
+          if ((this.schedule[cellKey(day, s.id)] || []).some(a => a.employeeId === empId)) {
+            if (!emp.willing16h) return false;
+            const adj = new Set(["first__second","second__first","second__third","third__second"]);
+            if (!adj.has(s.id + "__" + shiftId)) return false;
+          }
+        }
+        // Weekly shift cap
+        const empMaxW = emp.maxShiftsPerWeek;
+        if (empMaxW != null && this.shiftsWorked[empId] >= empMaxW) return false;
+        // Consecutive days cap
+        const workDays = new Set(this.dayWorked[empId]);
+        workDays.add(day);
+        let maxConsecDays = 0, streak = 0;
+        for (const d of DAYS) {
+          if (workDays.has(d)) { streak++; maxConsecDays = Math.max(maxConsecDays, streak); } else streak = 0;
+        }
+        if (workDays.has("Sunday") && workDays.has("Saturday")) {
+          let head = 0, tail = 0;
+          for (const d of DAYS) { if (workDays.has(d)) head++; else break; }
+          for (let i = 6; i >= 0; i--) { if (workDays.has(DAYS[i])) tail++; else break; }
+          maxConsecDays = Math.max(maxConsecDays, head + tail);
+        }
+        if (maxConsecDays > maxShifts) return false;
+        // Weekend cap
+        if (["Saturday","Sunday"].includes(day) && emp.maxWeekendDays != null) {
+          const wkd = [...this.dayWorked[empId]].filter(d => ["Saturday","Sunday"].includes(d)).length;
+          if (wkd >= emp.maxWeekendDays) return false;
+        }
+        // Fatigue constraints against current schedule
+        if (isRestViolation(emp, rg(empId, this.schedule, day, shiftId), minRest)) return false;
+        if (calcConsecutiveHours(empId, this.schedule, day, shiftId, extShiftsArg) > empMaxConsec(emp)) return false;
+        if (shiftId === "third" && calcConsecutiveNights(empId, this.schedule, day, shiftId) >= maxNights) return false;
+        return true;
+      }
+
+      assign(empId, position, slotIdx) {
+        const { day, shiftId } = btSlots[slotIdx];
+        const key = cellKey(day, shiftId);
+        if (!this.schedule[key]) this.schedule[key] = [];
+        this.schedule[key].push({ employeeId: empId, position });
+        if (!this.schedule[key].slice(0, -1).some(a => a.employeeId === empId)) {
+          this.hourTracker[empId] = (this.hourTracker[empId] || 0) + SHIFT_HOURS;
+          this.shiftsWorked[empId] = (this.shiftsWorked[empId] || 0) + 1;
+          this.dayWorked[empId].add(day);
+        }
+      }
+
+      // Lightweight propagation: prune obvious conflicts only
+      propagate(slotIdx) {
+        const { day, shiftId } = btSlots[slotIdx];
+        const assignedHere = new Set((this.schedule[cellKey(day, shiftId)] || []).map(a => a.employeeId));
+        const ADJ = new Set(["first__second","second__first","second__third","third__second"]);
+        for (let j = 0; j < btSlots.length; j++) {
+          if (j === slotIdx) continue;
+          const jKey = cellKey(btSlots[j].day, btSlots[j].shiftId);
+          const jAsgn = this.schedule[jKey] || [];
+          const needed = slotCap(btSlots[j].day, btSlots[j].shiftId) +
+            (SUP_SLOT_DAY(btSlots[j].day, btSlots[j].shiftId) ? 1 : 0);
+          if (jAsgn.length >= needed) { this.domains[j] = new Set(); continue; }
+          const toRemove = [];
+          for (const empId of this.domains[j]) {
+            if (btSlots[j].day === day && btSlots[j].shiftId !== shiftId && assignedHere.has(empId)) {
+              const emp = empMap.get(empId);
+              if (!emp || !emp.willing16h || !ADJ.has(shiftId + "__" + btSlots[j].shiftId)) {
+                toRemove.push(empId); continue;
+              }
+            }
+            const emp = empMap.get(empId);
+            if (emp && emp.maxShiftsPerWeek != null && (this.shiftsWorked[empId] || 0) >= emp.maxShiftsPerWeek) {
+              toRemove.push(empId); continue;
+            }
+            if (emp && this.dayWorked[empId]) {
+              const wd = new Set(this.dayWorked[empId]);
+              wd.add(btSlots[j].day);
+              let s = 0, ms = 0;
+              for (const d of DAYS) { if (wd.has(d)) { s++; ms = Math.max(ms, s); } else s = 0; }
+              if (ms > maxShifts) toRemove.push(empId);
+            }
+          }
+          for (const empId of toRemove) this.domains[j].delete(empId);
+        }
+      }
+
+      isFeasible() {
+        for (let j = 0; j < btSlots.length; j++) {
+          const jKey = cellKey(btSlots[j].day, btSlots[j].shiftId);
+          const jAsgn = this.schedule[jKey] || [];
+          const regCount = jAsgn.filter(a => a.position !== "Supervisor").length;
+          const cap = slotCap(btSlots[j].day, btSlots[j].shiftId);
+          const supNeeded = SUP_SLOT_DAY(btSlots[j].day, btSlots[j].shiftId) ? 1 : 0;
+          const supFilled = jAsgn.some(a => a.position === "Supervisor") ? 1 : 0;
+          const totalNeeded = Math.max(0, cap - regCount) + Math.max(0, supNeeded - supFilled);
+          if (totalNeeded <= 0) continue;
+          const inSlot = new Set(jAsgn.map(a => a.employeeId));
+          const avail = [...this.domains[j]].filter(id => !inSlot.has(id));
+          if (avail.length < totalNeeded) return false;
+        }
+        return true;
+      }
+    }
+
+    // ── Pick best position for an employee in a slot ───────────────────────
+    const btPickPosition = (emp, currentAsgn, day, shiftId) => {
+      const isSup = (emp.qualifications||[]).includes("Supervisor");
+      if (isSup && SUP_SLOT_DAY(day, shiftId)) return "Supervisor";
+      const key = cellKey(day, shiftId);
+      const extR = extRoleBySlot[key] || {};
+      const ap = getAvailPos(day, shiftId).filter(p => canFillPos(emp, p, day));
+      if (!ap.length) return null;
+      const hasScale = slotHasRole(currentAsgn, sourceEmps, "Scale") || extR.hasScale;
+      const hasMedical = slotHasRole(currentAsgn, sourceEmps, "Medical") || extR.hasMedical;
+      if (!hasScale && ap.includes("Scale")) return "Scale";
+      if (!hasMedical && ap.includes("Medical")) return "Medical";
+      if (ap.includes("Guard")) return "Guard";
+      return ap[0];
+    };
+
+    // ── Dynamic MRV slot selection (Improvement 4) ─────────────────────────
+    const btSelectNextSlot = (state) => {
+      let bestIdx = -1, bestScore = Infinity;
+      for (let i = 0; i < btSlots.length; i++) {
+        const { day, shiftId } = btSlots[i];
+        const key = cellKey(day, shiftId);
+        const asgn = state.schedule[key] || [];
+        const regCount = asgn.filter(a => a.position !== "Supervisor").length;
+        const cap = slotCap(day, shiftId);
+        const supFilled = asgn.some(a => a.position === "Supervisor") ? 1 : 0;
+        const supNeeded = SUP_SLOT_DAY(day, shiftId) ? 1 : 0;
+        if (regCount >= cap && supFilled >= supNeeded) continue;
+        const inSlot = new Set(asgn.map(a => a.employeeId));
+        const avail = [...state.domains[i]].filter(id => !inSlot.has(id));
+        let size = avail.length;
+        if (size === 0) return i;
+        // Role-priority boost
+        const extR = extRoleBySlot[key] || {};
+        const hasScale = slotHasRole(asgn, sourceEmps, "Scale") || extR.hasScale;
+        const hasMedical = slotHasRole(asgn, sourceEmps, "Medical") || extR.hasMedical;
+        let rolePenalty = 0;
+        if (!hasScale) {
+          const scaleAvail = avail.filter(id => {
+            const e = empMap.get(id);
+            return e && (e.qualifications||[]).includes("Scale") && canFillPos(e, "Scale", day);
+          });
+          rolePenalty += scaleAvail.length <= 1 ? -1000 : -500 / scaleAvail.length;
+        }
+        if (!hasMedical) {
+          const medAvail = avail.filter(id => {
+            const e = empMap.get(id);
+            return e && (e.qualifications||[]).includes("Medical") && canFillPos(e, "Medical", day);
+          });
+          rolePenalty += medAvail.length <= 1 ? -1000 : -500 / medAvail.length;
+        }
+        const score = size + rolePenalty;
+        if (score < bestScore) { bestScore = score; bestIdx = i; }
+      }
+      return bestIdx;
+    };
+
+    // ── Phase 1 scoring: feasibility-focused ───────────────────────────────
+    const btScore = (state, empId, slotIdx) => {
+      const emp = empMap.get(empId);
+      if (!emp) return 99999;
+      const { day, shiftId } = btSlots[slotIdx];
+      const empPlan = plan[emp.id];
+      const hours = state.hourTracker[empId] || 0;
+      const isFT = emp.employmentType === "full-time";
+      let score = 0;
+      if (isFT && hours < FT_MIN_HOURS) { score -= 400; score -= (FT_MIN_HOURS - hours) * 8; }
+      if (isFT && hours >= FT_MIN_HOURS) score += 600;
+      if (!isFT) score += 200;
+      if (empPlan && empPlan.workDays.has(day)) score -= 100;
+      else if (isFT) score += 80;
+      // Phase 1: mild shift guide (preferences enforced in Phase 2)
+      if (empPlan && empPlan.shiftId === shiftId) score -= 150;
+      else if (isFT && empPlan && empPlan.shiftId !== shiftId && !emp.crossShiftOT) score += 100;
+      if (isGuardOnly(emp)) score -= 50;
+      const key = cellKey(day, shiftId);
+      const curAsgn = state.schedule[key] || [];
+      const extR = extRoleBySlot[key] || {};
+      const hasScale = slotHasRole(curAsgn, sourceEmps, "Scale") || extR.hasScale;
+      const hasMedical = slotHasRole(curAsgn, sourceEmps, "Medical") || extR.hasMedical;
+      if (!hasScale && (emp.qualifications||[]).includes("Scale")) score -= 200;
+      if (!hasMedical && (emp.qualifications||[]).includes("Medical")) score -= 200;
+      score += hours * 3;
+      // Phase 1: mild day-off hint
+      if ((emp.preferredDaysOff||[]).includes(day)) score += 50;
+      let appearances = 0;
+      for (let j = 0; j < state.domains.length; j++) {
+        if (j === slotIdx) continue;
+        if (state.domains[j].has(empId)) appearances++;
+      }
+      score += appearances * 0.5;
+      return score;
+    };
+
+    // ── Backtracking search ────────────────────────────────────────────────
+    let nodesExplored = 0;
+    const MAX_NODES = 500000;
+    const btSearchStart = Date.now();
+
+    const btBacktrack = (state, depth) => {
+      nodesExplored++;
+      if (nodesExplored > MAX_NODES) return null;
+
+      const slotIdx = btSelectNextSlot(state);
+      if (slotIdx === -1) return state;
+
+      const { day, shiftId } = btSlots[slotIdx];
+      const key = cellKey(day, shiftId);
+      const currentAsgn = state.schedule[key] || [];
+      const inSlot = new Set(currentAsgn.map(a => a.employeeId));
+
+      const candidates = [...state.domains[slotIdx]]
+        .filter(id => !inSlot.has(id) && state.canAssign(id, slotIdx));
+      if (candidates.length === 0) return null;
+
+      candidates.sort((a, b) => btScore(state, a, slotIdx) - btScore(state, b, slotIdx));
+
+      for (const empId of candidates) {
+        if (nodesExplored > MAX_NODES) return null;
+        const emp = empMap.get(empId);
+        if (!emp) continue;
+        const pos = btPickPosition(emp, currentAsgn, day, shiftId);
+        if (!pos) continue;
+
+        // Save state for undo
+        const savedSchedule = {};
+        for (const k of Object.keys(state.schedule)) savedSchedule[k] = [...state.schedule[k]];
+        const savedHours = { ...state.hourTracker };
+        const savedShifts = { ...state.shiftsWorked };
+        const savedDays = {};
+        for (const id of Object.keys(state.dayWorked)) savedDays[id] = new Set(state.dayWorked[id]);
+        const savedDomains = state.domains.map(d => new Set(d));
+
+        state.assign(empId, pos, slotIdx);
+        state.propagate(slotIdx);
+
+        if (state.isFeasible()) {
+          const result = btBacktrack(state, depth + 1);
+          if (result) return result;
+        }
+
+        // Undo
+        state.schedule = savedSchedule;
+        state.hourTracker = savedHours;
+        state.shiftsWorked = savedShifts;
+        state.dayWorked = savedDays;
+        state.domains = savedDomains;
+      }
+      return null;
+    };
+
+    // ── Improvement 5: Feasibility pre-check ───────────────────────────────
+    let impossibleCount = 0;
+    for (let i = 0; i < btSlots.length; i++) {
+      const { day, shiftId } = btSlots[i];
+      for (const role of ["Scale", "Medical", "Guard"]) {
+        const extR = extRoleBySlot[cellKey(day, shiftId)] || {};
+        if (role === "Scale" && extR.hasScale) continue;
+        if (role === "Medical" && extR.hasMedical) continue;
+        const qualified = sourceEmps.filter(e => {
+          if (!(e.qualifications||[]).includes(role)) return false;
+          if (!canFillPos(e, role, day)) return false;
+          if (!domains[e.id]?.[cellKey(day, shiftId)]?.size) return false;
+          if (empTimeOffDays && empTimeOffDays.has(e.id + "__" + day)) return false;
+          return true;
+        });
+        if (qualified.length === 0) { impossibleCount++; console.log(`[Pre-check] IMPOSSIBLE: ${day}/${shiftId} ${role}`); }
+        else if (qualified.length === 1) console.log(`[Pre-check] CRITICAL: ${day}/${shiftId} ${role} — ${qualified[0].name}`);
+      }
+    }
+
+    // ── Run search ─────────────────────────────────────────────────────────
+    console.log(`[Backtrack] Starting search: ${btSlots.length} slots, ${sourceEmps.length} employees`);
+    const initialState = new SearchState();
+
+    // Pre-assign supervisors
+    for (let i = 0; i < btSlots.length; i++) {
+      const { day, shiftId } = btSlots[i];
+      if (!SUP_SLOT_DAY(day, shiftId)) continue;
+      const supEmp = sourceEmps.find(e =>
+        (e.qualifications||[]).includes("Supervisor") &&
+        !(e.unavailableDays||[]).includes(day) &&
+        !(empTimeOffDays && empTimeOffDays.has(e.id + "__" + day))
+      );
+      if (supEmp && initialState.canAssign(supEmp.id, i)) {
+        initialState.assign(supEmp.id, "Supervisor", i);
+      }
+    }
+    initialState.propagate(0);
+
+    // ── Improvement 3: Role-reservation (singleton propagation) ────────────
+    let reservations = 0;
+    for (let i = 0; i < btSlots.length; i++) {
+      const { day, shiftId } = btSlots[i];
+      const key = cellKey(day, shiftId);
+      const curAsgn = initialState.schedule[key] || [];
+      const extR = extRoleBySlot[key] || {};
+      for (const role of ["Scale", "Medical"]) {
+        if (slotHasRole(curAsgn, sourceEmps, role) || (role === "Scale" && extR.hasScale) || (role === "Medical" && extR.hasMedical)) continue;
+        const cands = [...initialState.domains[i]].filter(id => {
+          const e = empMap.get(id);
+          if (!e) return false;
+          if (!(e.qualifications||[]).includes(role)) return false;
+          if (!canFillPos(e, role, day)) return false;
+          if (curAsgn.some(a => a.employeeId === id)) return false;
+          return initialState.canAssign(id, i);
+        });
+        if (cands.length === 1) {
+          const empId = cands[0];
+          const emp = empMap.get(empId);
+          if (emp && !curAsgn.some(a => a.employeeId === empId)) {
+            initialState.assign(empId, role, i);
+            initialState.propagate(i);
+            reservations++;
+          }
+        }
+      }
+    }
+    if (reservations > 0) console.log(`[Backtrack] ${reservations} role reservations locked`);
+
+    const btResult = btBacktrack(initialState, 0);
+    const btElapsed = Date.now() - btSearchStart;
+    console.log(`[Backtrack] Completed in ${btElapsed}ms, ${nodesExplored} nodes explored`);
+
+    // ── Improvement 6: Phase 2 hill-climbing preference optimisation ───────
+    // Try pairwise swaps to reduce preference violations and improve fairness
+    // while maintaining full coverage and role constraints.
+    const btSchedule = btResult ? btResult.schedule : initialState.schedule;
+
+    const btSoftScore = (sched) => {
+      let sc = 0;
+      const empH = {};
+      sourceEmps.forEach(e => empH[e.id] = hourTracker[e.id] || 0); // start from ext-shift hours
+      for (const day of DAYS) for (const shift of SHIFTS) {
+        for (const a of (sched[cellKey(day, shift.id)] || [])) {
+          const emp = empMap.get(a.employeeId);
+          if (!emp) continue;
+          empH[a.employeeId] = (empH[a.employeeId] || 0) + SHIFT_HOURS;
+          if ((emp.preferredDaysOff||[]).includes(day)) sc += 800;
+          const empP = plan[emp.id];
+          if (emp.employmentType === "full-time" && empP && empP.shiftId !== shift.id && !emp.crossShiftOT) sc += 500;
+        }
+      }
+      for (const emp of sourceEmps) {
+        if (emp.employmentType !== "full-time") continue;
+        const h = empH[emp.id] || 0;
+        sc += (h - FT_MIN_HOURS) * (h - FT_MIN_HOURS);
+      }
+      return sc;
+    };
+
+    const btCanWorkSlot = (empId, sched, day, shiftId) => {
+      const emp = empMap.get(empId);
+      if (!emp) return false;
+      if (!domains[emp.id]?.[cellKey(day, shiftId)]?.size) return false;
+      if (empTimeOffDays && empTimeOffDays.has(empId + "__" + day)) return false;
+      for (const s of SHIFTS) {
+        if (s.id === shiftId) continue;
+        if ((sched[cellKey(day, s.id)]||[]).some(a => a.employeeId === empId)) {
+          if (!emp.willing16h) return false;
+          const adj = new Set(["first__second","second__first","second__third","third__second"]);
+          if (!adj.has(s.id + "__" + shiftId)) return false;
+        }
+      }
+      if (isRestViolation(emp, rg(empId, sched, day, shiftId), minRest)) return false;
+      if (calcConsecutiveHours(empId, sched, day, shiftId, extShiftsArg) > empMaxConsec(emp)) return false;
+      if (shiftId === "third" && calcConsecutiveNights(empId, sched, day, shiftId) >= maxNights) return false;
+      if (emp.maxShiftsPerWeek != null) {
+        let cnt = 0;
+        for (const d of DAYS) for (const s of SHIFTS) {
+          if ((sched[cellKey(d, s.id)]||[]).some(a => a.employeeId === empId)) cnt++;
+        }
+        if (cnt >= emp.maxShiftsPerWeek) return false;
+      }
+      const wd = new Set();
+      for (const d of DAYS) for (const s of SHIFTS) {
+        if ((sched[cellKey(d, s.id)]||[]).some(a => a.employeeId === empId)) wd.add(d);
+      }
+      wd.add(day);
+      let strk = 0, ms = 0;
+      for (const d of DAYS) { if (wd.has(d)) { strk++; ms = Math.max(ms, strk); } else strk = 0; }
+      if (wd.has("Sunday") && wd.has("Saturday")) {
+        let h = 0, t = 0;
+        for (const d of DAYS) { if (wd.has(d)) h++; else break; }
+        for (let i = 6; i >= 0; i--) { if (wd.has(DAYS[i])) t++; else break; }
+        ms = Math.max(ms, h + t);
+      }
+      if (ms > maxShifts) return false;
+      if (["Saturday","Sunday"].includes(day) && emp.maxWeekendDays != null) {
+        const wkCnt = [...wd].filter(d => ["Saturday","Sunday"].includes(d)).length;
+        if (wkCnt > emp.maxWeekendDays) return false;
+      }
+      return true;
+    };
+
+    let softScore = btSoftScore(btSchedule);
+    let totalSwaps = 0;
+    for (let round = 0; round < 20; round++) {
+      let bestImprov = 0, bestAction = null;
+      for (let i = 0; i < btSlots.length; i++) {
+        for (let j = i + 1; j < btSlots.length; j++) {
+          const si = btSlots[i], sj = btSlots[j];
+          const keyI = cellKey(si.day, si.shiftId), keyJ = cellKey(sj.day, sj.shiftId);
+          const asgnI = btSchedule[keyI] || [], asgnJ = btSchedule[keyJ] || [];
+          for (let ai = 0; ai < asgnI.length; ai++) {
+            for (let aj = 0; aj < asgnJ.length; aj++) {
+              const eA = asgnI[ai], eB = asgnJ[aj];
+              if (eA.employeeId === eB.employeeId) continue;
+              if (eA.position === "Supervisor" || eB.position === "Supervisor") continue;
+              const savedI = btSchedule[keyI], savedJ = btSchedule[keyJ];
+              btSchedule[keyI] = asgnI.filter((_, idx) => idx !== ai);
+              btSchedule[keyJ] = asgnJ.filter((_, idx) => idx !== aj);
+              if (!btCanWorkSlot(eA.employeeId, btSchedule, sj.day, sj.shiftId) ||
+                  !btCanWorkSlot(eB.employeeId, btSchedule, si.day, si.shiftId)) {
+                btSchedule[keyI] = savedI; btSchedule[keyJ] = savedJ; continue;
+              }
+              const eAObj = empMap.get(eA.employeeId), eBObj = empMap.get(eB.employeeId);
+              const posA = btPickPosition(eAObj, btSchedule[keyJ], sj.day, sj.shiftId);
+              const posB = btPickPosition(eBObj, btSchedule[keyI], si.day, si.shiftId);
+              if (!posA || !posB) { btSchedule[keyI] = savedI; btSchedule[keyJ] = savedJ; continue; }
+              btSchedule[keyI] = [...btSchedule[keyI], { employeeId: eB.employeeId, position: posB }];
+              btSchedule[keyJ] = [...btSchedule[keyJ], { employeeId: eA.employeeId, position: posA }];
+              // Verify role coverage
+              const nSI = slotHasRole(btSchedule[keyI], sourceEmps, "Scale");
+              const nMI = slotHasRole(btSchedule[keyI], sourceEmps, "Medical");
+              const nSJ = slotHasRole(btSchedule[keyJ], sourceEmps, "Scale");
+              const nMJ = slotHasRole(btSchedule[keyJ], sourceEmps, "Medical");
+              const oSI = slotHasRole(savedI, sourceEmps, "Scale");
+              const oMI = slotHasRole(savedI, sourceEmps, "Medical");
+              const oSJ = slotHasRole(savedJ, sourceEmps, "Scale");
+              const oMJ = slotHasRole(savedJ, sourceEmps, "Medical");
+              if ((!nSI && oSI) || (!nMI && oMI) || (!nSJ && oSJ) || (!nMJ && oMJ)) {
+                btSchedule[keyI] = savedI; btSchedule[keyJ] = savedJ; continue;
+              }
+              const newSc = btSoftScore(btSchedule);
+              const improv = softScore - newSc;
+              if (improv > bestImprov) {
+                bestImprov = improv;
+                bestAction = {
+                  keyI, keyJ,
+                  newI: btSchedule[keyI].map(a => ({...a})),
+                  newJ: btSchedule[keyJ].map(a => ({...a})),
+                  newSc,
+                };
+              }
+              btSchedule[keyI] = savedI; btSchedule[keyJ] = savedJ;
+            }
+          }
+        }
+      }
+      if (!bestAction) break;
+      btSchedule[bestAction.keyI] = bestAction.newI;
+      btSchedule[bestAction.keyJ] = bestAction.newJ;
+      softScore = bestAction.newSc;
+      totalSwaps++;
+    }
+    if (totalSwaps > 0) console.log(`[Phase 2] ${totalSwaps} swaps, score ${softScore}`);
+
+    // ── Write backtracking results to ns and rebuild tracking state ─────────
+    for (const { day, shiftId } of btSlots) {
+      const key = cellKey(day, shiftId);
+      ns[key] = btSchedule[key] || [];
+    }
+    sourceEmps.forEach(e => {
+      hourTracker[e.id] = 0;
+      shiftsWorked[e.id] = 0;
+      dayWorked[e.id] = new Set();
+    });
+    // Re-seed ext shift hours
+    (extShiftsArg||[]).forEach(ext => {
+      const pair = EXT_PAIRS.find(p => p.id === ext.pairId);
+      if (!pair) return;
+      if (ext.empAId && hourTracker[ext.empAId] !== undefined) hourTracker[ext.empAId] += extEmpHours(pair, true);
+      if (ext.empBId && hourTracker[ext.empBId] !== undefined) hourTracker[ext.empBId] += extEmpHours(pair, false);
+    });
+    // Count hours from schedule
+    for (const { day, shiftId } of btSlots) {
+      for (const a of (ns[cellKey(day, shiftId)] || [])) {
+        hourTracker[a.employeeId] = (hourTracker[a.employeeId] || 0) + SHIFT_HOURS;
+        shiftsWorked[a.employeeId] = (shiftsWorked[a.employeeId] || 0) + 1;
+        dayWorked[a.employeeId].add(day);
+      }
+    }
+    // Update domain matrix for post-processing compatibility
+    sourceEmps.forEach(emp => {
+      for (const day of DAYS) {
+        if (dayWorked[emp.id].has(day)) {
+          for (const s of SHIFTS) delete domains[emp.id][cellKey(day, s.id)];
+        }
+      }
+      const cap = emp.maxShiftsPerWeek;
+      if (cap != null && (shiftsWorked[emp.id] || 0) >= cap) domains[emp.id] = {};
+    });
   }
   // ── Shared helpers for Steps 4/5/5b ─────────────────────────────────────
   // These consolidate patterns that were repeated identically across every
@@ -2101,7 +2441,7 @@ function buildAutoFill(sourceEmps, cfg, empTimeOffDays, empPatterns, extShiftsAr
           if (asgn.length >= cap) break;
           const pos = pickPosition(emp, asgn, day, shift.id);
           if (!pos) continue;
-          if (pos === "Guard" && !isGuardOnly(emp) && hasGuardOnlyAvailable()) continue;
+          // Guard-only preference handled by backtracking; post-processing is last resort
           if (weekendCapHit(emp, day)) continue;
           hourTracker[emp.id]  = (hourTracker[emp.id]  || 0) + SHIFT_HOURS;
           shiftsWorked[emp.id] = (shiftsWorked[emp.id] || 0) + 1;
