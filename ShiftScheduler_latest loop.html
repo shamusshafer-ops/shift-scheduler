@@ -2762,12 +2762,14 @@ function buildAutoFill(sourceEmps, cfg, empTimeOffDays, empPatterns, extShiftsAr
 
             // ── Perform the ripple ──
             // Remove displaced PT/OC from original slot, insert FT employee
+            if (remainingAsgn.some(a => a.employeeId === ftEmp.id)) continue; // already in slot
             ns[key] = [...remainingAsgn, { employeeId: ftEmp.id, position: ftPos }];
             hourTracker[displacedEmp.id]  = Math.max(0, (hourTracker[displacedEmp.id]||0) - SHIFT_HOURS);
             shiftsWorked[displacedEmp.id] = Math.max(0, (shiftsWorked[displacedEmp.id]||0) - 1);
             dayWorked[displacedEmp.id]?.delete(day);
 
             // Place displaced PT/OC in their new slot
+            if ((ns[relocateKey]||[]).some(a => a.employeeId === displacedEmp.id)) continue; // already in slot
             ns[relocateKey] = [...(ns[relocateKey]||[]), { employeeId: displacedEmp.id, position: relocatePos }];
             hourTracker[displacedEmp.id]  = (hourTracker[displacedEmp.id]||0) + SHIFT_HOURS;
             shiftsWorked[displacedEmp.id] = (shiftsWorked[displacedEmp.id]||0) + 1;
@@ -3036,6 +3038,25 @@ function buildAutoFill(sourceEmps, cfg, empTimeOffDays, empPatterns, extShiftsAr
   );
   if (fixCount > 0) console.log("[AutoFill] Violation minimizer fixed " + fixCount + " slot(s)");
 
+  // ── Final dedup safety net: remove duplicate employee entries in any slot ──
+  for (const day of DAYS) {
+    for (const shift of SHIFTS) {
+      const key = cellKey(day, shift.id);
+      const asgn = ns[key];
+      if (!asgn || asgn.length < 2) continue;
+      const seen = new Set();
+      const deduped = asgn.filter(a => {
+        if (seen.has(a.employeeId)) return false;
+        seen.add(a.employeeId);
+        return true;
+      });
+      if (deduped.length < asgn.length) {
+        console.warn(`[Dedup] Removed ${asgn.length - deduped.length} duplicate(s) from ${day}/${shift.id}`);
+        ns[key] = deduped;
+      }
+    }
+  }
+
   return { schedule: ns, hourTracker, shiftsWorked, usedPatterns };
 }
 
@@ -3145,9 +3166,10 @@ function violationMinimizerPass(ns, sourceEmps, cfg, empTimeOffDays, extShiftsAr
           });
           const winner = candidates[0];
           ns[key] = [...asgn.slice(0,ai), { employeeId: winner.id, position: a.position }, ...asgn.slice(ai+1)];
-          hourTracker[emp.id]     = Math.max(0, (hourTracker[emp.id]||0) - SHIFT_HOURS);
-          hourTracker[winner.id]  = (hourTracker[winner.id]||0) + SHIFT_HOURS;
-          shiftsWorked[winner.id] = (shiftsWorked[winner.id]||0) + 1;
+          hourTracker[emp.id]      = Math.max(0, (hourTracker[emp.id]||0) - SHIFT_HOURS);
+          shiftsWorked[emp.id]     = Math.max(0, (shiftsWorked[emp.id]||0) - 1);
+          hourTracker[winner.id]   = (hourTracker[winner.id]||0) + SHIFT_HOURS;
+          shiftsWorked[winner.id]  = (shiftsWorked[winner.id]||0) + 1;
           swapsThisSweep++; fixCount++;
           break; // re-scan cell after swap
         }
