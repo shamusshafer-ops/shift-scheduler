@@ -2578,12 +2578,14 @@ function buildAutoFill(sourceEmps, cfg, empTimeOffDays, empPatterns, extShiftsAr
       if (emp.employmentType !== "full-time") continue;
       if (!emp.willing16h) continue;
       if ((hourTracker[emp.id] || 0) >= FT_MIN_HOURS) continue;
+      if (emp.maxShiftsPerWeek != null && (shiftsWorked[emp.id] || 0) >= emp.maxShiftsPerWeek) continue;
       const empPlan = plan[emp.id];
       const plannedShift = empPlan?.shiftId;
       if (!plannedShift) continue;
       const adjShifts = ADJACENT[plannedShift] || [];
       for (const day of DAYS) {
         if ((hourTracker[emp.id] || 0) >= FT_MIN_HOURS) break;
+        if (emp.maxShiftsPerWeek != null && (shiftsWorked[emp.id] || 0) >= emp.maxShiftsPerWeek) break;
         const primaryKey = cellKey(day, plannedShift);
         const alreadyOnPrimary = (ns[primaryKey] || []).some(a => a.employeeId === emp.id);
         if (!alreadyOnPrimary) continue;
@@ -2591,6 +2593,7 @@ function buildAutoFill(sourceEmps, cfg, empTimeOffDays, empPatterns, extShiftsAr
         if (empTimeOffDays && empTimeOffDays.has(emp.id + "__" + day)) continue;
         for (const adjShift of adjShifts) {
           if ((hourTracker[emp.id] || 0) >= FT_MIN_HOURS) break;
+          if (emp.maxShiftsPerWeek != null && (shiftsWorked[emp.id] || 0) >= emp.maxShiftsPerWeek) break;
           if ((emp.blockedShifts || []).includes(adjShift)) continue;
           const adjKey = cellKey(day, adjShift);
           const adjAsgn = ns[adjKey] || [];
@@ -2632,6 +2635,7 @@ function buildAutoFill(sourceEmps, cfg, empTimeOffDays, empPatterns, extShiftsAr
         const replacement = sourceEmps.find(e => {
           if (e.employmentType !== "full-time") return false;
           if ((hourTracker[e.id] || 0) >= FT_MIN_HOURS) return false;
+          if (e.maxShiftsPerWeek != null && (shiftsWorked[e.id] || 0) >= e.maxShiftsPerWeek) return false;
           if (asgn.some(a => a.employeeId === e.id)) return false;
           if ((e.unavailableDays || []).includes(day)) return false;
           if (empTimeOffDays && empTimeOffDays.has(e.id + "__" + day)) return false;
@@ -2696,6 +2700,7 @@ function buildAutoFill(sourceEmps, cfg, empTimeOffDays, empPatterns, extShiftsAr
             if (!asgn.length) continue; // nothing to displace
 
             // FT employee must be eligible for this slot
+            if (ftEmp.maxShiftsPerWeek != null && (shiftsWorked[ftEmp.id] || 0) >= ftEmp.maxShiftsPerWeek) continue;
             if ((ftEmp.unavailableDays||[]).includes(day)) continue;
             if (empTimeOffDays && empTimeOffDays.has(ftEmp.id + "__" + day)) continue;
             if (isRestViolation(ftEmp, rg(ftEmp.id, ns, day, shift.id), minRest)) continue;
@@ -2818,6 +2823,7 @@ function buildAutoFill(sourceEmps, cfg, empTimeOffDays, empPatterns, extShiftsAr
           if (empTimeOffDays && empTimeOffDays.has(e.id + "__" + day)) return false;
           if ((e.blockedShifts||[]).includes(shift.id)) return false;
           if (e.requiredShift && e.requiredShift !== shift.id) return false;
+          if (e.maxShiftsPerWeek != null && (shiftsWorked[e.id] || 0) >= e.maxShiftsPerWeek) return false;
           if (isRestViolation(e, rg(e.id, ns, day, shift.id), minRest)) return false;
           if (calcConsecutiveHours(e.id, ns, day, shift.id, extShiftsArg) > empMaxConsec(e)) return false;
           return true;
@@ -3125,6 +3131,7 @@ function violationMinimizerPass(ns, sourceEmps, cfg, empTimeOffDays, extShiftsAr
             if (asgnSet.has(cand.id)) return false;
             if ((extBodiesBySlot.get(key) || new Set()).has(cand.id)) return false;
             if (!isClean(cand, day, shift.id, testSched)) return false;
+            if (cand.maxShiftsPerWeek != null && (shiftsWorked[cand.id] || 0) >= cand.maxShiftsPerWeek) return false;
             if (isFT(cand) && (hourTracker[cand.id]||0) >= OT_RELIEF_THRESHOLD) return false;
             if (cand.employmentType === "on-call") return false; // never swap IN on-call during violation fix
             return true;
