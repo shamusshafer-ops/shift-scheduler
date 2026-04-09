@@ -908,6 +908,25 @@ function calcHours(empId, schedule, extShifts) {
   return calcHoursDetail(empId, schedule, extShifts).hours;
 }
 
+// Count how many distinct shift slots an employee is assigned in the current week
+function countShiftsInWeek(empId, schedule) {
+  var count = 0;
+  for (var di = 0; di < DAYS.length; di++) {
+    for (var si = 0; si < SHIFTS.length; si++) {
+      if ((schedule[cellKey(DAYS[di], SHIFTS[si].id)] || []).some(function(a){ return a.employeeId === empId; })) count++;
+    }
+  }
+  return count;
+}
+
+// Check if an employee is already assigned to ANY shift on a given day
+function isAssignedOnDay(empId, day, schedule) {
+  for (var si = 0; si < SHIFTS.length; si++) {
+    if ((schedule[cellKey(day, SHIFTS[si].id)] || []).some(function(a){ return a.employeeId === empId; })) return true;
+  }
+  return false;
+}
+
 // ── Fatigue helpers ───────────────────────────────────────────────────────────
 // Returns how many consecutive 3rd-shift (night) slots this employee is assigned
 // ending at (and including) the given slot, looking backwards.
@@ -8441,6 +8460,10 @@ function EmpPicker({emp,day,sid,st,assign,getPos,subSource,onSub,onHover}) {
       onSub(subSource, emp.id, subSource.position);
       return;
     }
+    // Hard block: maxShiftsPerWeek cap reached
+    if (emp.maxShiftsPerWeek != null && countShiftsInWeek(emp.id, schedule) >= emp.maxShiftsPerWeek) return;
+    // Hard block: already on another shift this day
+    if (isAssignedOnDay(emp.id, day, schedule)) return;
     const empOtPref = emp.overtimePref && emp.overtimePref !== "neutral" ? emp.overtimePref : (cfg?.defaultOvertimePref || "neutral");
     const otPref    = emp.employmentType === "full-time" ? empOtPref : "neutral";
     const warns = [];
@@ -8991,7 +9014,15 @@ function ScheduleGrid({ onOpenTestModal }) {
   const getAsgn       = (d,s) => displaySchedule[cellKey(d,s)]||[];
   const getName       = (id)  => employees.find(e=>e.id===id)?.name||"?";
   const getAssignable = (emp,d,s) => getAvailPos(d,s).filter(p=>canFillPos(emp,p,d));
-  const unassigned    = (d,s) => {const ids=getAsgn(d,s).map(a=>a.employeeId);return employees.filter(e=>!ids.includes(e.id));};
+  const unassigned    = (d,s) => {
+    const ids=getAsgn(d,s).map(a=>a.employeeId);
+    return employees.filter(e=>{
+      if(ids.includes(e.id)) return false;                   // already in this cell
+      if(isAssignedOnDay(e.id,d,schedule)) return false;     // already on another shift this day
+      if(e.maxShiftsPerWeek!=null && countShiftsInWeek(e.id,schedule)>=e.maxShiftsPerWeek) return false; // at weekly cap
+      return true;
+    });
+  };
 
   const stableEmpOrder = useMemo(() => {
     const shiftRank = { first:0, second:1, third:2 };
@@ -9063,10 +9094,22 @@ function ScheduleGrid({ onOpenTestModal }) {
 
   const assignEmp = (d,s,eid,pos) => {
     if (isReadOnly) return;
-    const key=cellKey(d,s); const cur=schedule[key]||[];
+    const key=cellKey(d,s);
+    const cur=schedule[key]||[];
+    // Hard block: already in this cell, or cell full
     if(cur.length>=getEffectiveSlotCount(d,s,extShifts)||cur.some(a=>a.employeeId===eid)) return;
+    // Hard block: already assigned to another shift on this day
+    if(isAssignedOnDay(eid,d,schedule)) return;
+    // Hard block: maxShiftsPerWeek cap reached
+    const emp = employees.find(e=>e.id===eid);
+    if(emp && emp.maxShiftsPerWeek!=null && countShiftsInWeek(eid,schedule)>=emp.maxShiftsPerWeek) return;
     pushUndo();
-    setSchedule(p=>({...p,[key]:[...cur,{employeeId:eid,position:pos}]}));
+    // Use updater to read latest state (prevents race conditions on rapid clicks)
+    setSchedule(p=>{
+      const latest=p[key]||[];
+      if(latest.some(a=>a.employeeId===eid)) return p; // double-check inside updater
+      return {...p,[key]:[...latest,{employeeId:eid,position:pos}]};
+    });
     setEditingCell(null);
   };
   const removeAsgn = (d,s,eid) => {
@@ -9285,6 +9328,10 @@ function ScheduleGrid({ onOpenTestModal }) {
     if(!dragEmp) return;
     const cur=getAsgn(d,s);
     if(cur.length>=getEffectiveSlotCount(d,s,extShifts)||cur.some(a=>a.employeeId===dragEmp.id)) return;
+    // Hard block: already on another shift this day
+    if(isAssignedOnDay(dragEmp.id,d,schedule)) return;
+    // Hard block: maxShiftsPerWeek cap reached
+    if(dragEmp.maxShiftsPerWeek!=null && countShiftsInWeek(dragEmp.id,schedule)>=dragEmp.maxShiftsPerWeek) return;
     const ap=getAssignable(dragEmp,d,s); if(!ap.length) return;
     const st=getStatus(d,s);
 
