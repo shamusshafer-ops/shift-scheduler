@@ -88,6 +88,30 @@ const ctxConsole = {
   error: (...a) => console.error('[vm]', ...a),
 };
 
+// Seeded PRNG → deterministic runs. buildAutoFill's SA phase calls Math.random,
+// so without seeding two identical code paths produce different schedules and
+// metric diffs are dominated by noise. We expose `reseed()` so each scenario
+// starts from the same PRNG state — otherwise scenario N's randomness depends
+// on how much entropy scenario N-1 consumed, which reintroduces noise.
+const rng = (() => {
+  let s = 0;
+  const random = () => {
+    s = (s + 0x6D2B79F5) >>> 0;
+    let t = s;
+    t = Math.imul(t ^ (t >>> 15), t | 1);
+    t ^= t + Math.imul(t ^ (t >>> 7), t | 61);
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+  };
+  const reseed = (seed) => { s = seed >>> 0; };
+  return { random, reseed };
+})();
+const MathProxy = new Proxy(Math, {
+  get(target, prop) { return prop === 'random' ? rng.random : target[prop]; }
+});
+const SEEDS = (process.env.SEEDS || '12345,1,2,3,7,42,99,101,2026,31337')
+  .split(',').map(s => parseInt(s.trim(), 10)).filter(n => !isNaN(n));
+rng.reseed(SEEDS[0]);
+
 const sandbox = {
   React:        ReactStub,
   window:       windowStub,
@@ -95,7 +119,8 @@ const sandbox = {
   localStorage: localStorageStub,
   console:      ctxConsole,
   // Globals that run-in-context doesn't auto-provide
-  Math, Date, Array, Object, String, Number, Boolean, Set, Map, WeakMap, WeakSet,
+  Math: MathProxy,
+  Date, Array, Object, String, Number, Boolean, Set, Map, WeakMap, WeakSet,
   JSON, Promise, Symbol, Error, RegExp, Proxy, Reflect,
   isNaN, isFinite, parseInt, parseFloat, encodeURIComponent, decodeURIComponent,
   setTimeout: () => 0, clearTimeout: () => {},
@@ -402,36 +427,62 @@ const scenarios = [
   },
 ];
 
+// Run each scenario across SEEDS seeds, aggregate metrics (sum + per-seed
+// array). buildAutoFill's SA phase is randomized, so a single seed can
+// under- or over-represent the impact of a code change; aggregation across
+// seeds gives a stable signal for A/B comparison.
+const METRIC_FIELDS = [
+  'errors', 'coverageErrors', 'hardViolations',
+  'warns', 'ftUnder40', 'ftOver48', 'noScale', 'noMedical',
+  'prefShiftMisses', 'prefDayOffHits',
+  'assignmentsTotal', 'extShifts',
+];
+
 const results = {};
 for (const sc of scenarios) {
-  try {
-    const { ns, autoExtShifts, elapsed } = runAttempt(sc.emps, cfg, null, {});
-    const score = scoreRun(ns, autoExtShifts, sc.emps, elapsed);
-    results[sc.name] = { describe: sc.describe, rosterSize: sc.emps.length, ...score };
+  const perSeed = [];
+  const totals = Object.fromEntries(METRIC_FIELDS.map(f => [f, 0]));
+  let elapsedSum = 0;
 
-    console.log(`\n── ${sc.name} (${sc.describe}, n=${sc.emps.length}) ──`);
-    console.log(`   elapsed          ${elapsed}ms`);
-    console.log(`   errors           ${score.errors}  (${score.coverageErrors} coverage, ${score.hardViolations} hard-violation)`);
-    console.log(`   warns            ${score.warns}  (${score.ftUnder40} FT<40h, ${score.ftOver48} FT>48h, ${score.noScale} noScale, ${score.noMedical} noMedical)`);
-    console.log(`   prefShiftMisses  ${score.prefShiftMisses}`);
-    console.log(`   prefDayOffHits   ${score.prefDayOffHits}`);
-    console.log(`   assignments      ${score.assignmentsTotal} regular slots`);
-    console.log(`   ext-shifts       ${score.extShifts} placed`);
-    if (score.errorSample.length) {
-      console.log('   first errors:');
-      for (const m of score.errorSample) console.log('     • ' + m);
+  for (const seed of SEEDS) {
+    try {
+      rng.reseed(seed);
+      const { ns, autoExtShifts, elapsed } = runAttempt(sc.emps, cfg, null, {});
+      const score = scoreRun(ns, autoExtShifts, sc.emps, elapsed);
+      perSeed.push({ seed, ...Object.fromEntries(METRIC_FIELDS.map(f => [f, score[f]])) });
+      for (const f of METRIC_FIELDS) totals[f] += score[f];
+      elapsedSum += elapsed;
+    } catch (e) {
+      console.error(`\n── ${sc.name} seed=${seed}: FAILED ──`);
+      console.error(e);
+      perSeed.push({ seed, error: String(e) });
     }
-  } catch (e) {
-    console.error(`\n── ${sc.name}: FAILED ──`);
-    console.error(e);
-    results[sc.name] = { describe: sc.describe, error: String(e) };
   }
+
+  results[sc.name] = {
+    describe: sc.describe,
+    rosterSize: sc.emps.length,
+    seedCount: SEEDS.length,
+    totals,
+    elapsedAvgMs: Math.round(elapsedSum / SEEDS.length),
+    perSeed,
+  };
+
+  console.log(`\n── ${sc.name} (${sc.describe}, n=${sc.emps.length}, ${SEEDS.length} seeds) ──`);
+  console.log(`   avg elapsed       ${results[sc.name].elapsedAvgMs}ms`);
+  console.log(`   Σ errors          ${totals.errors}  (${totals.coverageErrors} coverage, ${totals.hardViolations} hard-violation)`);
+  console.log(`   Σ warns           ${totals.warns}  (${totals.ftUnder40} FT<40h, ${totals.ftOver48} FT>48h, ${totals.noScale} noScale, ${totals.noMedical} noMedical)`);
+  console.log(`   Σ prefShiftMisses ${totals.prefShiftMisses}`);
+  console.log(`   Σ prefDayOffHits  ${totals.prefDayOffHits}`);
+  console.log(`   Σ assignments     ${totals.assignmentsTotal}`);
+  console.log(`   Σ ext-shifts      ${totals.extShifts}`);
 }
 
 fs.writeFileSync(BASELINE_OUT, JSON.stringify({
   capturedAt: new Date().toISOString(),
   rosterVersion: ROSTER._meta?.version || 'unknown',
   rosterSize: baseEmps.length,
+  seeds: SEEDS,
   scenarios: results,
 }, null, 2));
 
