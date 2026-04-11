@@ -1,0 +1,78 @@
+{
+  "capturedAt": "2026-04-11T19:36:15.266Z",
+  "rosterVersion": "v35.2-csp",
+  "rosterSize": 14,
+  "scenarios": {
+    "base": {
+      "describe": "untouched roster",
+      "rosterSize": 14,
+      "elapsedMs": 113,
+      "errors": 5,
+      "warns": 7,
+      "coverageErrors": 4,
+      "hardViolations": 1,
+      "ftUnder40": 5,
+      "ftOver48": 1,
+      "noScale": 1,
+      "noMedical": 0,
+      "prefShiftMisses": 2,
+      "prefDayOffHits": 1,
+      "assignmentsTotal": 56,
+      "extShifts": 5,
+      "errorSample": [
+        "B Harms on first but required second (Sunday)",
+        "Coverage gap: Thursday third 2/3",
+        "Coverage gap: Friday third 2/3",
+        "Coverage gap: Saturday second 2/3",
+        "Coverage gap: Saturday third 2/3"
+      ]
+    },
+    "harms-pto": {
+      "describe": "Harms unavailable all week",
+      "rosterSize": 14,
+      "elapsedMs": 734,
+      "errors": 5,
+      "warns": 10,
+      "coverageErrors": 5,
+      "hardViolations": 0,
+      "ftUnder40": 4,
+      "ftOver48": 1,
+      "noScale": 0,
+      "noMedical": 5,
+      "prefShiftMisses": 4,
+      "prefDayOffHits": 0,
+      "assignmentsTotal": 57,
+      "extShifts": 3,
+      "errorSample": [
+        "Coverage gap: Sunday first 2/3",
+        "Coverage gap: Sunday second 2/3",
+        "Coverage gap: Wednesday third 2/3",
+        "Coverage gap: Saturday first 2/3",
+        "Coverage gap: Saturday third 2/3"
+      ]
+    },
+    "no-2nd-shift-medical": {
+      "describe": "drop FT Medical employees assigned/preferring 2nd shift",
+      "rosterSize": 13,
+      "elapsedMs": 342,
+      "errors": 4,
+      "warns": 8,
+      "coverageErrors": 4,
+      "hardViolations": 0,
+      "ftUnder40": 4,
+      "ftOver48": 0,
+      "noScale": 1,
+      "noMedical": 3,
+      "prefShiftMisses": 3,
+      "prefDayOffHits": 1,
+      "assignmentsTotal": 56,
+      "extShifts": 5,
+      "errorSample": [
+        "Coverage gap: Wednesday third 2/3",
+        "Coverage gap: Friday third 2/3",
+        "Coverage gap: Saturday first 1/3",
+        "Coverage gap: Saturday third 2/3"
+      ]
+    }
+  }
+}
