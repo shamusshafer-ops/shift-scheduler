@@ -4,11 +4,31 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>Shift Scheduler</title>
+<!-- Inter font (professional sans-serif) -->
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet">
 <!-- Preact (exposes window.preact + window.preactHooks) -->
 <script src="https://cdn.jsdelivr.net/npm/preact@10.26.0/dist/preact.umd.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/preact@10.26.0/hooks/dist/hooks.umd.js"></script>
+<!-- Lucide icons — loaded after Preact, before Babel; non-fatal if blocked -->
+<script src="https://cdn.jsdelivr.net/npm/lucide@0.344.0/dist/umd/lucide.min.js"></script>
 <!-- Babel standalone v7 — transforms text/babel scripts at DOMContentLoaded -->
 <script src="https://cdn.jsdelivr.net/npm/@babel/standalone@7.27.1/babel.min.js"></script>
+<script>
+// Global error handler — shows errors visually so they can be reported
+window.__SS_ERRORS = [];
+window.onerror = function(msg, src, line, col, err) {
+  window.__SS_ERRORS.push({msg:msg, src:src, line:line, col:col, stack: err && err.stack});
+  var box = document.getElementById("ss-error-box");
+  if (!box) { box = document.createElement("div"); box.id="ss-error-box";
+    box.style.cssText="position:fixed;top:0;left:0;right:0;z-index:99999;background:#1a0000;color:#ff6b6b;font-family:monospace;font-size:12px;padding:12px 16px;max-height:200px;overflow-y:auto;border-bottom:2px solid #ff0000";
+    document.body ? document.body.prepend(box) : document.addEventListener("DOMContentLoaded",function(){document.body.prepend(box);});
+  }
+  box.innerHTML += "<div style='margin:4px 0'><b>Error:</b> " + msg + (src ? " <span style='color:#888'>("+src+":"+line+":"+col+")</span>" : "") + "</div>";
+  return false;
+};
+</script>
 <!-- Wire Preact as React global (runs before DOMContentLoaded, before Babel processes app) -->
 <script>
 // Wire Preact as window.React so Babel-transformed JSX calls preact.h()
@@ -64,12 +84,10 @@ window.React = {
   --ss-accent-18: color-mix(in srgb, var(--ss-accent) 9%, transparent);
   --ss-accent-20: color-mix(in srgb, var(--ss-accent) 12%, transparent);
   --ss-accent-22: color-mix(in srgb, var(--ss-accent) 13%, transparent);
-  --ss-accent-25: color-mix(in srgb, var(--ss-accent) 15%, transparent);
   --ss-accent-30: color-mix(in srgb, var(--ss-accent) 19%, transparent);
   --ss-accent-33: color-mix(in srgb, var(--ss-accent) 20%, transparent);
   --ss-accent-35: color-mix(in srgb, var(--ss-accent) 21%, transparent);
   --ss-accent-40: color-mix(in srgb, var(--ss-accent) 25%, transparent);
-  --ss-accent-45: color-mix(in srgb, var(--ss-accent) 27%, transparent);
   --ss-accent-50: color-mix(in srgb, var(--ss-accent) 31%, transparent);
   --ss-accent-55: color-mix(in srgb, var(--ss-accent) 33%, transparent);
   --ss-accent-60: color-mix(in srgb, var(--ss-accent) 38%, transparent);
@@ -110,7 +128,6 @@ window.React = {
   --ss-scale-30: color-mix(in srgb, var(--ss-scale) 19%, transparent);
   --ss-scale-35: color-mix(in srgb, var(--ss-scale) 21%, transparent);
   --ss-scale-40: color-mix(in srgb, var(--ss-scale) 25%, transparent);
-  --ss-scale-45: color-mix(in srgb, var(--ss-scale) 27%, transparent);
   --ss-scale-50: color-mix(in srgb, var(--ss-scale) 31%, transparent);
   --ss-scale-55: color-mix(in srgb, var(--ss-scale) 33%, transparent);
   --ss-scale-60: color-mix(in srgb, var(--ss-scale) 38%, transparent);
@@ -119,7 +136,6 @@ window.React = {
   --ss-warning-0a: color-mix(in srgb, var(--ss-warning) 4%, transparent);
   --ss-warning-0d: color-mix(in srgb, var(--ss-warning) 5%, transparent);
   --ss-warning-12: color-mix(in srgb, var(--ss-warning) 7%, transparent);
-  --ss-warning-14: color-mix(in srgb, var(--ss-warning) 8%, transparent);
   --ss-warning-15: color-mix(in srgb, var(--ss-warning) 8%, transparent);
   --ss-warning-18: color-mix(in srgb, var(--ss-warning) 9%, transparent);
   --ss-warning-20: color-mix(in srgb, var(--ss-warning) 12%, transparent);
@@ -150,9 +166,11 @@ window.React = {
 /* ── Base / reset ──────────────────────────────────────────────────────── */
 *,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
 html,body{height:100%}
-body{overflow-x:hidden;background:var(--ss-bg);color:var(--ss-text);font-family:'JetBrains Mono','Fira Code','Courier New',monospace}
+body{overflow-x:hidden;background:var(--ss-bg);color:var(--ss-text);font-family:'Inter',-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;-webkit-font-smoothing:antialiased;-moz-osx-font-smoothing:grayscale}
+.ss-mono{font-family:'JetBrains Mono','Fira Code','Courier New',monospace}
 input[type=color]{cursor:pointer;padding:0;border:none}
 input,select,textarea,button{font-family:inherit}
+code,.ss-code{font-family:'JetBrains Mono','Fira Code','Courier New',monospace;font-size:0.9em}
 ::-webkit-scrollbar{width:6px;height:6px}
 ::-webkit-scrollbar-track{background:transparent}
 ::-webkit-scrollbar-thumb{background:var(--ss-border);border-radius:3px}
@@ -223,14 +241,36 @@ input,select,textarea,button{font-family:inherit}
 .ss-badge{display:inline-flex;align-items:center;padding:2px 8px;border-radius:4px;font-size:10px;font-weight:700}
 .ss-pill{display:inline-flex;align-items:center;padding:2px 8px;border-radius:10px;font-size:8px;font-weight:700}
 
-/* ── Button base ───────────────────────────────────────────────────────── */
-.ss-btn{border:none;cursor:pointer;font-family:inherit;font-weight:600;border-radius:6px;transition:background .2s,border-color .2s,color .2s}
+/* ── Button system ─────────────────────────────────────────────────────── */
+.ss-btn{border:none;cursor:pointer;font-family:inherit;font-weight:600;border-radius:6px;transition:all .15s ease;display:inline-flex;align-items:center;justify-content:center;gap:6px;line-height:1.2}
+.ss-btn:active{transform:scale(0.97)}
+.ss-btn-sm{padding:6px 12px;font-size:11px;border-radius:5px}
+.ss-btn-md{padding:8px 18px;font-size:12px}
+.ss-btn-lg{padding:10px 24px;font-size:13px}
+.ss-btn-primary{background:var(--ss-accent);color:#fff;border:1px solid transparent}
+.ss-btn-primary:hover{filter:brightness(1.12);box-shadow:0 2px 8px var(--ss-accent-40)}
+.ss-btn-secondary{background:transparent;border:1px solid var(--ss-border);color:var(--ss-text-muted)}
+.ss-btn-secondary:hover{border-color:var(--ss-accent);color:var(--ss-accent);background:var(--ss-accent-0a)}
+.ss-btn-danger{background:transparent;border:1px solid var(--ss-danger);color:var(--ss-danger)}
+.ss-btn-danger:hover{background:var(--ss-danger-12);border-color:var(--ss-danger)}
+.ss-btn-success{background:var(--ss-scale);color:#fff;border:1px solid transparent}
+.ss-btn-success:hover{filter:brightness(1.12)}
 .ss-btn-ghost{background:transparent;border:1px solid var(--ss-border);color:var(--ss-text-muted)}
 .ss-btn-ghost:hover{border-color:var(--ss-accent);color:var(--ss-accent)}
+.ss-btn-icon{padding:7px;border-radius:6px;background:transparent;border:1px solid var(--ss-border);color:var(--ss-text-muted);cursor:pointer;display:inline-flex;align-items:center;justify-content:center;transition:all .15s}
+.ss-btn-icon:hover{border-color:var(--ss-accent);color:var(--ss-accent);background:var(--ss-accent-0a)}
+.ss-btn[disabled],.ss-btn-icon[disabled]{opacity:0.45;cursor:not-allowed;pointer-events:none}
+
+/* ── Lucide icon sizing ───────────────────────────────────────────────── */
+.ss-icon{width:16px;height:16px;stroke-width:2;flex-shrink:0}
+.ss-icon-sm{width:14px;height:14px;stroke-width:2;flex-shrink:0}
+.ss-icon-xs{width:12px;height:12px;stroke-width:2.5;flex-shrink:0}
+.ss-icon-lg{width:20px;height:20px;stroke-width:1.75;flex-shrink:0}
 
 /* ── Input base ─────────────────────────────────────────────────────────── */
-.ss-input{background:var(--ss-surface-alt);border:1px solid var(--ss-border);color:var(--ss-text);border-radius:6px;outline:none;font-size:14px;padding:10px 14px}
-.ss-input:focus{border-color:var(--ss-accent)}
+.ss-input{background:var(--ss-surface-alt);border:1px solid var(--ss-border);color:var(--ss-text);border-radius:6px;outline:none;font-size:14px;padding:10px 14px;transition:border-color .15s}
+.ss-input:focus{border-color:var(--ss-accent);box-shadow:0 0 0 3px var(--ss-accent-15)}
+.ss-input::placeholder{color:var(--ss-text-dim)}
 
 /* ── Modal overlay ──────────────────────────────────────────────────────── */
 .ss-overlay{position:fixed;inset:0;background:rgba(0,0,0,0.72);display:flex;align-items:center;justify-content:center;z-index:1000;padding:20px}
@@ -256,6 +296,9 @@ input,select,textarea,button{font-family:inherit}
 /* ── Loading / empty states ─────────────────────────────────────────────── */
 .ss-empty{text-align:center;padding:48px;color:var(--ss-text-dim);font-size:14px}
 .ss-empty-icon{font-size:32px;margin-bottom:12px}
+
+/* ── Animations ───────────────────────────────────────────────────────── */
+@keyframes ss-dialog-in{from{opacity:0;transform:scale(0.96) translateY(8px)}to{opacity:1;transform:scale(1) translateY(0)}}
 </style>
 </head>
 <body>
@@ -267,6 +310,54 @@ const {
   useState, useEffect, useCallback, useMemo, useRef,
   useContext, useReducer, createContext, memo, Fragment,
 } = React;
+
+// ── Lucide Icon helper ──────────────────────────────────────────────────────
+// Creates an SVG icon from the Lucide library. Usage: Icon("calendar-days", {size, style, color})
+// Lucide UMD v0.344.0 stores icons as ["svg", defaultAttrs, childTuples]
+// where childTuples is an array of ["tag", {attrs}] pairs.
+// Falls back to empty span if lucide isn't loaded or icon not found.
+const _toIconKey = (kebab) =>
+  kebab.split("-").map(w => w.charAt(0).toUpperCase() + w.slice(1)).join("");
+
+const Icon = (name, props) => {
+  props = props || {};
+  const size = props.size || 16;
+  const className = props.className || "";
+  const style = props.style || {};
+  const color = props.color;
+  const strokeWidth = props.strokeWidth;
+  var blank = React.createElement("span", { style: { display: "inline-block", width: size, height: size } });
+  if (typeof window === "undefined" || !window.lucide) return blank;
+  try {
+    var pascalName = _toIconKey(name);
+    // Lucide UMD exports icons as PascalCase properties: lucide.CalendarDays, lucide.Sun, etc.
+    var iconData = window.lucide[pascalName];
+    // Also check the icons map (kebab keys)
+    if (!iconData && window.lucide.icons) iconData = window.lucide.icons[name] || window.lucide.icons[pascalName];
+    if (!iconData || !Array.isArray(iconData)) return blank;
+    // iconData = ["svg", defaultAttrs, [ ["path",{d:"..."}], ["circle",{cx:..}], ... ]]
+    var childTuples = (iconData.length >= 3 && Array.isArray(iconData[2])) ? iconData[2] : [];
+    var svgChildren = [];
+    for (var ci = 0; ci < childTuples.length; ci++) {
+      var tuple = childTuples[ci];
+      if (Array.isArray(tuple) && typeof tuple[0] === "string") {
+        svgChildren.push(React.createElement(tuple[0], Object.assign({ key: ci }, tuple[1] || {})));
+      }
+    }
+    return React.createElement("svg", {
+      xmlns: "http://www.w3.org/2000/svg",
+      width: size, height: size,
+      viewBox: "0 0 24 24", fill: "none",
+      stroke: color || "currentColor",
+      "stroke-width": strokeWidth || 2,
+      "stroke-linecap": "round", "stroke-linejoin": "round",
+      className: "lucide lucide-" + name + (className ? " " + className : ""),
+      style: Object.assign({ flexShrink: 0 }, style),
+    }, svgChildren);
+  } catch(e) {
+    return blank;
+  }
+};
 
 // ── Storage layer ────────────────────────────────────────────────────────────
 // Prefers window.storage (Claude artifact runner); falls back to localStorage.
@@ -401,13 +492,15 @@ const EXT_SHIFT_HOURS = 12;
 const EXT_PAIRS = [
   {
     id: "day",   label: "Day 12hr",   time: "0600 – 1800",
-    covers: ["first","second"],  // which 8-hr shifts this covers
+    covers: ["first","second"],  // empA (0600–1800) overlaps 1st+2nd
+    coversB: ["second","third"], // empB (1800–0600) overlaps 2nd+3rd
     color: "#7c3aed",            // purple
     startHour: 6,                // 0600
   },
   {
     id: "night", label: "Night 12hr", time: "1800 – 0600",
-    covers: ["second","third"],
+    covers: ["second","third"],  // empA (1800–0600) overlaps 2nd+3rd
+    coversB: ["first","second"], // empB (0600–1800) overlaps 1st+2nd
     color: "#0e7490",            // teal
     startHour: 18,               // 1800
   },
@@ -443,7 +536,8 @@ const EXT_PAIRS = [
   // Split pair — TWO employees: empA works 1400–0200 (2nd+half 3rd), empB works 0200–1400 (half 3rd + next day's 1st)
   {
     id: "split", label: "Split 2pm\u20132am/2am\u20132pm", time: "1400 \u2013 1400 (+1d)",
-    covers: ["second","third"],  // empA covers 2nd+3rd of day D; empB additionally covers 1st of day D+1
+    covers: ["second","third"],  // empA (1400–0200) overlaps 2nd+3rd of day D
+    coversB: ["third"],          // empB (0200–1400) overlaps 3rd of day D; crossDayB handles 1st of day D+1
     crossDayB: "first",          // empB also covers this shift on the NEXT day
     color: "#b45309",            // amber
     startHour: 14,               // empA starts at 1400 on stored day
@@ -768,16 +862,63 @@ function usePersistentState(key, fallback) {
   return [val, setVal, loaded];
 }
 // ── Hours calculator ──────────────────────────────────────────────────────────
-function calcHours(empId, schedule, extShifts) {
-  let hours = 0;
-  Object.values(schedule).forEach(a => a.forEach(x => { if (x.employeeId === empId) hours += SHIFT_HOURS; }));
+// Returns the hours credited to empA (isEmpA=true) or empB (isEmpA=false) for a given pair.
+// Each participant works a full EXT_SHIFT_HOURS (12h) block independently.
+// Swing shifts are single-employee; empB is never set on a swing.
+// Double-counting with the regular schedule is handled by the deduplication in calcHours.
+function extEmpHours(pair, isEmpA) {
+  if (pair.isSwing) return isEmpA ? EXT_SHIFT_HOURS : 0;
+  return EXT_SHIFT_HOURS;
+}
+
+function calcHoursDetail(empId, schedule, extShifts) {
+  // Returns { hours, regularSlots, extCredits, dedupedKeys } for debugging.
+  const extCoveredKeys = new Set();
+  const extCredits = [];
   if (extShifts) {
     extShifts.forEach(ext => {
-      if (ext.empAId === empId || ext.empBId === empId) hours += EXT_SHIFT_HOURS;
+      if (ext.empAId !== empId && ext.empBId !== empId) return;
+      const pair = EXT_PAIRS.find(p => p.id === ext.pairId);
+      if (!pair) return;
+      const isEmpA = ext.empAId === empId;
+      const effectiveCovers = isEmpA ? pair.covers : (pair.coversB || pair.covers);
+      effectiveCovers.forEach(shiftId => extCoveredKeys.add(cellKey(ext.day, shiftId)));
+      if (pair.crossDayB && !isEmpA) {
+        const ni = DAYS.indexOf(ext.day);
+        if (ni >= 0 && ni < DAYS.length - 1) extCoveredKeys.add(cellKey(DAYS[ni + 1], pair.crossDayB));
+      }
+      const h = isEmpA ? extEmpHours(pair, true) : extEmpHours(pair, false);
+      extCredits.push({ pairId: ext.pairId, day: ext.day, isEmpA, h, empAId: ext.empAId, empBId: ext.empBId });
     });
   }
-  return hours;
+  let regHours = 0;
+  const regularSlots = [];
+  Object.entries(schedule).forEach(([key, asgn]) => {
+    const hit = asgn.some(x => x.employeeId === empId);
+    if (!hit) return;
+    if (extCoveredKeys.has(key)) { regularSlots.push({ key, deduped: true }); return; }
+    regularSlots.push({ key, deduped: false });
+    regHours += SHIFT_HOURS;
+  });
+  const extHours = extCredits.reduce((s, c) => s + c.h, 0);
+  return { hours: regHours + extHours, regHours, extHours, regularSlots, extCredits, dedupedKeys: [...extCoveredKeys] };
 }
+
+function calcHours(empId, schedule, extShifts) {
+  return calcHoursDetail(empId, schedule, extShifts).hours;
+}
+
+// Count how many distinct shift slots an employee is assigned in the current week
+function countShiftsInWeek(empId, schedule) {
+  var count = 0;
+  for (var di = 0; di < DAYS.length; di++) {
+    for (var si = 0; si < SHIFTS.length; si++) {
+      if ((schedule[cellKey(DAYS[di], SHIFTS[si].id)] || []).some(function(a){ return a.employeeId === empId; })) count++;
+    }
+  }
+  return count;
+}
+
 
 // ── Fatigue helpers ───────────────────────────────────────────────────────────
 // Returns how many consecutive 3rd-shift (night) slots this employee is assigned
@@ -1198,11 +1339,13 @@ function buildAutoFill(sourceEmps, cfg, empTimeOffDays, empPatterns, extShiftsAr
   const shiftsWorked = {};
   sourceEmps.forEach(e => { hourTracker[e.id] = 0; dayWorked[e.id] = new Set(); shiftsWorked[e.id] = 0; });
   // Seed ext shift hours so the algorithm knows these employees are pre-committed.
-  // Without this, an employee with a 12h ext shift still shows 0h and gets a full
-  // regular week assigned on top of it (causing 60h+ overloads like Harms).
+  // Uses extEmpHours() so empA and empB get their actual working hours, not the
+  // full 12h window (e.g. Day pair: empA=8h, empB=4h; Night pair: empA=4h, empB=8h).
   (extShiftsArg || []).forEach(ext => {
-    if (ext.empAId && hourTracker[ext.empAId] !== undefined) hourTracker[ext.empAId] += EXT_SHIFT_HOURS;
-    if (ext.empBId && hourTracker[ext.empBId] !== undefined) hourTracker[ext.empBId] += EXT_SHIFT_HOURS;
+    const pair = EXT_PAIRS.find(p => p.id === ext.pairId);
+    if (!pair) return;
+    if (ext.empAId && hourTracker[ext.empAId] !== undefined) hourTracker[ext.empAId] += extEmpHours(pair, true);
+    if (ext.empBId && hourTracker[ext.empBId] !== undefined) hourTracker[ext.empBId] += extEmpHours(pair, false);
   });
 
   // ── Step 1: Assign each employee a shift + work-block plan for the week ───
@@ -1335,6 +1478,79 @@ function buildAutoFill(sourceEmps, cfg, empTimeOffDays, empPatterns, extShiftsAr
       if (emp.employmentType === "full-time") ftIdx++; // advance FT index after FT plan assigned
     });
   });
+
+  // ── Step 1b: Coverage-aware rest-day staggering (Improvement 2) ────────
+  // After independent plan assignment, adjust essential employees' rest days
+  // so they don't overlap across shifts — preventing coverage gaps when
+  // multiple specialists rest on the same day.
+  {
+    const essentialByShift = {};
+    SHIFTS.forEach(shift => {
+      const group = sourceEmps.filter(e => {
+        const p = plan[e.id];
+        return p && p.shiftId === shift.id && e.employmentType === "full-time";
+      });
+      const essential = [];
+      group.forEach(e => { if (e.requiredShift === shift.id && !essential.includes(e)) essential.push(e); });
+      for (const role of ["Scale", "Medical"]) {
+        const providers = group.filter(e =>
+          (e.qualifications || []).includes(role) && canFillPos(e, role, "Monday")
+        );
+        if (providers.length <= 2) {
+          providers.forEach(p => { if (!essential.includes(p)) essential.push(p); });
+        }
+      }
+      essentialByShift[shift.id] = essential;
+    });
+
+    let globalStaggerIdx = 0;
+    const globalRestDays = new Map();
+    SHIFTS.forEach(shift => {
+      const essential = essentialByShift[shift.id] || [];
+      essential.forEach(emp => {
+        const empPlan = plan[emp.id];
+        if (!empPlan) return;
+        const preferredOff = new Set(emp.preferredDaysOff || []);
+        const unavail = new Set(emp.unavailableDays || []);
+        const restDays = new Set();
+
+        // Try preferred days off first if no overlap with other essentials
+        if (preferredOff.size >= daysOff) {
+          const prefArr = [...preferredOff].slice(0, daysOff);
+          let overlap = prefArr.some(d => [...globalRestDays.values()].some(r => r.has(d)));
+          if (!overlap) prefArr.forEach(d => restDays.add(d));
+        }
+
+        // Stagger using global counter for unique rest days
+        if (restDays.size < daysOff) {
+          restDays.clear();
+          let placed = 0;
+          for (let a = 0; a < 7 && placed < daysOff; a++) {
+            const d = DAYS[(globalStaggerIdx + a) % 7];
+            if (unavail.has(d)) continue;
+            if ([...globalRestDays.values()].some(r => r.has(d))) continue;
+            restDays.add(d); placed++;
+          }
+          if (placed < daysOff) {
+            for (let a = 0; a < 7 && placed < daysOff; a++) {
+              const d = DAYS[(globalStaggerIdx + a) % 7];
+              if (restDays.has(d) || unavail.has(d)) continue;
+              restDays.add(d); placed++;
+            }
+          }
+        }
+        globalStaggerIdx += daysOff;
+        globalRestDays.set(emp.id, restDays);
+
+        // Update the plan's workDays (preserve blockStart for continuity)
+        const newWorkDays = new Set(DAYS.filter(d => !restDays.has(d) && !unavail.has(d)));
+        empPlan.workDays = newWorkDays;
+      });
+    });
+    console.log("[Step 1b] Coverage-aware rest-day staggering applied to",
+      Object.values(essentialByShift).flat().length, "essential employees across",
+      Object.keys(essentialByShift).filter(k => essentialByShift[k].length > 0).length, "shifts");
+  }
 
   // ── Step 2: Build qualification-group peer sets for fairness ────────────
   // For each employee, find peers who share at least one qualifying position.
@@ -1672,312 +1888,579 @@ function buildAutoFill(sourceEmps, cfg, empTimeOffDays, empPatterns, extShiftsAr
         return n;
       }, 0));
 
-  // ── Step 3: CSP fill — process most-constrained slots first (MRV) ─────────
-  // Snapshot domain sizes before any assignments, sort 21 slots ascending.
-  // Slots with the fewest eligible (emp, position) pairs are filled first —
-  // preventing early calendar slots from consuming employees that scarce slots need.
-  const allSlots = DAYS.flatMap(d => SHIFTS.map(s => ({ day: d, shift: s })));
-  const slotMRVKey = Object.fromEntries(
-    allSlots.map(({ day: d, shift: s }) => [cellKey(d, s.id), slotDomainSize(cellKey(d, s.id))])
-  );
-  const orderedSlots = allSlots.sort((a, b) =>
-    (slotMRVKey[cellKey(a.day, a.shift.id)] || 0) - (slotMRVKey[cellKey(b.day, b.shift.id)] || 0)
-  );
-  console.log("[CSP] MRV slot order:", orderedSlots.map(({ day, shift }) =>
-    `${day.slice(0,3)}/${shift.id.slice(0,2)}(${slotMRVKey[cellKey(day, shift.id)]})`).join(" "));
-  for (const { day, shift } of orderedSlots) {
-    {
-      const key   = cellKey(day, shift.id);
-      const slots = getSlotCount(day, shift.id);
-      const asgn  = [];
-      const used  = new Set();
+  // ── Step 3: Backtracking CSP fill with two-phase optimization ─────────
+  // Replaces greedy MRV fill with a backtracking search that guarantees
+  // complete coverage when feasible, then optimises for preferences via
+  // hill-climbing.  Incorporates improvements 1 (backtracking + AC-3),
+  // 3 (role-reservation), 4 (dynamic MRV), 5 (feasibility pre-check),
+  // and 6 (two-phase optimisation: feasibility first, then preference swaps).
+  {
+    const empMap = new Map(sourceEmps.map(e => [e.id, e]));
+    const btSlots = DAYS.flatMap(d => SHIFTS.map(s => ({ day: d, shiftId: s.id })));
 
-      // Pre-block any employee already covering this slot via an ext shift.
-      (extShiftsArg||[]).forEach(ext => {
+    // Build per-slot ext-shift role coverage + blocked employees
+    const extRoleBySlot = {};
+    const extBlockedBySlot = {};
+    for (const { day, shiftId } of btSlots) {
+      const key = cellKey(day, shiftId);
+      const activeExts = (extShiftsArg||[]).filter(e => extCovers(e, day, shiftId));
+      const blocked = new Set();
+      let hasScale = false, hasMedical = false;
+      activeExts.forEach(ext => {
         const pair = EXT_PAIRS.find(p => p.id === ext.pairId);
         if (!pair) return;
-        const idx = pair.covers.indexOf(shift.id);
-        if (idx === 0 && ext.empAId) used.add(ext.empAId);
-        if (idx === 1 && ext.empBId) used.add(ext.empBId);
-        // Split cross-day: empB is working next day's first shift
-        if (pair.crossDayB === shift.id && ext.empBId) {
+        const idx = pair.covers.indexOf(shiftId);
+        if (idx === 0 && ext.empAId) blocked.add(ext.empAId);
+        if (idx === 1 && ext.empBId) blocked.add(ext.empBId);
+        if (pair.crossDayB === shiftId && ext.empBId) {
           const nextDay = DAYS[(DAYS.indexOf(ext.day) + 1) % 7];
-          if (nextDay === day) used.add(ext.empBId);
+          if (nextDay === day) blocked.add(ext.empBId);
         }
-      });
-
-      // Relaxed scorer: allows FT on rest days — only used when no compliant
-      // employee can fill the slot (escape hatch, Step 3b).
-      const rankScoreRelaxed = (emp, shiftId) => {
-        const empPlan = plan[emp.id];
-        const isFT    = emp.employmentType === "full-time";
-        if (!isFT) return null; // PT/OC already tried in normal pass
-        if (empPlan && empPlan.shiftId !== shiftId) return null;
-        if ((emp.unavailableDays||[]).includes(day)) return null;
-        if (empTimeOffDays && empTimeOffDays.has(emp.id + "__" + day)) return null;
-        if ((emp.blockedShifts||[]).includes(shiftId)) return null;
-        const myHours = hourTracker[emp.id] || 0;
-        if (myHours >= OT_RELIEF_THRESHOLD) return null;
-        if (isRestViolation(emp, rg(emp.id, ns, day, shiftId), minRest)) return null;
-        if (calcConsecutiveHours(emp.id, ns, day, shiftId, extShiftsArg) > empMaxConsec(emp)) return null;
-        const restDayPenalty = (empPlan && !empPlan.workDays.has(day)) ? 500 : 0;
-        const fairPenalty    = Math.max(0, myHours - peerMinHours(emp)) * 15;
-        return restDayPenalty + fairPenalty + (myHours >= FT_MIN_HOURS ? 600 : 0);
-      };
-
-      const assign = (emp, position) => {
-        hourTracker[emp.id] = (hourTracker[emp.id] || 0) + SHIFT_HOURS;
-        shiftsWorked[emp.id] = (shiftsWorked[emp.id] || 0) + 1;
-        dayWorked[emp.id].add(day);
-        asgn.push({ employeeId: emp.id, position });
-        used.add(emp.id);
-        forwardCheck(emp, day); // propagate: remove emp from remaining domains on this day
-      };
-
-      // Count only non-Supervisor entries toward the regular-slot cap.
-      // The Supervisor occupies a dedicated +1 slot on weekday 1st shift
-      // and must not consume one of the 3 regular Guard/Scale/Medical slots.
-      const regularCount = () => asgn.filter(a => a.position !== "Supervisor").length;
-
-      const activeExts = (extShiftsArg||[]).filter(e => extCovers(e, day, shift.id));
-      const extBodyCount = activeExts.reduce((n, ext) => {
-        const pair = EXT_PAIRS.find(p => p.id === ext.pairId);
-        if (!pair) return n;
-        const shiftIdx = pair.covers.indexOf(shift.id);
-        let hasBody = shiftIdx === 0 ? !!ext.empAId : shiftIdx === 1 ? !!ext.empBId : false;
-        // Split cross-day: empB counts as a body for next day's first shift
-        if (!hasBody && pair.crossDayB === shift.id && ext.empBId) {
-          const nextDay = DAYS[(DAYS.indexOf(ext.day) + 1) % 7];
-          if (nextDay === day) hasBody = true;
-        }
-        return n + (hasBody ? 1 : 0);
-      }, 0);
-      // effectiveSlots = cap for REGULAR (non-Supervisor) bodies only.
-      const effectiveSlots = Math.max(0, REGULAR_SLOTS(day, shift.id) - extBodyCount);
-
-      // Helper: resolve which employee ID is "present" for an ext shift in this slot
-      const extPresentId = (e, pair) => {
-        const idx = pair.covers.indexOf(shift.id);
-        if (idx === 0) return e.empAId;
-        if (idx === 1) return e.empBId;
-        // Split cross-day: empB covers next day's first shift
-        if (pair.crossDayB === shift.id && e.empBId) {
-          const nextDay = DAYS[(DAYS.indexOf(e.day) + 1) % 7];
-          if (nextDay === day) return e.empBId;
-        }
-        return null;
-      };
-      const extAlreadyScale = activeExts.some(e => {
-        const pair = EXT_PAIRS.find(p => p.id === e.pairId);
-        if (!pair) return false;
-        const presentId = extPresentId(e, pair);
-        const presentEmp = presentId ? sourceEmps.find(x => x.id === presentId) : null;
+        const presentId = idx === 0 ? ext.empAId : idx === 1 ? ext.empBId : null;
+        const presentEmp = presentId ? empMap.get(presentId) : null;
         const roles = presentEmp
           ? ["Scale","Medical"].filter(r => presentEmp.qualifications.includes(r))
-          : (e.roles||[]);
-        return roles.includes("Scale");
+          : (ext.roles||[]);
+        if (roles.includes("Scale")) hasScale = true;
+        if (roles.includes("Medical")) hasMedical = true;
       });
-      const extAlreadyMedical = activeExts.some(e => {
-        const pair = EXT_PAIRS.find(p => p.id === e.pairId);
-        if (!pair) return false;
-        const presentId = extPresentId(e, pair);
-        const presentEmp = presentId ? sourceEmps.find(x => x.id === presentId) : null;
-        const roles = presentEmp
-          ? ["Scale","Medical"].filter(r => presentEmp.qualifications.includes(r))
-          : (e.roles||[]);
-        return roles.includes("Medical");
-      });
-
-      // ── 1. Supervisor slot (weekday 1st only) ─────────────────────────────
-      // Assigned first so they're in `used` before regular scoring.
-      // Does NOT count against effectiveSlots — it is an additional slot.
-      if (SUP_SLOT_DAY(day, shift.id)) {
-        const supPick = sourceEmps.find(e =>
-          !used.has(e.id) &&
-          (e.qualifications||[]).includes("Supervisor") &&
-          !(e.unavailableDays||[]).includes(day) &&
-          !(empTimeOffDays && empTimeOffDays.has(e.id + "__" + day))
-        );
-        if (supPick) assign(supPick, "Supervisor");
-      }
-
-      // Build ranked list AFTER supervisor is in `used`, so they don't appear here.
-      // jitter: shuffle employees with equal scores so repeated attempts explore different orderings.
-      const ranked = sourceEmps
-        .map(e => { const s = empScore(e, day, shift.id); return s === null ? null : { e, s }; })
-        .filter(Boolean)
-        .sort((a, b) => {
-          const d = a.s - b.s;
-          if (d !== 0) return d;
-          return jitter ? Math.random() - 0.5 : 0;
-        });
-
-      // ── 2. Required roles: Scale and Medical ──────────────────────────────
-      // Cap checked against regularCount() so the Supervisor slot doesn't eat
-      // one of the 3 regular positions.
-      // Uses slotHasRole (qualification-aware) so a dual-qualified Scale+Medical
-      // employee assigned as "Scale" satisfies both roles — no phantom Medical slot.
-      for (const role of ["Scale", "Medical"]) {
-        if (regularCount() >= effectiveSlots) break;
-        if (slotHasRole(asgn, sourceEmps, role)) continue;
-        if (role === "Scale"   && extAlreadyScale)   continue;
-        if (role === "Medical" && extAlreadyMedical) continue;
-        const pick = ranked.find(({ e }) => !used.has(e.id) && canFillPos(e, role, day) && !(!isWeekday(day) && (e.qualifications||[]).includes("Supervisor") && (role === "Scale" || role === "Medical")))
-                  || ranked.find(({ e }) => !used.has(e.id) && canFillPos(e, role, day));
-        if (pick) assign(pick.e, role);
-      }
-
-      // ── 3. Remaining regular slots — two-pass Guard-first logic ─────────────
-      // Pass A fills Scale/Medical roles and Guard slots using Guard-only employees.
-      // Pass B allows specialists to fill any remaining Guard slots only if no
-      // Guard-only employee is available — hard preference, not just a soft penalty.
-      //
-      const hasGuardOnlyAvailable = () =>
-        sourceEmps.some(e =>
-          !used.has(e.id) &&
-          isGuardOnly(e) &&
-          canFillPos(e, "Guard", day) &&
-          empScore(e, day, shift.id, "Guard") !== null
-        );
-      const WEEKEND_DAYS = new Set(["Saturday","Sunday"]);
-      const isWeekendDay = WEEKEND_DAYS.has(day);
-      const weekendDaysWorked = (empId) =>
-        [...(dayWorked[empId]||new Set())].filter(d => WEEKEND_DAYS.has(d)).length;
-      const atWeekendCap = (emp) =>
-        isWeekendDay &&
-        emp.maxWeekendDays !== null &&
-        emp.maxWeekendDays !== undefined &&
-        weekendDaysWorked(emp.id) >= emp.maxWeekendDays;
-
-      // Fail-Fast: force-assign any employee whose only remaining domain slot is this one
-      if (regularCount() < effectiveSlots) {
-        for (const emp of sourceEmps) {
-          if (regularCount() >= effectiveSlots) break;
-          if (used.has(emp.id)) continue;
-          if ((emp.qualifications||[]).includes("Supervisor")) continue;
-          const remaining = Object.keys(domains[emp.id] || {});
-          if (remaining.length !== 1 || remaining[0] !== key) continue;
-          if (isRestViolation(emp, rg(emp.id, ns, day, shift.id), minRest)) continue;
-          if (calcConsecutiveHours(emp.id, ns, day, shift.id, extShiftsArg) > empMaxConsec(emp)) continue;
-          const ap = getAvailPos(day, shift.id).filter(p => canFillPos(emp, p, day));
-          if (!ap.length) continue;
-          if (atWeekendCap(emp)) continue;
-          const nowHasScale   = slotHasRole(asgn, sourceEmps, "Scale");
-          const nowHasMedical = slotHasRole(asgn, sourceEmps, "Medical");
-          let pos;
-          if      (!nowHasScale   && !extAlreadyScale   && ap.includes("Scale"))   pos = "Scale";
-          else if (!nowHasMedical && !extAlreadyMedical && ap.includes("Medical")) pos = "Medical";
-          else if (ap.includes("Guard"))                                            pos = "Guard";
-          else pos = ap[0];
-          assign(emp, pos);
-          console.log(`[Fail-Fast] Forced: ${emp.name} → ${day}/${shift.id} as ${pos} (only remaining slot)`);
-        }
-      }
-
-      const buildRankedPos = () => {
-        const nowHasSc = slotHasRole(asgn, sourceEmps, "Scale");
-        const nowHasMd = slotHasRole(asgn, sourceEmps, "Medical");
-        return sourceEmps
-          .map(e => {
-            const ap = getAvailPos(day, shift.id).filter(p => canFillPos(e, p, day));
-            if (!ap.length) return null;
-            const needSc = !nowHasSc && !extAlreadyScale;
-            const needMe = !nowHasMd && !extAlreadyMedical;
-            const likelyPos = (needSc && ap.includes("Scale"))   ? "Scale"
-                            : (needMe && ap.includes("Medical")) ? "Medical"
-                            : ap.includes("Guard")               ? "Guard"
-                            : ap[0];
-            const s = empScore(e, day, shift.id, likelyPos);
-            return s === null ? null : { e, s, likelyPos };
-          })
-          .filter(Boolean)
-          .sort((a, b) => a.s - b.s);
-      };
-
-      // Pass A: fill Scale/Medical roles + Guard slots using Guard-only employees.
-      // Specialists are skipped for Guard slots if Guard-only employees exist.
-      for (const { e, likelyPos } of buildRankedPos()) {
-        if (regularCount() >= effectiveSlots) break;
-        if (used.has(e.id)) continue;
-        const ap = getAvailPos(day, shift.id).filter(p => canFillPos(e, p, day));
-        if (!ap.length) continue;
-        const nowHasScale   = slotHasRole(asgn, sourceEmps, "Scale");
-        const nowHasMedical = slotHasRole(asgn, sourceEmps, "Medical");
-        const needScale   = !nowHasScale   && !extAlreadyScale;
-        const needMedical = !nowHasMedical && !extAlreadyMedical;
-        let pos;
-        if      (needScale   && ap.includes("Scale"))   pos = "Scale";
-        else if (needMedical && ap.includes("Medical")) pos = "Medical";
-        else if (ap.includes("Guard"))                  pos = "Guard";
-        else pos = ap[0];
-        // Hard block: if this would put a specialist in a Guard slot
-        // AND Guard-only employees are still available, skip them for now.
-        if (pos === "Guard" && !isGuardOnly(e) && hasGuardOnlyAvailable()) continue;
-        if (atWeekendCap(e)) continue;
-        assign(e, pos);
-      }
-
-      // Pass B: any remaining slots — now allow specialists to fill Guard.
-      // Guard-only employees were either all placed or unavailable.
-      if (regularCount() < effectiveSlots) {
-        for (const { e } of buildRankedPos()) {
-          if (regularCount() >= effectiveSlots) break;
-          if (used.has(e.id)) continue;
-          const ap = getAvailPos(day, shift.id).filter(p => canFillPos(e, p, day));
-          if (!ap.length) continue;
-          const nowHasScale   = slotHasRole(asgn, sourceEmps, "Scale");
-          const nowHasMedical = slotHasRole(asgn, sourceEmps, "Medical");
-          const needScale   = !nowHasScale   && !extAlreadyScale;
-          const needMedical = !nowHasMedical && !extAlreadyMedical;
-          let pos;
-          if      (needScale   && ap.includes("Scale"))   pos = "Scale";
-          else if (needMedical && ap.includes("Medical")) pos = "Medical";
-          else if (ap.includes("Guard"))                  pos = "Guard";
-          else pos = ap[0];
-          if (atWeekendCap(e)) continue;
-          assign(e, pos);
-        }
-      }
-
-      // ── 3b. Rest-day escape hatch ──────────────────────────────────────
-      // Fires when: (a) open body slots remain, OR (b) required roles (Scale/Medical)
-      // are still missing even if headcount is full.
-      // Allows FT on their planned rest days as absolute last resort.
-      const hatchNeedsScale   = !slotHasRole(asgn, sourceEmps, "Scale")   && !extAlreadyScale;
-      const hatchNeedsMedical = !slotHasRole(asgn, sourceEmps, "Medical") && !extAlreadyMedical;
-      const hatchOpen = regularCount() < effectiveSlots || hatchNeedsScale || hatchNeedsMedical;
-      if (hatchOpen) {
-        const relaxed = sourceEmps
-          .map(e => ({ e, score: rankScoreRelaxed(e, shift.id) }))
-          .filter(x => x.score !== null && !used.has(x.e.id))
-          .sort((a, b) => a.score - b.score);
-        for (const { e } of relaxed) {
-          // Stop when headcount is full AND all required roles are covered
-          const stillNeedsScale   = !slotHasRole(asgn, sourceEmps, "Scale")   && !extAlreadyScale;
-          const stillNeedsMedical = !slotHasRole(asgn, sourceEmps, "Medical") && !extAlreadyMedical;
-          if (regularCount() >= effectiveSlots && !stillNeedsScale && !stillNeedsMedical) break;
-          const ap = getAvailPos(day, shift.id).filter(p => canFillPos(e, p, day));
-          if (!ap.length) continue;
-          const needScale   = stillNeedsScale;
-          const needMedical = stillNeedsMedical;
-          // Only add a body if a slot is genuinely open — never exceed the slot cap.
-          // Missing roles on a full slot are flagged as coverage gaps, not fixed by
-          // adding a 4th body. The 12hr pair system handles role gaps on full shifts.
-          if (regularCount() >= effectiveSlots) continue;
-          let pos;
-          if      (needScale   && ap.includes("Scale"))   pos = "Scale";
-          else if (needMedical && ap.includes("Medical")) pos = "Medical";
-          else if (ap.includes("Guard"))                  pos = "Guard";
-          else pos = ap[0];
-          // Guard-only preference: skip specialist for Guard if guard-only still available
-          if (pos === "Guard" && !isGuardOnly(e) && hasGuardOnlyAvailable()) continue;
-          if (atWeekendCap(e)) continue;
-          assign(e, pos);
-        }
-      }
-
-      ns[key] = asgn;
+      extRoleBySlot[key] = { hasScale, hasMedical };
+      extBlockedBySlot[key] = blocked;
     }
+
+    // Static eligibility from domain matrix + empTimeOffDays
+    const btStaticEligible = (day, shiftId) => {
+      const key = cellKey(day, shiftId);
+      const blocked = extBlockedBySlot[key] || new Set();
+      return sourceEmps.filter(e => {
+        if (blocked.has(e.id)) return false;
+        if (!domains[e.id]?.[key]?.size) return false;
+        if (empTimeOffDays && empTimeOffDays.has(e.id + "__" + day)) return false;
+        return true;
+      }).map(e => e.id);
+    };
+
+    // ── SearchState class ──────────────────────────────────────────────────
+    class SearchState {
+      constructor() {
+        this.schedule = {};
+        this.hourTracker = { ...hourTracker }; // inherit ext-shift hours
+        this.dayWorked = {};
+        this.shiftsWorked = {};
+        this.domains = [];
+        sourceEmps.forEach(e => {
+          if (this.hourTracker[e.id] == null) this.hourTracker[e.id] = 0;
+          this.dayWorked[e.id] = new Set();
+          this.shiftsWorked[e.id] = 0;
+        });
+        for (const { day, shiftId } of btSlots) {
+          this.domains.push(new Set(btStaticEligible(day, shiftId)));
+        }
+      }
+
+      canAssign(empId, slotIdx) {
+        const { day, shiftId } = btSlots[slotIdx];
+        const emp = empMap.get(empId);
+        if (!emp) return false;
+        const key = cellKey(day, shiftId);
+        if ((this.schedule[key] || []).some(a => a.employeeId === empId)) return false;
+        // Same day, different shift: only if willing16h + adjacent
+        for (const s of SHIFTS) {
+          if (s.id === shiftId) continue;
+          if ((this.schedule[cellKey(day, s.id)] || []).some(a => a.employeeId === empId)) {
+            if (!emp.willing16h) return false;
+            const adj = new Set(["first__second","second__first","second__third","third__second"]);
+            if (!adj.has(s.id + "__" + shiftId)) return false;
+          }
+        }
+        // Weekly shift cap
+        const empMaxW = emp.maxShiftsPerWeek;
+        if (empMaxW != null && this.shiftsWorked[empId] >= empMaxW) return false;
+        // Consecutive days cap
+        const workDays = new Set(this.dayWorked[empId]);
+        workDays.add(day);
+        let maxConsecDays = 0, streak = 0;
+        for (const d of DAYS) {
+          if (workDays.has(d)) { streak++; maxConsecDays = Math.max(maxConsecDays, streak); } else streak = 0;
+        }
+        if (workDays.has("Sunday") && workDays.has("Saturday")) {
+          let head = 0, tail = 0;
+          for (const d of DAYS) { if (workDays.has(d)) head++; else break; }
+          for (let i = 6; i >= 0; i--) { if (workDays.has(DAYS[i])) tail++; else break; }
+          maxConsecDays = Math.max(maxConsecDays, head + tail);
+        }
+        if (maxConsecDays > maxShifts) return false;
+        // Weekend cap
+        if (["Saturday","Sunday"].includes(day) && emp.maxWeekendDays != null) {
+          const wkd = [...this.dayWorked[empId]].filter(d => ["Saturday","Sunday"].includes(d)).length;
+          if (wkd >= emp.maxWeekendDays) return false;
+        }
+        // Fatigue constraints against current schedule
+        if (isRestViolation(emp, rg(empId, this.schedule, day, shiftId), minRest)) return false;
+        if (calcConsecutiveHours(empId, this.schedule, day, shiftId, extShiftsArg) > empMaxConsec(emp)) return false;
+        if (shiftId === "third" && calcConsecutiveNights(empId, this.schedule, day, shiftId) >= maxNights) return false;
+        return true;
+      }
+
+      assign(empId, position, slotIdx) {
+        const { day, shiftId } = btSlots[slotIdx];
+        const key = cellKey(day, shiftId);
+        if (!this.schedule[key]) this.schedule[key] = [];
+        this.schedule[key].push({ employeeId: empId, position });
+        if (!this.schedule[key].slice(0, -1).some(a => a.employeeId === empId)) {
+          this.hourTracker[empId] = (this.hourTracker[empId] || 0) + SHIFT_HOURS;
+          this.shiftsWorked[empId] = (this.shiftsWorked[empId] || 0) + 1;
+          this.dayWorked[empId].add(day);
+        }
+      }
+
+      // Lightweight propagation: prune obvious conflicts only
+      propagate(slotIdx) {
+        const { day, shiftId } = btSlots[slotIdx];
+        const assignedHere = new Set((this.schedule[cellKey(day, shiftId)] || []).map(a => a.employeeId));
+        const ADJ = new Set(["first__second","second__first","second__third","third__second"]);
+        for (let j = 0; j < btSlots.length; j++) {
+          if (j === slotIdx) continue;
+          const jKey = cellKey(btSlots[j].day, btSlots[j].shiftId);
+          const jAsgn = this.schedule[jKey] || [];
+          const needed = slotCap(btSlots[j].day, btSlots[j].shiftId) +
+            (SUP_SLOT_DAY(btSlots[j].day, btSlots[j].shiftId) ? 1 : 0);
+          if (jAsgn.length >= needed) { this.domains[j] = new Set(); continue; }
+          const toRemove = [];
+          for (const empId of this.domains[j]) {
+            if (btSlots[j].day === day && btSlots[j].shiftId !== shiftId && assignedHere.has(empId)) {
+              const emp = empMap.get(empId);
+              if (!emp || !emp.willing16h || !ADJ.has(shiftId + "__" + btSlots[j].shiftId)) {
+                toRemove.push(empId); continue;
+              }
+            }
+            const emp = empMap.get(empId);
+            if (emp && emp.maxShiftsPerWeek != null && (this.shiftsWorked[empId] || 0) >= emp.maxShiftsPerWeek) {
+              toRemove.push(empId); continue;
+            }
+            if (emp && this.dayWorked[empId]) {
+              const wd = new Set(this.dayWorked[empId]);
+              wd.add(btSlots[j].day);
+              let s = 0, ms = 0;
+              for (const d of DAYS) { if (wd.has(d)) { s++; ms = Math.max(ms, s); } else s = 0; }
+              if (ms > maxShifts) toRemove.push(empId);
+            }
+          }
+          for (const empId of toRemove) this.domains[j].delete(empId);
+        }
+      }
+
+      isFeasible() {
+        for (let j = 0; j < btSlots.length; j++) {
+          const jKey = cellKey(btSlots[j].day, btSlots[j].shiftId);
+          const jAsgn = this.schedule[jKey] || [];
+          const regCount = jAsgn.filter(a => a.position !== "Supervisor").length;
+          const cap = slotCap(btSlots[j].day, btSlots[j].shiftId);
+          const supNeeded = SUP_SLOT_DAY(btSlots[j].day, btSlots[j].shiftId) ? 1 : 0;
+          const supFilled = jAsgn.some(a => a.position === "Supervisor") ? 1 : 0;
+          const totalNeeded = Math.max(0, cap - regCount) + Math.max(0, supNeeded - supFilled);
+          if (totalNeeded <= 0) continue;
+          const inSlot = new Set(jAsgn.map(a => a.employeeId));
+          const avail = [...this.domains[j]].filter(id => !inSlot.has(id));
+          if (avail.length < totalNeeded) return false;
+        }
+        return true;
+      }
+    }
+
+    // ── Pick best position for an employee in a slot ───────────────────────
+    const btPickPosition = (emp, currentAsgn, day, shiftId) => {
+      const isSup = (emp.qualifications||[]).includes("Supervisor");
+      if (isSup && SUP_SLOT_DAY(day, shiftId)) return "Supervisor";
+      const key = cellKey(day, shiftId);
+      const extR = extRoleBySlot[key] || {};
+      const ap = getAvailPos(day, shiftId).filter(p => canFillPos(emp, p, day));
+      if (!ap.length) return null;
+      const hasScale = slotHasRole(currentAsgn, sourceEmps, "Scale") || extR.hasScale;
+      const hasMedical = slotHasRole(currentAsgn, sourceEmps, "Medical") || extR.hasMedical;
+      if (!hasScale && ap.includes("Scale")) return "Scale";
+      if (!hasMedical && ap.includes("Medical")) return "Medical";
+      if (ap.includes("Guard")) return "Guard";
+      return ap[0];
+    };
+
+    // ── Dynamic MRV slot selection (Improvement 4) ─────────────────────────
+    const btSelectNextSlot = (state) => {
+      let bestIdx = -1, bestScore = Infinity;
+      for (let i = 0; i < btSlots.length; i++) {
+        const { day, shiftId } = btSlots[i];
+        const key = cellKey(day, shiftId);
+        const asgn = state.schedule[key] || [];
+        const regCount = asgn.filter(a => a.position !== "Supervisor").length;
+        const cap = slotCap(day, shiftId);
+        const supFilled = asgn.some(a => a.position === "Supervisor") ? 1 : 0;
+        const supNeeded = SUP_SLOT_DAY(day, shiftId) ? 1 : 0;
+        if (regCount >= cap && supFilled >= supNeeded) continue;
+        const inSlot = new Set(asgn.map(a => a.employeeId));
+        const avail = [...state.domains[i]].filter(id => !inSlot.has(id));
+        let size = avail.length;
+        if (size === 0) return i;
+        // Role-priority boost
+        const extR = extRoleBySlot[key] || {};
+        const hasScale = slotHasRole(asgn, sourceEmps, "Scale") || extR.hasScale;
+        const hasMedical = slotHasRole(asgn, sourceEmps, "Medical") || extR.hasMedical;
+        let rolePenalty = 0;
+        if (!hasScale) {
+          const scaleAvail = avail.filter(id => {
+            const e = empMap.get(id);
+            return e && (e.qualifications||[]).includes("Scale") && canFillPos(e, "Scale", day);
+          });
+          rolePenalty += scaleAvail.length <= 1 ? -1000 : -500 / scaleAvail.length;
+        }
+        if (!hasMedical) {
+          const medAvail = avail.filter(id => {
+            const e = empMap.get(id);
+            return e && (e.qualifications||[]).includes("Medical") && canFillPos(e, "Medical", day);
+          });
+          rolePenalty += medAvail.length <= 1 ? -1000 : -500 / medAvail.length;
+        }
+        const score = size + rolePenalty;
+        if (score < bestScore) { bestScore = score; bestIdx = i; }
+      }
+      return bestIdx;
+    };
+
+    // ── Phase 1 scoring: feasibility-focused ───────────────────────────────
+    const btScore = (state, empId, slotIdx) => {
+      const emp = empMap.get(empId);
+      if (!emp) return 99999;
+      const { day, shiftId } = btSlots[slotIdx];
+      const empPlan = plan[emp.id];
+      const hours = state.hourTracker[empId] || 0;
+      const isFT = emp.employmentType === "full-time";
+      let score = 0;
+      if (isFT && hours < FT_MIN_HOURS) { score -= 400; score -= (FT_MIN_HOURS - hours) * 8; }
+      if (isFT && hours >= FT_MIN_HOURS) score += 600;
+      if (!isFT) score += 200;
+      if (empPlan && empPlan.workDays.has(day)) score -= 100;
+      else if (isFT) score += 80;
+      // Phase 1: mild shift guide (preferences enforced in Phase 2)
+      if (empPlan && empPlan.shiftId === shiftId) score -= 150;
+      else if (isFT && empPlan && empPlan.shiftId !== shiftId && !emp.crossShiftOT) score += 100;
+      if (isGuardOnly(emp)) score -= 50;
+      const key = cellKey(day, shiftId);
+      const curAsgn = state.schedule[key] || [];
+      const extR = extRoleBySlot[key] || {};
+      const hasScale = slotHasRole(curAsgn, sourceEmps, "Scale") || extR.hasScale;
+      const hasMedical = slotHasRole(curAsgn, sourceEmps, "Medical") || extR.hasMedical;
+      if (!hasScale && (emp.qualifications||[]).includes("Scale")) score -= 200;
+      if (!hasMedical && (emp.qualifications||[]).includes("Medical")) score -= 200;
+      score += hours * 3;
+      // Phase 1: mild day-off hint
+      if ((emp.preferredDaysOff||[]).includes(day)) score += 50;
+      let appearances = 0;
+      for (let j = 0; j < state.domains.length; j++) {
+        if (j === slotIdx) continue;
+        if (state.domains[j].has(empId)) appearances++;
+      }
+      score += appearances * 0.5;
+      return score;
+    };
+
+    // ── Backtracking search ────────────────────────────────────────────────
+    let nodesExplored = 0;
+    const MAX_NODES = 500000;
+    const btSearchStart = Date.now();
+
+    const btBacktrack = (state, depth) => {
+      nodesExplored++;
+      if (nodesExplored > MAX_NODES) return null;
+
+      const slotIdx = btSelectNextSlot(state);
+      if (slotIdx === -1) return state;
+
+      const { day, shiftId } = btSlots[slotIdx];
+      const key = cellKey(day, shiftId);
+      const currentAsgn = state.schedule[key] || [];
+      const inSlot = new Set(currentAsgn.map(a => a.employeeId));
+
+      const candidates = [...state.domains[slotIdx]]
+        .filter(id => !inSlot.has(id) && state.canAssign(id, slotIdx));
+      if (candidates.length === 0) return null;
+
+      candidates.sort((a, b) => btScore(state, a, slotIdx) - btScore(state, b, slotIdx));
+
+      for (const empId of candidates) {
+        if (nodesExplored > MAX_NODES) return null;
+        const emp = empMap.get(empId);
+        if (!emp) continue;
+        const pos = btPickPosition(emp, currentAsgn, day, shiftId);
+        if (!pos) continue;
+
+        // Save state for undo
+        const savedSchedule = {};
+        for (const k of Object.keys(state.schedule)) savedSchedule[k] = [...state.schedule[k]];
+        const savedHours = { ...state.hourTracker };
+        const savedShifts = { ...state.shiftsWorked };
+        const savedDays = {};
+        for (const id of Object.keys(state.dayWorked)) savedDays[id] = new Set(state.dayWorked[id]);
+        const savedDomains = state.domains.map(d => new Set(d));
+
+        state.assign(empId, pos, slotIdx);
+        state.propagate(slotIdx);
+
+        if (state.isFeasible()) {
+          const result = btBacktrack(state, depth + 1);
+          if (result) return result;
+        }
+
+        // Undo
+        state.schedule = savedSchedule;
+        state.hourTracker = savedHours;
+        state.shiftsWorked = savedShifts;
+        state.dayWorked = savedDays;
+        state.domains = savedDomains;
+      }
+      return null;
+    };
+
+    // ── Improvement 5: Feasibility pre-check ───────────────────────────────
+    let impossibleCount = 0;
+    for (let i = 0; i < btSlots.length; i++) {
+      const { day, shiftId } = btSlots[i];
+      for (const role of ["Scale", "Medical", "Guard"]) {
+        const extR = extRoleBySlot[cellKey(day, shiftId)] || {};
+        if (role === "Scale" && extR.hasScale) continue;
+        if (role === "Medical" && extR.hasMedical) continue;
+        const qualified = sourceEmps.filter(e => {
+          if (!(e.qualifications||[]).includes(role)) return false;
+          if (!canFillPos(e, role, day)) return false;
+          if (!domains[e.id]?.[cellKey(day, shiftId)]?.size) return false;
+          if (empTimeOffDays && empTimeOffDays.has(e.id + "__" + day)) return false;
+          return true;
+        });
+        if (qualified.length === 0) { impossibleCount++; console.log(`[Pre-check] IMPOSSIBLE: ${day}/${shiftId} ${role}`); }
+        else if (qualified.length === 1) console.log(`[Pre-check] CRITICAL: ${day}/${shiftId} ${role} — ${qualified[0].name}`);
+      }
+    }
+
+    // ── Run search ─────────────────────────────────────────────────────────
+    console.log(`[Backtrack] Starting search: ${btSlots.length} slots, ${sourceEmps.length} employees`);
+    const initialState = new SearchState();
+
+    // Pre-assign supervisors
+    for (let i = 0; i < btSlots.length; i++) {
+      const { day, shiftId } = btSlots[i];
+      if (!SUP_SLOT_DAY(day, shiftId)) continue;
+      const supEmp = sourceEmps.find(e =>
+        (e.qualifications||[]).includes("Supervisor") &&
+        !(e.unavailableDays||[]).includes(day) &&
+        !(empTimeOffDays && empTimeOffDays.has(e.id + "__" + day))
+      );
+      if (supEmp && initialState.canAssign(supEmp.id, i)) {
+        initialState.assign(supEmp.id, "Supervisor", i);
+      }
+    }
+    initialState.propagate(0);
+
+    // ── Improvement 3: Role-reservation (singleton propagation) ────────────
+    let reservations = 0;
+    for (let i = 0; i < btSlots.length; i++) {
+      const { day, shiftId } = btSlots[i];
+      const key = cellKey(day, shiftId);
+      const curAsgn = initialState.schedule[key] || [];
+      const extR = extRoleBySlot[key] || {};
+      for (const role of ["Scale", "Medical"]) {
+        if (slotHasRole(curAsgn, sourceEmps, role) || (role === "Scale" && extR.hasScale) || (role === "Medical" && extR.hasMedical)) continue;
+        const cands = [...initialState.domains[i]].filter(id => {
+          const e = empMap.get(id);
+          if (!e) return false;
+          if (!(e.qualifications||[]).includes(role)) return false;
+          if (!canFillPos(e, role, day)) return false;
+          if (curAsgn.some(a => a.employeeId === id)) return false;
+          return initialState.canAssign(id, i);
+        });
+        if (cands.length === 1) {
+          const empId = cands[0];
+          const emp = empMap.get(empId);
+          if (emp && !curAsgn.some(a => a.employeeId === empId)) {
+            initialState.assign(empId, role, i);
+            initialState.propagate(i);
+            reservations++;
+          }
+        }
+      }
+    }
+    if (reservations > 0) console.log(`[Backtrack] ${reservations} role reservations locked`);
+
+    const btResult = btBacktrack(initialState, 0);
+    const btElapsed = Date.now() - btSearchStart;
+    console.log(`[Backtrack] Completed in ${btElapsed}ms, ${nodesExplored} nodes explored`);
+
+    // ── Improvement 6: Phase 2 hill-climbing preference optimisation ───────
+    // Try pairwise swaps to reduce preference violations and improve fairness
+    // while maintaining full coverage and role constraints.
+    const btSchedule = btResult ? btResult.schedule : initialState.schedule;
+
+    const btSoftScore = (sched) => {
+      let sc = 0;
+      const empH = {};
+      sourceEmps.forEach(e => empH[e.id] = hourTracker[e.id] || 0); // start from ext-shift hours
+      for (const day of DAYS) for (const shift of SHIFTS) {
+        for (const a of (sched[cellKey(day, shift.id)] || [])) {
+          const emp = empMap.get(a.employeeId);
+          if (!emp) continue;
+          empH[a.employeeId] = (empH[a.employeeId] || 0) + SHIFT_HOURS;
+          if ((emp.preferredDaysOff||[]).includes(day)) sc += 800;
+          const empP = plan[emp.id];
+          if (emp.employmentType === "full-time" && empP && empP.shiftId !== shift.id && !emp.crossShiftOT) sc += 500;
+        }
+      }
+      for (const emp of sourceEmps) {
+        if (emp.employmentType !== "full-time") continue;
+        const h = empH[emp.id] || 0;
+        sc += (h - FT_MIN_HOURS) * (h - FT_MIN_HOURS);
+      }
+      return sc;
+    };
+
+    const btCanWorkSlot = (empId, sched, day, shiftId) => {
+      const emp = empMap.get(empId);
+      if (!emp) return false;
+      if (!domains[emp.id]?.[cellKey(day, shiftId)]?.size) return false;
+      if (empTimeOffDays && empTimeOffDays.has(empId + "__" + day)) return false;
+      for (const s of SHIFTS) {
+        if (s.id === shiftId) continue;
+        if ((sched[cellKey(day, s.id)]||[]).some(a => a.employeeId === empId)) {
+          if (!emp.willing16h) return false;
+          const adj = new Set(["first__second","second__first","second__third","third__second"]);
+          if (!adj.has(s.id + "__" + shiftId)) return false;
+        }
+      }
+      if (isRestViolation(emp, rg(empId, sched, day, shiftId), minRest)) return false;
+      if (calcConsecutiveHours(empId, sched, day, shiftId, extShiftsArg) > empMaxConsec(emp)) return false;
+      if (shiftId === "third" && calcConsecutiveNights(empId, sched, day, shiftId) >= maxNights) return false;
+      if (emp.maxShiftsPerWeek != null) {
+        let cnt = 0;
+        for (const d of DAYS) for (const s of SHIFTS) {
+          if ((sched[cellKey(d, s.id)]||[]).some(a => a.employeeId === empId)) cnt++;
+        }
+        if (cnt >= emp.maxShiftsPerWeek) return false;
+      }
+      const wd = new Set();
+      for (const d of DAYS) for (const s of SHIFTS) {
+        if ((sched[cellKey(d, s.id)]||[]).some(a => a.employeeId === empId)) wd.add(d);
+      }
+      wd.add(day);
+      let strk = 0, ms = 0;
+      for (const d of DAYS) { if (wd.has(d)) { strk++; ms = Math.max(ms, strk); } else strk = 0; }
+      if (wd.has("Sunday") && wd.has("Saturday")) {
+        let h = 0, t = 0;
+        for (const d of DAYS) { if (wd.has(d)) h++; else break; }
+        for (let i = 6; i >= 0; i--) { if (wd.has(DAYS[i])) t++; else break; }
+        ms = Math.max(ms, h + t);
+      }
+      if (ms > maxShifts) return false;
+      if (["Saturday","Sunday"].includes(day) && emp.maxWeekendDays != null) {
+        const wkCnt = [...wd].filter(d => ["Saturday","Sunday"].includes(d)).length;
+        if (wkCnt > emp.maxWeekendDays) return false;
+      }
+      return true;
+    };
+
+    let softScore = btSoftScore(btSchedule);
+    let totalSwaps = 0;
+    for (let round = 0; round < 20; round++) {
+      let bestImprov = 0, bestAction = null;
+      for (let i = 0; i < btSlots.length; i++) {
+        for (let j = i + 1; j < btSlots.length; j++) {
+          const si = btSlots[i], sj = btSlots[j];
+          const keyI = cellKey(si.day, si.shiftId), keyJ = cellKey(sj.day, sj.shiftId);
+          const asgnI = btSchedule[keyI] || [], asgnJ = btSchedule[keyJ] || [];
+          for (let ai = 0; ai < asgnI.length; ai++) {
+            for (let aj = 0; aj < asgnJ.length; aj++) {
+              const eA = asgnI[ai], eB = asgnJ[aj];
+              if (eA.employeeId === eB.employeeId) continue;
+              if (eA.position === "Supervisor" || eB.position === "Supervisor") continue;
+              const savedI = btSchedule[keyI], savedJ = btSchedule[keyJ];
+              btSchedule[keyI] = asgnI.filter((_, idx) => idx !== ai);
+              btSchedule[keyJ] = asgnJ.filter((_, idx) => idx !== aj);
+              if (!btCanWorkSlot(eA.employeeId, btSchedule, sj.day, sj.shiftId) ||
+                  !btCanWorkSlot(eB.employeeId, btSchedule, si.day, si.shiftId)) {
+                btSchedule[keyI] = savedI; btSchedule[keyJ] = savedJ; continue;
+              }
+              const eAObj = empMap.get(eA.employeeId), eBObj = empMap.get(eB.employeeId);
+              const posA = btPickPosition(eAObj, btSchedule[keyJ], sj.day, sj.shiftId);
+              const posB = btPickPosition(eBObj, btSchedule[keyI], si.day, si.shiftId);
+              if (!posA || !posB) { btSchedule[keyI] = savedI; btSchedule[keyJ] = savedJ; continue; }
+              btSchedule[keyI] = [...btSchedule[keyI], { employeeId: eB.employeeId, position: posB }];
+              btSchedule[keyJ] = [...btSchedule[keyJ], { employeeId: eA.employeeId, position: posA }];
+              // Verify role coverage
+              const nSI = slotHasRole(btSchedule[keyI], sourceEmps, "Scale");
+              const nMI = slotHasRole(btSchedule[keyI], sourceEmps, "Medical");
+              const nSJ = slotHasRole(btSchedule[keyJ], sourceEmps, "Scale");
+              const nMJ = slotHasRole(btSchedule[keyJ], sourceEmps, "Medical");
+              const oSI = slotHasRole(savedI, sourceEmps, "Scale");
+              const oMI = slotHasRole(savedI, sourceEmps, "Medical");
+              const oSJ = slotHasRole(savedJ, sourceEmps, "Scale");
+              const oMJ = slotHasRole(savedJ, sourceEmps, "Medical");
+              if ((!nSI && oSI) || (!nMI && oMI) || (!nSJ && oSJ) || (!nMJ && oMJ)) {
+                btSchedule[keyI] = savedI; btSchedule[keyJ] = savedJ; continue;
+              }
+              const newSc = btSoftScore(btSchedule);
+              const improv = softScore - newSc;
+              if (improv > bestImprov) {
+                bestImprov = improv;
+                bestAction = {
+                  keyI, keyJ,
+                  newI: btSchedule[keyI].map(a => ({...a})),
+                  newJ: btSchedule[keyJ].map(a => ({...a})),
+                  newSc,
+                };
+              }
+              btSchedule[keyI] = savedI; btSchedule[keyJ] = savedJ;
+            }
+          }
+        }
+      }
+      if (!bestAction) break;
+      btSchedule[bestAction.keyI] = bestAction.newI;
+      btSchedule[bestAction.keyJ] = bestAction.newJ;
+      softScore = bestAction.newSc;
+      totalSwaps++;
+    }
+    if (totalSwaps > 0) console.log(`[Phase 2] ${totalSwaps} swaps, score ${softScore}`);
+
+    // ── Write backtracking results to ns and rebuild tracking state ─────────
+    for (const { day, shiftId } of btSlots) {
+      const key = cellKey(day, shiftId);
+      ns[key] = btSchedule[key] || [];
+    }
+    sourceEmps.forEach(e => {
+      hourTracker[e.id] = 0;
+      shiftsWorked[e.id] = 0;
+      dayWorked[e.id] = new Set();
+    });
+    // Re-seed ext shift hours
+    (extShiftsArg||[]).forEach(ext => {
+      const pair = EXT_PAIRS.find(p => p.id === ext.pairId);
+      if (!pair) return;
+      if (ext.empAId && hourTracker[ext.empAId] !== undefined) hourTracker[ext.empAId] += extEmpHours(pair, true);
+      if (ext.empBId && hourTracker[ext.empBId] !== undefined) hourTracker[ext.empBId] += extEmpHours(pair, false);
+    });
+    // Count hours from schedule
+    for (const { day, shiftId } of btSlots) {
+      for (const a of (ns[cellKey(day, shiftId)] || [])) {
+        hourTracker[a.employeeId] = (hourTracker[a.employeeId] || 0) + SHIFT_HOURS;
+        shiftsWorked[a.employeeId] = (shiftsWorked[a.employeeId] || 0) + 1;
+        dayWorked[a.employeeId].add(day);
+      }
+    }
+    // Update domain matrix for post-processing compatibility
+    sourceEmps.forEach(emp => {
+      for (const day of DAYS) {
+        if (dayWorked[emp.id].has(day)) {
+          for (const s of SHIFTS) delete domains[emp.id][cellKey(day, s.id)];
+        }
+      }
+      const cap = emp.maxShiftsPerWeek;
+      if (cap != null && (shiftsWorked[emp.id] || 0) >= cap) domains[emp.id] = {};
+    });
   }
   // ── Shared helpers for Steps 4/5/5b ─────────────────────────────────────
   // These consolidate patterns that were repeated identically across every
@@ -2065,7 +2548,7 @@ function buildAutoFill(sourceEmps, cfg, empTimeOffDays, empPatterns, extShiftsAr
           if (asgn.length >= cap) break;
           const pos = pickPosition(emp, asgn, day, shift.id);
           if (!pos) continue;
-          if (pos === "Guard" && !isGuardOnly(emp) && hasGuardOnlyAvailable()) continue;
+          // Guard-only preference handled by backtracking; post-processing is last resort
           if (weekendCapHit(emp, day)) continue;
           hourTracker[emp.id]  = (hourTracker[emp.id]  || 0) + SHIFT_HOURS;
           shiftsWorked[emp.id] = (shiftsWorked[emp.id] || 0) + 1;
@@ -2095,12 +2578,14 @@ function buildAutoFill(sourceEmps, cfg, empTimeOffDays, empPatterns, extShiftsAr
       if (emp.employmentType !== "full-time") continue;
       if (!emp.willing16h) continue;
       if ((hourTracker[emp.id] || 0) >= FT_MIN_HOURS) continue;
+      if (emp.maxShiftsPerWeek != null && (shiftsWorked[emp.id] || 0) >= emp.maxShiftsPerWeek) continue;
       const empPlan = plan[emp.id];
       const plannedShift = empPlan?.shiftId;
       if (!plannedShift) continue;
       const adjShifts = ADJACENT[plannedShift] || [];
       for (const day of DAYS) {
         if ((hourTracker[emp.id] || 0) >= FT_MIN_HOURS) break;
+        if (emp.maxShiftsPerWeek != null && (shiftsWorked[emp.id] || 0) >= emp.maxShiftsPerWeek) break;
         const primaryKey = cellKey(day, plannedShift);
         const alreadyOnPrimary = (ns[primaryKey] || []).some(a => a.employeeId === emp.id);
         if (!alreadyOnPrimary) continue;
@@ -2108,6 +2593,7 @@ function buildAutoFill(sourceEmps, cfg, empTimeOffDays, empPatterns, extShiftsAr
         if (empTimeOffDays && empTimeOffDays.has(emp.id + "__" + day)) continue;
         for (const adjShift of adjShifts) {
           if ((hourTracker[emp.id] || 0) >= FT_MIN_HOURS) break;
+          if (emp.maxShiftsPerWeek != null && (shiftsWorked[emp.id] || 0) >= emp.maxShiftsPerWeek) break;
           if ((emp.blockedShifts || []).includes(adjShift)) continue;
           const adjKey = cellKey(day, adjShift);
           const adjAsgn = ns[adjKey] || [];
@@ -2149,6 +2635,7 @@ function buildAutoFill(sourceEmps, cfg, empTimeOffDays, empPatterns, extShiftsAr
         const replacement = sourceEmps.find(e => {
           if (e.employmentType !== "full-time") return false;
           if ((hourTracker[e.id] || 0) >= FT_MIN_HOURS) return false;
+          if (e.maxShiftsPerWeek != null && (shiftsWorked[e.id] || 0) >= e.maxShiftsPerWeek) return false;
           if (asgn.some(a => a.employeeId === e.id)) return false;
           if ((e.unavailableDays || []).includes(day)) return false;
           if (empTimeOffDays && empTimeOffDays.has(e.id + "__" + day)) return false;
@@ -2213,6 +2700,7 @@ function buildAutoFill(sourceEmps, cfg, empTimeOffDays, empPatterns, extShiftsAr
             if (!asgn.length) continue; // nothing to displace
 
             // FT employee must be eligible for this slot
+            if (ftEmp.maxShiftsPerWeek != null && (shiftsWorked[ftEmp.id] || 0) >= ftEmp.maxShiftsPerWeek) continue;
             if ((ftEmp.unavailableDays||[]).includes(day)) continue;
             if (empTimeOffDays && empTimeOffDays.has(ftEmp.id + "__" + day)) continue;
             if (isRestViolation(ftEmp, rg(ftEmp.id, ns, day, shift.id), minRest)) continue;
@@ -2274,12 +2762,14 @@ function buildAutoFill(sourceEmps, cfg, empTimeOffDays, empPatterns, extShiftsAr
 
             // ── Perform the ripple ──
             // Remove displaced PT/OC from original slot, insert FT employee
+            if (remainingAsgn.some(a => a.employeeId === ftEmp.id)) continue; // already in slot
             ns[key] = [...remainingAsgn, { employeeId: ftEmp.id, position: ftPos }];
             hourTracker[displacedEmp.id]  = Math.max(0, (hourTracker[displacedEmp.id]||0) - SHIFT_HOURS);
             shiftsWorked[displacedEmp.id] = Math.max(0, (shiftsWorked[displacedEmp.id]||0) - 1);
             dayWorked[displacedEmp.id]?.delete(day);
 
             // Place displaced PT/OC in their new slot
+            if ((ns[relocateKey]||[]).some(a => a.employeeId === displacedEmp.id)) continue; // already in slot
             ns[relocateKey] = [...(ns[relocateKey]||[]), { employeeId: displacedEmp.id, position: relocatePos }];
             hourTracker[displacedEmp.id]  = (hourTracker[displacedEmp.id]||0) + SHIFT_HOURS;
             shiftsWorked[displacedEmp.id] = (shiftsWorked[displacedEmp.id]||0) + 1;
@@ -2335,6 +2825,7 @@ function buildAutoFill(sourceEmps, cfg, empTimeOffDays, empPatterns, extShiftsAr
           if (empTimeOffDays && empTimeOffDays.has(e.id + "__" + day)) return false;
           if ((e.blockedShifts||[]).includes(shift.id)) return false;
           if (e.requiredShift && e.requiredShift !== shift.id) return false;
+          if (e.maxShiftsPerWeek != null && (shiftsWorked[e.id] || 0) >= e.maxShiftsPerWeek) return false;
           if (isRestViolation(e, rg(e.id, ns, day, shift.id), minRest)) return false;
           if (calcConsecutiveHours(e.id, ns, day, shift.id, extShiftsArg) > empMaxConsec(e)) return false;
           return true;
@@ -2547,6 +3038,25 @@ function buildAutoFill(sourceEmps, cfg, empTimeOffDays, empPatterns, extShiftsAr
   );
   if (fixCount > 0) console.log("[AutoFill] Violation minimizer fixed " + fixCount + " slot(s)");
 
+  // ── Final dedup safety net: remove duplicate employee entries in any slot ──
+  for (const day of DAYS) {
+    for (const shift of SHIFTS) {
+      const key = cellKey(day, shift.id);
+      const asgn = ns[key];
+      if (!asgn || asgn.length < 2) continue;
+      const seen = new Set();
+      const deduped = asgn.filter(a => {
+        if (seen.has(a.employeeId)) return false;
+        seen.add(a.employeeId);
+        return true;
+      });
+      if (deduped.length < asgn.length) {
+        console.warn(`[Dedup] Removed ${asgn.length - deduped.length} duplicate(s) from ${day}/${shift.id}`);
+        ns[key] = deduped;
+      }
+    }
+  }
+
   return { schedule: ns, hourTracker, shiftsWorked, usedPatterns };
 }
 
@@ -2642,6 +3152,7 @@ function violationMinimizerPass(ns, sourceEmps, cfg, empTimeOffDays, extShiftsAr
             if (asgnSet.has(cand.id)) return false;
             if ((extBodiesBySlot.get(key) || new Set()).has(cand.id)) return false;
             if (!isClean(cand, day, shift.id, testSched)) return false;
+            if (cand.maxShiftsPerWeek != null && (shiftsWorked[cand.id] || 0) >= cand.maxShiftsPerWeek) return false;
             if (isFT(cand) && (hourTracker[cand.id]||0) >= OT_RELIEF_THRESHOLD) return false;
             if (cand.employmentType === "on-call") return false; // never swap IN on-call during violation fix
             return true;
@@ -2655,9 +3166,10 @@ function violationMinimizerPass(ns, sourceEmps, cfg, empTimeOffDays, extShiftsAr
           });
           const winner = candidates[0];
           ns[key] = [...asgn.slice(0,ai), { employeeId: winner.id, position: a.position }, ...asgn.slice(ai+1)];
-          hourTracker[emp.id]     = Math.max(0, (hourTracker[emp.id]||0) - SHIFT_HOURS);
-          hourTracker[winner.id]  = (hourTracker[winner.id]||0) + SHIFT_HOURS;
-          shiftsWorked[winner.id] = (shiftsWorked[winner.id]||0) + 1;
+          hourTracker[emp.id]      = Math.max(0, (hourTracker[emp.id]||0) - SHIFT_HOURS);
+          shiftsWorked[emp.id]     = Math.max(0, (shiftsWorked[emp.id]||0) - 1);
+          hourTracker[winner.id]   = (hourTracker[winner.id]||0) + SHIFT_HOURS;
+          shiftsWorked[winner.id]  = (shiftsWorked[winner.id]||0) + 1;
           swapsThisSweep++; fixCount++;
           break; // re-scan cell after swap
         }
@@ -2670,7 +3182,155 @@ function violationMinimizerPass(ns, sourceEmps, cfg, empTimeOffDays, extShiftsAr
 
 </script>
 
-<script type="text/babel">
+<script type="text/babel" data-presets="env,react">
+
+// ── Styled ConfirmDialog — replaces native alert/confirm ────────────────────
+// Usage: showConfirm({ title, message, items, confirmLabel, cancelLabel, variant })
+// Returns a Promise<boolean>. variant: "danger" | "warning" | "info" (default)
+const ConfirmDialogCtx = createContext(null);
+const useConfirm = () => useContext(ConfirmDialogCtx);
+
+function ConfirmDialogProvider({ children }) {
+  const [dialog, setDialog] = useState(null);
+  const resolveRef = useRef(null);
+
+  const showConfirm = useCallback((opts) => {
+    return new Promise((resolve) => {
+      resolveRef.current = resolve;
+      setDialog({
+        title:        opts.title || "Confirm",
+        message:      opts.message || "",
+        items:        opts.items || [],         // array of {msg, hard?} for violation lists
+        confirmLabel: opts.confirmLabel || "Confirm",
+        cancelLabel:  opts.cancelLabel || "Cancel",
+        variant:      opts.variant || "info",   // "danger" | "warning" | "info"
+        showCancel:   opts.showCancel !== false,
+      });
+    });
+  }, []);
+
+  const showAlert = useCallback((opts) => {
+    return new Promise((resolve) => {
+      resolveRef.current = resolve;
+      setDialog({
+        title:        opts.title || "Notice",
+        message:      opts.message || "",
+        items:        opts.items || [],
+        confirmLabel: opts.confirmLabel || "OK",
+        variant:      opts.variant || "info",
+        showCancel:   false,
+      });
+    });
+  }, []);
+
+  const handleConfirm = () => {
+    resolveRef.current?.(true);
+    setDialog(null);
+  };
+  const handleCancel = () => {
+    resolveRef.current?.(false);
+    setDialog(null);
+  };
+
+  useEffect(() => {
+    if (!dialog) return;
+    const handler = (e) => {
+      if (e.key === "Escape") handleCancel();
+      if (e.key === "Enter") handleConfirm();
+    };
+    document.addEventListener("keydown", handler);
+    return () => document.removeEventListener("keydown", handler);
+  }, [dialog]);
+
+  const variantColors = {
+    danger:  { accent: "var(--ss-danger)",  bg: "var(--ss-danger-12)",  border: "var(--ss-danger-40)" },
+    warning: { accent: "var(--ss-warning)", bg: "var(--ss-warning-15)", border: "var(--ss-warning-40)" },
+    info:    { accent: "var(--ss-accent)",  bg: "var(--ss-accent-12)",  border: "var(--ss-accent-40)" },
+  };
+
+  const variantIcons = {
+    danger:  "alert-octagon",
+    warning: "alert-triangle",
+    info:    "info",
+  };
+
+  return (
+    <ConfirmDialogCtx.Provider value={{ showConfirm, showAlert }}>
+      {children}
+      {dialog && (
+        <div style={{position:"fixed",inset:0,background:"rgba(0,0,0,0.65)",display:"flex",
+          alignItems:"center",justifyContent:"center",zIndex:2000,padding:20}}
+          onClick={e => { if (e.target === e.currentTarget) handleCancel(); }}>
+          <div style={{background:"var(--ss-surface)",border:"1px solid var(--ss-border)",
+            borderRadius:12,padding:0,maxWidth:480,width:"100%",
+            boxShadow:"0 20px 60px rgba(0,0,0,.5)",overflow:"hidden",
+            animation:"ss-dialog-in .15s ease-out"}}>
+
+            {/* Header */}
+            <div style={{padding:"18px 24px 14px",display:"flex",alignItems:"center",gap:12,
+              borderBottom:"1px solid var(--ss-border)"}}>
+              {Icon(variantIcons[dialog.variant] || "info", {
+                size:20, color: variantColors[dialog.variant]?.accent || "var(--ss-accent)"})}
+              <h3 style={{margin:0,fontSize:15,fontWeight:700,color:"var(--ss-text)",flex:1}}>{dialog.title}</h3>
+              <button onClick={handleCancel}
+                style={{background:"transparent",border:"none",color:"var(--ss-text-dim)",
+                  cursor:"pointer",fontSize:16,padding:"2px 4px",lineHeight:1}}>
+                {Icon("x", {size:16, color:"var(--ss-text-dim)"})}
+              </button>
+            </div>
+
+            {/* Body */}
+            <div style={{padding:"16px 24px"}}>
+              {dialog.message && (
+                <p style={{margin:"0 0 12px",fontSize:13,color:"var(--ss-text-muted)",lineHeight:1.5}}>
+                  {dialog.message}
+                </p>
+              )}
+              {dialog.items.length > 0 && (
+                <div style={{display:"flex",flexDirection:"column",gap:6,maxHeight:220,overflowY:"auto",
+                  padding:"8px 0"}}>
+                  {dialog.items.map((item, i) => {
+                    const isHard = item.hard;
+                    const col = isHard ? "var(--ss-danger)" : "var(--ss-warning)";
+                    return (
+                      <div key={i} style={{display:"flex",alignItems:"flex-start",gap:8,
+                        padding:"6px 10px",borderRadius:5,
+                        background: isHard ? "var(--ss-danger-06)" : "var(--ss-warning-0a)",
+                        border:"1px solid " + (isHard ? "var(--ss-danger-25)" : "var(--ss-warning-22)")}}>
+                        {Icon(isHard ? "x-circle" : "alert-triangle", {size:13, color:col,
+                          style:{marginTop:1}})}
+                        <span style={{fontSize:12,color:"var(--ss-text)",lineHeight:1.4}}>
+                          {item.msg}
+                        </span>
+                      </div>
+                    );
+                  })}
+                </div>
+              )}
+            </div>
+
+            {/* Footer */}
+            <div style={{padding:"12px 24px 18px",display:"flex",justifyContent:"flex-end",gap:8,
+              borderTop:"1px solid var(--ss-border)"}}>
+              {dialog.showCancel && (
+                <button onClick={handleCancel}
+                  className="ss-btn ss-btn-md ss-btn-secondary">
+                  {dialog.cancelLabel}
+                </button>
+              )}
+              <button onClick={handleConfirm}
+                className={"ss-btn ss-btn-md " + (dialog.variant==="danger" ? "ss-btn-danger" : "ss-btn-primary")}
+                style={dialog.variant==="danger" ? {background:"var(--ss-danger)",color:"#fff",borderColor:"var(--ss-danger)"} : {}}>
+                {dialog.confirmLabel}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+    </ConfirmDialogCtx.Provider>
+  );
+}
+
 function ExcelPreviewModal({ onDownload, onClose }) {
   const { employees } = useRoster();
   const { schedule, extShifts, trainingBlocks, weekStart } = useSchedule();
@@ -3394,7 +4054,7 @@ function TestPopulationModal({ onGenerate, onCancel }) {
         padding:28,maxWidth:560,width:"100%",boxShadow:"0 20px 60px rgba(0,0,0,0.6)",
         maxHeight:"90vh",overflowY:"auto"}}>
         <div style={{display:"flex",alignItems:"center",gap:10,marginBottom:6}}>
-          <span style={{fontSize:22}}>🧪</span>
+          {Icon("flask-conical", {size:22, color:"var(--ss-accent)"})}
           <h2 style={{margin:0,fontSize:16,fontWeight:700,color:"var(--ss-accent)"}}>GENERATE TEST ROSTER</h2>
         </div>
         <p style={{margin:"0 0 20px",fontSize:12,color:"var(--ss-text-muted)"}}>
@@ -3470,7 +4130,7 @@ function CopyWeekModal({ onSave, onLoad, onDelete, onClose }) {
         padding:28,maxWidth:480,width:"100%",boxShadow:"0 20px 60px rgba(0,0,0,0.6)",maxHeight:"85vh",overflowY:"auto"}}>
         <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",marginBottom:20}}>
           <div style={{display:"flex",alignItems:"center",gap:10}}>
-            <span style={{fontSize:20}}>💾</span>
+            {Icon("save", {size:20, color:"var(--ss-accent)"})}
             <h2 style={{margin:0,fontSize:16,fontWeight:700,color:"var(--ss-accent)"}}>SAVED WEEKS</h2>
           </div>
           <button onClick={onClose} style={{background:"transparent",border:"none",color:"var(--ss-text-dim)",
@@ -3573,7 +4233,7 @@ function ExtShiftApprovalModal({ suggestions, onApprove, onCancel }) {
         padding:28,maxWidth:520,width:"100%",boxShadow:"0 20px 60px rgba(0,0,0,0.6)",maxHeight:"90vh",overflowY:"auto"}}>
 
         <div style={{display:"flex",alignItems:"center",gap:10,marginBottom:6}}>
-          <span style={{fontSize:22}}>⏱</span>
+          {Icon("timer", {size:22, color:empColor})}
           <h2 style={{margin:0,fontSize:16,fontWeight:700,color:empColor}}>12-HOUR EXTENDED SHIFT APPROVAL</h2>
         </div>
         <p style={{margin:"0 0 18px",fontSize:12,color:"var(--ss-text-muted)",lineHeight:1.6}}>
@@ -3690,7 +4350,7 @@ function ExtShiftApprovalModal({ suggestions, onApprove, onCancel }) {
                     </div>
                     <div style={{fontSize:10,color:"var(--ss-text-muted)"}}>
                       {emp.employmentType==="full-time"?"FT":"PT"} ·
-                      {" "}+{EXT_SHIFT_HOURS}h this day
+                      {" "}+{extEmpHours(s.pair, i===0)}h this day
                     </div>
                   </div>
                 ))}
@@ -3709,7 +4369,7 @@ function ExtShiftApprovalModal({ suggestions, onApprove, onCancel }) {
               padding:"10px 14px",marginBottom:18,fontSize:11,color:"var(--ss-warning-readable)"}}>
               <div style={{fontWeight:700,marginBottom:4}}>⚠ Before approving, confirm:</div>
               <div style={{lineHeight:1.7}}>
-                • Each employee will work {EXT_SHIFT_HOURS} consecutive hours<br/>
+                • empA will work {extEmpHours(s.pair,true)}h, empB will work {extEmpHours(s.pair,false)}h<br/>
                 • This should only be used when no normal 8-hour solution is possible<br/>
                 • Extended hours count toward weekly totals and may trigger overtime<br/>
                 • Employees retain the right to refuse extended assignments
@@ -4013,7 +4673,7 @@ function ManualPairModal({ initialDay, onApprove, onCancel }) {
 
         {}
         <div style={{display:"flex",alignItems:"center",gap:10,marginBottom:6}}>
-          <span style={{fontSize:22}}>⏱</span>
+          {Icon("timer", {size:22, color:"#7c3aed"})}
           <h2 style={{margin:0,fontSize:16,fontWeight:700,color:"#7c3aed"}}>
             {isSwing ? `SWING SHIFT — ${pair?.label || ""}` : "PAIR EMPLOYEES — 12-HOUR SHIFTS"}
           </h2>
@@ -4203,6 +4863,35 @@ function ManualPairModal({ initialDay, onApprove, onCancel }) {
             </div>
           </div>
         )}
+
+        {(()=>{
+          // Warn if any selected employee already has a regular schedule assignment on this day
+          // that falls OUTSIDE the ext pair's dedup window — those hours will stack, not replace.
+          const warnings = [];
+          [[empAId, pair?.covers], [empBId, pair?.coversB || pair?.covers]].forEach(([eid, coveredShifts]) => {
+            if (!eid || !coveredShifts) return;
+            const emp = employees.find(e => e.id === eid);
+            if (!emp) return;
+            const daySlots = Object.entries(schedule)
+              .filter(([key]) => key.startsWith(day+"__"))
+              .filter(([, asgn]) => asgn.some(x => x.employeeId === eid));
+            daySlots.forEach(([key]) => {
+              const shiftId = key.split("__")[1];
+              if (!coveredShifts.includes(shiftId)) {
+                const label = {first:"1st",second:"2nd",third:"3rd"}[shiftId] || shiftId;
+                warnings.push(`${emp.name} has a regular ${label} shift on ${day} that won't be replaced — hours will stack.`);
+              }
+            });
+          });
+          if (!warnings.length) return null;
+          return (
+            <div style={{marginTop:14,background:"var(--ss-danger-18)",border:"1px solid var(--ss-danger-50)",
+              borderRadius:6,padding:"10px 14px",fontSize:11,color:"var(--ss-danger)",fontWeight:600,lineHeight:1.6}}>
+              ⚠ Hours conflict — remove the regular assignment first if you want it replaced:
+              {warnings.map((w,i)=><div key={i} style={{marginTop:4,paddingLeft:10}}>• {w}</div>)}
+            </div>
+          );
+        })()}
 
         {}
         <div style={{display:"flex",gap:10,justifyContent:"flex-end",marginTop:24}}>
@@ -4967,7 +5656,7 @@ function MinimizeViolationsPanel({ onClose }) {
         {}
         <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",marginBottom:6,flexShrink:0}}>
           <div style={{display:"flex",alignItems:"center",gap:10}}>
-            <span style={{fontSize:20}}>🔧</span>
+            {Icon("wrench", {size:20, color:"var(--ss-accent)"})}
             <h2 style={{margin:0,fontSize:16,fontWeight:700,color:"var(--ss-text)"}}>MINIMIZE VIOLATIONS</h2>
           </div>
           <button onClick={onClose} style={{background:"transparent",border:"none",
@@ -4985,7 +5674,7 @@ function MinimizeViolationsPanel({ onClose }) {
               style={{background:"var(--ss-scale)",color:"#fff",border:"none",
                 padding:"9px 20px",borderRadius:6,cursor:"pointer",fontSize:12,
                 fontWeight:700,fontFamily:"inherit"}}>
-              ⚡ Fix All ({fixableCount} fixable)
+              {Icon("zap", {size:13, color:"#fff"})} Fix All ({fixableCount} fixable)
             </button>
             {fixedIds.size > 0 && (
               <span style={{fontSize:11,color:"var(--ss-scale)",fontWeight:600}}>
@@ -5162,7 +5851,7 @@ function RosterManager() {
   const iS = {
     background:"var(--ss-surface-alt)", border:"1px solid var(--ss-border)", color:"var(--ss-text)",
     padding:"10px 14px", borderRadius:6, outline:"none", fontSize:13,
-    fontFamily:"'JetBrains Mono',monospace", flex:"1 1 200px", boxSizing:"border-box",
+    fontFamily:"inherit", flex:"1 1 200px", boxSizing:"border-box",
   };
 
   return (
@@ -5905,7 +6594,7 @@ function EmployeeManager({ onOpenTestModal }) {
   );
 
   const iS = {background:"var(--ss-surface-alt)",border:"1px solid var(--ss-border)",color:"var(--ss-text)",
-    padding:"10px 14px",borderRadius:6,outline:"none",fontSize:14,fontFamily:"'JetBrains Mono',monospace"};
+    padding:"10px 14px",borderRadius:6,outline:"none",fontSize:14,fontFamily:"inherit"};
 
   const TypeToggle = ({val,set}) => (
     <div style={{display:"flex",borderRadius:6,overflow:"hidden",border:"1px solid var(--ss-border)",width:"fit-content"}}>
@@ -6256,7 +6945,7 @@ function EmployeeManager({ onOpenTestModal }) {
         border:"1px dashed var(--ss-accent-55)",borderRadius:8,
         display:"flex",alignItems:"center",justifyContent:"space-between",gap:12,flexWrap:"wrap"}}>
         <div>
-          <div style={{fontSize:13,fontWeight:700,color:"var(--ss-accent)",marginBottom:3}}>🧪 Test Mode</div>
+          <div style={{fontSize:13,fontWeight:700,color:"var(--ss-accent)",marginBottom:3,display:"flex",alignItems:"center",gap:6}}>{Icon("flask-conical", {size:13, color:"var(--ss-accent)"})} Test Mode</div>
           <div style={{fontSize:11,color:"var(--ss-text-dim)"}}>Instantly generate a randomized roster and auto-fill the schedule to preview staffing coverage.</div>
         </div>
         <button onClick={onOpenTestModal} style={{background:"var(--ss-accent)",color:"#fff",border:"none",
@@ -7766,16 +8455,17 @@ function SchedulePopout({ onClose }) {
   );
 }
 
-function EmpPicker({emp,day,sid,st,assign,getPos,subSource,onSub}) {
+function EmpPicker({emp,day,sid,st,assign,getPos,subSource,onSub,onHover}) {
   const { schedule, extShifts, weekStart } = useSchedule();
   const { timeOffReqs } = useTimeOff();
+  const { showConfirm } = useConfirm();
   const t = useTheme();
   const cfg = useSettings();
   const [sel,setSel] = useState(null);
   const pos = getPos(emp,day,sid);
   if (!pos.length) return null;
 
-  const currentHours  = calcHours(emp.id, schedule);
+  const currentHours  = calcHours(emp.id, schedule, extShifts||[]);
   const wouldBeOver   = emp.employmentType==="full-time" && currentHours>=40;
   const isUnavailable = (emp.unavailableDays||[]).includes(day);
   const restGap       = calcRestGap(emp.id, schedule, day, sid);
@@ -7787,11 +8477,13 @@ function EmpPicker({emp,day,sid,st,assign,getPos,subSource,onSub}) {
   const hasFatigueWarning = shortRest || tooManyNights;
   const isSubMode = subSource && subSource.day === day && subSource.shiftId === sid;
   const warningColor = isSubMode ? "var(--ss-scale)" : isUnavailable ? "var(--ss-danger)" : hasFatigueWarning ? "var(--ss-fatigue)" : wouldBeOver ? "var(--ss-warning)" : "var(--ss-border)";
-  const doAssign = (position) => {
+  const doAssign = async (position) => {
     if (isSubMode) {
       onSub(subSource, emp.id, subSource.position);
       return;
     }
+    // Hard block: maxShiftsPerWeek cap reached
+    if (emp.maxShiftsPerWeek != null && countShiftsInWeek(emp.id, schedule) >= emp.maxShiftsPerWeek) return;
     const empOtPref = emp.overtimePref && emp.overtimePref !== "neutral" ? emp.overtimePref : (cfg?.defaultOvertimePref || "neutral");
     const otPref    = emp.employmentType === "full-time" ? empOtPref : "neutral";
     const warns = [];
@@ -7809,7 +8501,10 @@ function EmpPicker({emp,day,sid,st,assign,getPos,subSource,onSub}) {
       if (otPref === "blocked") warns.push(`${emp.name} prefers NO overtime — currently at ${currentHours}h.`);
       else warns.push(`${emp.name} is at ${currentHours}h this week — overtime.`);
     }
-    if (warns.length && !window.confirm(warns.join("\n\n")+"\n\nAssign anyway?")) return;
+    if (warns.length) {
+      const ok = await showConfirm({title:"Assignment Warnings",message:"Assign anyway?",items:warns.map(m=>({msg:m,hard:false})),confirmLabel:"Assign",variant:"warning"});
+      if (!ok) return;
+    }
     assign(day,sid,emp.id,position);
   };
 
@@ -7833,8 +8528,8 @@ function EmpPicker({emp,day,sid,st,assign,getPos,subSource,onSub}) {
     }} style={{background:"var(--ss-surface)",border:"1px solid "+warningColor,borderRadius:3,color:"var(--ss-text)",
       cursor:"pointer",fontSize:10,padding:"5px 8px",textAlign:"left",fontFamily:"inherit",fontWeight:600,
       display:"flex",alignItems:"center",justifyContent:"space-between",gap:6,opacity:isUnavailable?0.6:1}}
-       onMouseEnter={e=>e.currentTarget.style.borderColor="var(--ss-accent)"}
-       onMouseLeave={e=>e.currentTarget.style.borderColor=warningColor}>
+       onMouseEnter={e=>{ onHover?.(emp); e.currentTarget.style.borderColor="var(--ss-accent)"; }}
+       onMouseLeave={e=>{ onHover?.(null); e.currentTarget.style.borderColor=warningColor; }}>
       <span style={{display:"flex",alignItems:"center",gap:4}}>
         {emp.name}
         {badge&&<span style={{color:badgeColor,fontSize:8,fontWeight:800,background:badgeColor+"20",
@@ -8169,7 +8864,7 @@ function WeekPickerBar({ weekStart, setWeekStart, stepWeek, t }) {
 
 function EmpPickerSearch({ day, shift, subSource, unassigned, getAssignable,
   assignEmp, schedule, extShifts, timeOffReqs, weekStart, executeSub, st,
-  setEditingCell, setSubSource, t }) {
+  setEditingCell, setSubSource, t, onHoverEmp }) {
   const [pickSearch, setPickSearch] = useState("");
   const pickList = (subSource && subSource.day===day && subSource.shiftId===shift.id
     ? employees.filter(e => e.id !== subSource.employeeId && getAssignable(e,day,shift.id).length>0)
@@ -8188,7 +8883,8 @@ function EmpPickerSearch({ day, shift, subSource, unassigned, getAssignable,
         {pickList.map(emp=>(
           <EmpPicker key={emp.id} emp={emp} day={day} sid={shift.id} st={st}
             assign={assignEmp} getPos={getAssignable}
-            subSource={subSource} onSub={executeSub}/>
+            subSource={subSource} onSub={executeSub}
+            onHover={onHoverEmp}/>
         ))}
         {pickList.length===0&&(
           <div style={{fontSize:10,color:"var(--ss-text-dim)",textAlign:"center",padding:4}}>
@@ -8205,14 +8901,16 @@ function ScheduleGrid({ onOpenTestModal }) {
   const { schedule, setSchedule, extShifts, setExtShifts, trainingBlocks, setTrainingBlocks, weekStart, setWeekStart, scheduleStale: scheduleStaleP, setScheduleStale: setScheduleStaleProp, empTimeOffDays } = useSchedule();
   const { history, setHistory, savedWeeks, setSavedWeeks } = useHistory();
   const { timeOffReqs } = useTimeOff();
-  const { highlightSlot, clearHighlightSlot, pendingAutoFill, clearPendingAutoFill } = useUI();
+  const { highlightSlot, clearHighlightSlot, pendingAutoFill, clearPendingAutoFill, mobileView, setMobileView } = useUI();
   const t = useTheme();
   const cfg = useSettings();
+  const { showConfirm, showAlert } = useConfirm();
   const [editingCell,      setEditingCell]     = useState(null);
   const [swapSource,        setSwapSource]        = useState(null);
   const [subSource,         setSubSource]         = useState(null);
   const [dragEmp,          setDragEmp]         = useState(null);
   const [dragChip,         setDragChip]         = useState(null); // {employeeId,day,shiftId,position}
+  const [hoverPickEmp,     setHoverPickEmp]     = useState(null); // employee hovered in EmpPicker list
   const [dragBarOpen,      setDragBarOpen]      = useState(true);
   const [overtimeItems,    setOvertimeItems]   = useState(null);
   const [pendingSchedule,  setPendingSchedule] = useState(null);
@@ -8228,6 +8926,7 @@ function ScheduleGrid({ onOpenTestModal }) {
   const [undoStack,        setUndoStack]        = useState([]);
   const [redoStack,        setRedoStack]        = useState([]);
   const [bannersExpanded,  setBannersExpanded]  = useState(false);
+  const [mobileDay,        setMobileDay]        = useState(DAYS[1]); // default Monday
   const [showPublish,      setShowPublish]       = useState(false);
   const [autoFillRunning,  setAutoFillRunning]  = useState(false);
   const [autoFillProgress, setAutoFillProgress] = useState(null); // {attempt, bestErrors, bestWarns}
@@ -8245,6 +8944,9 @@ function ScheduleGrid({ onOpenTestModal }) {
     document.addEventListener("keydown", handler);
     return () => document.removeEventListener("keydown", handler);
   }, [swapSource, subSource, dragEmp, dragChip, editingCell]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // Clear picker-hover shadow when the picker is closed
+  useEffect(() => { if (!editingCell) setHoverPickEmp(null); }, [editingCell]);
 
   const autoSaveToHistory = useCallback((ws, sched) => {
     const hasAssignments = Object.values(sched).some(a => a.length > 0);
@@ -8332,7 +9034,14 @@ function ScheduleGrid({ onOpenTestModal }) {
   const getAsgn       = (d,s) => displaySchedule[cellKey(d,s)]||[];
   const getName       = (id)  => employees.find(e=>e.id===id)?.name||"?";
   const getAssignable = (emp,d,s) => getAvailPos(d,s).filter(p=>canFillPos(emp,p,d));
-  const unassigned    = (d,s) => {const ids=getAsgn(d,s).map(a=>a.employeeId);return employees.filter(e=>!ids.includes(e.id));};
+  const unassigned    = (d,s) => {
+    const ids=getAsgn(d,s).map(a=>a.employeeId);
+    return employees.filter(e=>{
+      if(ids.includes(e.id)) return false;                   // already in this cell
+      if(e.maxShiftsPerWeek!=null && countShiftsInWeek(e.id,schedule)>=e.maxShiftsPerWeek) return false; // at weekly cap
+      return true;
+    });
+  };
 
   const stableEmpOrder = useMemo(() => {
     const shiftRank = { first:0, second:1, third:2 };
@@ -8404,10 +9113,20 @@ function ScheduleGrid({ onOpenTestModal }) {
 
   const assignEmp = (d,s,eid,pos) => {
     if (isReadOnly) return;
-    const key=cellKey(d,s); const cur=schedule[key]||[];
+    const key=cellKey(d,s);
+    const cur=schedule[key]||[];
+    // Hard block: already in this cell, or cell full
     if(cur.length>=getEffectiveSlotCount(d,s,extShifts)||cur.some(a=>a.employeeId===eid)) return;
+    // Hard block: maxShiftsPerWeek cap reached
+    const emp = employees.find(e=>e.id===eid);
+    if(emp && emp.maxShiftsPerWeek!=null && countShiftsInWeek(eid,schedule)>=emp.maxShiftsPerWeek) return;
     pushUndo();
-    setSchedule(p=>({...p,[key]:[...cur,{employeeId:eid,position:pos}]}));
+    // Use updater to read latest state (prevents race conditions on rapid clicks)
+    setSchedule(p=>{
+      const latest=p[key]||[];
+      if(latest.some(a=>a.employeeId===eid)) return p; // double-check inside updater
+      return {...p,[key]:[...latest,{employeeId:eid,position:pos}]};
+    });
     setEditingCell(null);
   };
   const removeAsgn = (d,s,eid) => {
@@ -8495,7 +9214,7 @@ function ScheduleGrid({ onOpenTestModal }) {
     });
   };
 
-  const executeSub = (subSrc, newEmpId, newPosition) => {
+  const executeSub = async (subSrc, newEmpId, newPosition) => {
     const subEmp = employees.find(e => e.id === subSrc.employeeId);
     const newEmp = employees.find(e => e.id === newEmpId);
     if (!subEmp || !newEmp) return;
@@ -8515,16 +9234,22 @@ function ScheduleGrid({ onOpenTestModal }) {
     const hardBlocks = viols.filter(v => v.hard);
     const softWarns  = viols.filter(v => !v.hard);
     if (hardBlocks.length > 0) {
-      alert("Sub blocked:\n\n" + hardBlocks.map(v => "• " + v.msg).join("\n")
-        + (softWarns.length ? "\n\nAlso note:\n" + softWarns.map(v => "• " + v.msg).join("\n") : ""));
+      showAlert({
+        title: "Sub Blocked",
+        message: softWarns.length ? "This substitution cannot proceed. Additional notes are listed below." : "This substitution cannot proceed.",
+        items: [...hardBlocks, ...softWarns],
+        variant: "danger",
+      });
       return;
     }
     if (softWarns.length > 0) {
-      const ok = window.confirm(
-        "Sub warnings — approve to continue:\n\n"
-        + softWarns.map(v => "⚠ " + v.msg).join("\n")
-        + "\n\nProceed with sub?"
-      );
+      const ok = await showConfirm({
+        title: "Sub Warnings",
+        message: "Approve to continue with the substitution.",
+        items: softWarns,
+        confirmLabel: "Proceed with Sub",
+        variant: "warning",
+      });
       if (!ok) return;
     }
     pushUndo();
@@ -8541,7 +9266,7 @@ function ScheduleGrid({ onOpenTestModal }) {
     setEditingCell(null);
   };
 
-  const handleChipClick = (empId, day, shiftId, position, e) => {
+  const handleChipClick = async (empId, day, shiftId, position, e) => {
     e.stopPropagation();
     if (isReadOnly) return;
     if (swapSource) {
@@ -8555,13 +9280,22 @@ function ScheduleGrid({ onOpenTestModal }) {
       const hardBlocks = viols.filter(v => v.hard);
       const softWarns  = viols.filter(v => !v.hard);
       if (hardBlocks.length > 0) {
-        alert("Swap blocked:\n\n" + hardBlocks.map(v => "• " + v.msg).join("\n")
-          + (softWarns.length ? "\n\nAlso note:\n" + softWarns.map(v => "• " + v.msg).join("\n") : ""));
+        showAlert({
+          title: "Swap Blocked",
+          message: softWarns.length ? "This swap cannot proceed. Additional notes listed below." : "This swap cannot proceed.",
+          items: [...hardBlocks, ...softWarns],
+          variant: "danger",
+        });
         return;
       }
       if (softWarns.length > 0) {
-        const ok = window.confirm("Swap warnings — approve to continue:\n\n"
-          + softWarns.map(v => "⚠ " + v.msg).join("\n") + "\n\nProceed with swap?");
+        const ok = await showConfirm({
+          title: "Swap Warnings",
+          message: "Approve to continue with the swap.",
+          items: softWarns,
+          confirmLabel: "Proceed with Swap",
+          variant: "warning",
+        });
         if (!ok) return;
       }
       executeSwap(swapSource, { employeeId:empId, day, shiftId, position });
@@ -8607,10 +9341,12 @@ function ScheduleGrid({ onOpenTestModal }) {
     return{hasScale,hasMedical:hasMed,isFull,missing,ok:missing.length===0,cellExtList};
   };
 
-  const handleDrop = (d,s) => {
+  const handleDrop = async (d,s) => {
     if(!dragEmp) return;
     const cur=getAsgn(d,s);
     if(cur.length>=getEffectiveSlotCount(d,s,extShifts)||cur.some(a=>a.employeeId===dragEmp.id)) return;
+    // Hard block: maxShiftsPerWeek cap reached
+    if(dragEmp.maxShiftsPerWeek!=null && countShiftsInWeek(dragEmp.id,schedule)>=dragEmp.maxShiftsPerWeek) return;
     const ap=getAssignable(dragEmp,d,s); if(!ap.length) return;
     const st=getStatus(d,s);
 
@@ -8627,7 +9363,7 @@ function ScheduleGrid({ onOpenTestModal }) {
     const shortRest = rest < (cfg?.minRestHours??MIN_REST_HOURS) && rest !== Infinity;
     const nights = s==="third" ? calcConsecutiveNights(dragEmp.id, schedule, d, s) : 0;
     const tooManyNights = nights >= (cfg?.maxConsecutiveNights??MAX_CONSECUTIVE_NIGHTS);
-    const currentHours = calcHours(dragEmp.id, schedule);
+    const currentHours = calcHours(dragEmp.id, schedule, extShifts||[]);
     const wouldBeOver = dragEmp.employmentType==="full-time" && currentHours>=40;
     if (consecHDrag > empMaxConsec(dragEmp)) { setDragOver(null); return; }
     if (isUnavailable) warns.push(`${dragEmp.name} is marked unavailable on ${d}.`);
@@ -8639,7 +9375,10 @@ function ScheduleGrid({ onOpenTestModal }) {
       if (dragOtPref === "blocked") warns.push(`${dragEmp.name} prefers NO overtime — currently at ${currentHours}h.`);
       else warns.push(`${dragEmp.name} would go to ${currentHours+SHIFT_HOURS}h (overtime).`);
     }
-    if (warns.length && !window.confirm(warns.join("\n\n")+"\n\nAssign anyway?")) { setDragEmp(null); return; }
+    if (warns.length) {
+      const ok = await showConfirm({title:"Assignment Warnings",message:"Assign anyway?",items:warns.map(m=>({msg:m,hard:false})),confirmLabel:"Assign",variant:"warning"});
+      if (!ok) { setDragEmp(null); return; }
+    }
     assignEmp(d,s,dragEmp.id,pos); setDragEmp(null);
   };
 
@@ -9085,7 +9824,7 @@ function ScheduleGrid({ onOpenTestModal }) {
   const suggestExtShifts = useCallback((day) => {
     const suggestions = findExtShiftPairs(day, employees, schedule, extShifts||[]);
     if (suggestions.length) setExtSuggestions(suggestions);
-    else alert("No valid 12-hour pairing found for " + day + ". All potential pairs are unavailable or already assigned.");
+    else showAlert({title:"No Pairs Available",message:"No valid 12-hour pairing found for " + day + ". All potential pairs are unavailable or already assigned.",variant:"warning"});
   }, [employees, schedule, extShifts]);
 
   const approveExtShift = useCallback((suggestion) => {
@@ -9140,10 +9879,13 @@ function ScheduleGrid({ onOpenTestModal }) {
       <div style={{marginBottom:20}}>Add employees first to build a schedule.</div>
       <button onClick={onOpenTestModal} style={{background:"var(--ss-accent)",color:"#fff",border:"none",
         padding:"11px 24px",borderRadius:6,cursor:"pointer",fontSize:13,fontWeight:700,fontFamily:"inherit"}}>
-        🧪 Generate Test Roster
+        {Icon("flask-conical", {size:14, color:"#fff"})} Generate Test Roster
       </button>
     </div>
   );
+
+  // Conflict shadow: employee being dragged from roster bar, or hovered in the EmpPicker list
+  const shadowEmp = dragEmp || hoverPickEmp;
 
   return (
     <>
@@ -9179,7 +9921,7 @@ function ScheduleGrid({ onOpenTestModal }) {
           padding:"12px 18px",marginBottom:12,display:"flex",alignItems:"center",
           justifyContent:"space-between",gap:16,flexWrap:"wrap"}}>
           <div style={{display:"flex",alignItems:"center",gap:10}}>
-            <span style={{fontSize:18}}>🔁</span>
+            {Icon("refresh-cw", {size:18, color:"var(--ss-accent)"})}
             <div>
               <div style={{fontSize:13,fontWeight:700,color:"var(--ss-accent)"}}>Schedule may need recalculating</div>
               <div style={{fontSize:11,color:"var(--ss-text-muted)",marginTop:2}}>
@@ -9188,14 +9930,10 @@ function ScheduleGrid({ onOpenTestModal }) {
             </div>
           </div>
           <div style={{display:"flex",gap:8,flexShrink:0}}>
-            <button onClick={()=>runAutoFill()} style={{background:"var(--ss-accent)",color:"#fff",border:"none",
-              padding:"9px 20px",borderRadius:6,cursor:"pointer",fontSize:13,fontWeight:700,
-              fontFamily:"inherit",display:"flex",alignItems:"center",gap:6}}>
-              ⚡ Recalculate Schedule
+            <button onClick={()=>runAutoFill()} className="ss-btn ss-btn-md ss-btn-primary">
+              {Icon("zap", {size:14, color:"#fff"})} Recalculate Schedule
             </button>
-            <button onClick={()=>setScheduleStale(false)} style={{background:"transparent",color:"var(--ss-text-muted)",
-              border:"1px solid var(--ss-border)",padding:"9px 14px",borderRadius:6,cursor:"pointer",
-              fontSize:12,fontWeight:600,fontFamily:"inherit"}}>
+            <button onClick={()=>setScheduleStale(false)} className="ss-btn ss-btn-md ss-btn-secondary">
               Dismiss
             </button>
           </div>
@@ -9213,7 +9951,7 @@ function ScheduleGrid({ onOpenTestModal }) {
             {}
             {!bannersExpanded && (
               <button onClick={()=>setBannersExpanded(true)}
-                style={{display:"flex",alignItems:"center",gap:8,background:"var(--ss-warning-14)",
+                style={{display:"flex",alignItems:"center",gap:8,background:"var(--ss-warning-15)",
                   border:"1px solid var(--ss-warning-50)",borderRadius:6,padding:"5px 12px",
                   cursor:"pointer",fontFamily:"inherit",width:"100%",textAlign:"left"}}>
                 <span style={{fontSize:11,fontWeight:700,color:"var(--ss-warning)"}}>⚠ {totalBanners} schedule notice{totalBanners!==1?"s":""}</span>
@@ -9250,7 +9988,7 @@ function ScheduleGrid({ onOpenTestModal }) {
       {viewingHistory && (
         <div style={{background:"var(--ss-warning-dim)",border:"1px solid var(--ss-warning)",borderRadius:6,
           padding:"9px 16px",marginBottom:10,display:"flex",alignItems:"center",gap:10,flexWrap:"wrap"}}>
-          <span style={{fontSize:16}}>🔒</span>
+          {Icon("lock", {size:16, color:"var(--ss-warning)"})}
           <div style={{flex:1}}>
             <div style={{fontSize:12,fontWeight:700,color:"var(--ss-warning)"}}>
               VIEWING HISTORY — {viewingHistory.label || historyLabel(viewingHistory)}
@@ -9267,6 +10005,171 @@ function ScheduleGrid({ onOpenTestModal }) {
       <WeekPickerBar weekStart={weekStart} setWeekStart={setWeekStart} stepWeek={stepWeek} t={t} />
 
       {}
+      {mobileView ? (
+        <div style={{maxWidth:480,margin:"0 auto",paddingTop:4}}>
+          {}
+          <div style={{display:"flex",gap:4,overflowX:"auto",paddingBottom:4,marginBottom:12,
+            scrollbarWidth:"none",msOverflowStyle:"none"}}>
+            {DAYS.map((d,di)=>{
+              const dateStr=(window.__schedWeekDates||[])[di]||"";
+              const isSel=mobileDay===d;
+              const isWknd=!isWeekday(d);
+              const dayAsgns=SHIFTS.flatMap(s=>getAsgn(d,s.id));
+              const dayMax=SHIFTS.reduce((n,s)=>n+getEffectiveSlotCount(d,s.id,extShifts),0);
+              const dayFull=dayAsgns.length>=dayMax&&SHIFTS.every(s=>getStatus(d,s.id).ok);
+              const dayWarn=!dayFull&&dayAsgns.length>0;
+              return (
+                <button key={d} onClick={()=>setMobileDay(d)} style={{
+                  flexShrink:0,padding:"9px 14px",borderRadius:7,border:"none",
+                  cursor:"pointer",fontFamily:"inherit",textAlign:"center",
+                  background:isSel?"var(--ss-accent)":"var(--ss-surface-alt)",
+                  color:isSel?"#fff":isWknd?"var(--ss-text-muted)":"var(--ss-text)",
+                  fontWeight:700,fontSize:12,transition:"all .15s",
+                  boxShadow:isSel?"0 2px 8px var(--ss-accent-40)":"none"}}>
+                  <div>{d.substring(0,3).toUpperCase()}</div>
+                  {dateStr&&<div style={{fontSize:9,marginTop:2,opacity:.75}}>{dateStr}</div>}
+                  <div style={{width:5,height:5,borderRadius:"50%",margin:"4px auto 0",
+                    background:isSel?"#fff":dayFull?"var(--ss-scale)":dayWarn?"var(--ss-warning)":"transparent"}}/>
+                </button>
+              );
+            })}
+          </div>
+
+          {}
+          {SHIFTS.map(shift=>{
+            const asgn=getAsgn(mobileDay,shift.id);
+            const max=getEffectiveSlotCount(mobileDay,shift.id,extShifts);
+            const st=getStatus(mobileDay,shift.id);
+            const isEd=editingCell?.day===mobileDay&&editingCell?.shiftId===shift.id;
+            const borderCol=st.isFull&&st.ok?"var(--ss-scale)":asgn.length>0&&!st.ok?"var(--ss-warning)":asgn.length===0?"var(--ss-border)":"var(--ss-border)";
+            return (
+              <div key={shift.id} style={{marginBottom:10,border:"1px solid "+borderCol,
+                borderRadius:8,overflow:"hidden",background:"var(--ss-surface)"}}>
+                <div style={{display:"flex",alignItems:"center",gap:10,padding:"10px 14px",
+                  background:"var(--ss-surface-alt)",borderLeft:"4px solid "+sC(shift.id,t)}}>
+                  <div style={{flex:1}}>
+                    <div style={{fontWeight:700,fontSize:13,color:"var(--ss-text)"}}>{shift.label}</div>
+                    <div style={{fontSize:10,color:"var(--ss-text-dim)",marginTop:1}}>{shift.time}</div>
+                  </div>
+                  <span style={{fontSize:11,fontWeight:700,
+                    color:st.isFull&&st.ok?"var(--ss-scale)":asgn.length>0?"var(--ss-warning)":"var(--ss-text-dim)"}}>
+                    {asgn.length}/{max}
+                  </span>
+                  {!isReadOnly&&(
+                    <button onClick={()=>setEditingCell(isEd?null:{day:mobileDay,shiftId:shift.id})}
+                      style={{background:isEd?"var(--ss-accent)":"transparent",
+                        color:isEd?"#fff":"var(--ss-text-muted)",border:"1px solid "+(isEd?"var(--ss-accent)":"var(--ss-border)"),
+                        borderRadius:5,cursor:"pointer",padding:"5px 12px",fontSize:11,fontWeight:700,fontFamily:"inherit"}}>
+                      {isEd?"✕":"+ Add"}
+                    </button>
+                  )}
+                </div>
+                <div style={{padding:"8px 12px",display:"flex",flexDirection:"column",gap:6}}>
+                  {asgn.length===0&&!isEd&&(
+                    <div style={{fontSize:11,color:"var(--ss-text-dim)",padding:"4px 0",fontStyle:"italic"}}>No assignments</div>
+                  )}
+                  {asgn.map(a=>{
+                    const emp=employees.find(e=>e.id===a.employeeId);
+                    const nameCol=emp?.employmentType==="on-call"?"#f97316":emp?.employmentType==="part-time"?"#22c55e":"var(--ss-text)";
+                    const h=calcHours(a.employeeId,displaySchedule,extShifts);
+                    const hCol=h>=48?"var(--ss-danger)":h>=40?"var(--ss-scale)":h>0?"var(--ss-warning)":"var(--ss-text-dim)";
+                    const isFT=emp?.employmentType==="full-time";
+                    return (
+                      <div key={a.employeeId} style={{display:"flex",alignItems:"center",gap:8,
+                        background:"var(--ss-surface-alt)",borderRadius:5,padding:"9px 12px"}}>
+                        <span style={{width:7,height:7,borderRadius:"50%",background:pC(a.position,t),flexShrink:0}}/>
+                        <span style={{flex:1,fontWeight:600,fontSize:13,color:nameCol,
+                          overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{getName(a.employeeId)}</span>
+                        {isFT&&<span style={{fontSize:9,fontWeight:700,color:hCol,background:hCol+"18",
+                          border:"1px solid "+hCol+"40",padding:"1px 5px",borderRadius:3,flexShrink:0}}>{h}h</span>}
+                        <span style={{fontSize:10,fontWeight:700,color:pC(a.position,t),flexShrink:0}}>{a.position.substring(0,3).toUpperCase()}</span>
+                        {!isReadOnly&&(
+                          <button onClick={()=>removeAsgn(mobileDay,shift.id,a.employeeId)}
+                            style={{background:"transparent",border:"none",color:"var(--ss-text-dim)",
+                              cursor:"pointer",fontSize:15,padding:"0 2px",lineHeight:1,flexShrink:0}}>✕</button>
+                        )}
+                      </div>
+                    );
+                  })}
+                  {isEd&&!isReadOnly&&(
+                    <div style={{marginTop:4,border:"1px solid var(--ss-accent-40)",borderRadius:6,
+                      background:"var(--ss-surface)",padding:8}}>
+                      <EmpPickerSearch
+                        day={mobileDay} shift={shift} subSource={null}
+                        unassigned={unassigned} getAssignable={getAssignable} assignEmp={assignEmp}
+                        schedule={schedule} extShifts={extShifts} timeOffReqs={timeOffReqs}
+                        weekStart={weekStart} executeSub={executeSub} st={st}
+                        setEditingCell={setEditingCell} setSubSource={setSubSource} t={t}
+                        onHoverEmp={setHoverPickEmp}/>
+                    </div>
+                  )}
+                </div>
+              </div>
+            );
+          })}
+
+          {}
+          {(extShifts||[]).filter(e=>e.day===mobileDay).map((ext,i)=>{
+            const pair=EXT_PAIRS.find(p=>p.id===ext.pairId);
+            if(!pair) return null;
+            return (
+              <div key={i} style={{marginBottom:10,border:"1px solid "+pair.color+"60",
+                borderRadius:8,overflow:"hidden",background:pair.color+"08"}}>
+                <div style={{display:"flex",alignItems:"center",gap:10,padding:"10px 14px",
+                  borderLeft:"4px solid "+pair.color}}>
+                  <div style={{flex:1}}>
+                    <div style={{fontWeight:700,fontSize:12,color:pair.color}}>{pair.label} — {pair.time}</div>
+                    <div style={{fontSize:10,color:"var(--ss-text-dim)",marginTop:1}}>Extended shift</div>
+                  </div>
+                  {!isReadOnly&&(
+                    <button onClick={()=>removeExtShift((extShifts||[]).indexOf(ext))}
+                      style={{background:"transparent",border:"1px solid var(--ss-border)",borderRadius:4,
+                        color:"var(--ss-text-dim)",cursor:"pointer",fontSize:10,padding:"4px 10px",fontFamily:"inherit"}}>
+                      Remove
+                    </button>
+                  )}
+                </div>
+                <div style={{padding:"8px 14px",display:"flex",flexDirection:"column",gap:6}}>
+                  {ext.empAId&&(
+                    <div style={{display:"flex",alignItems:"center",gap:8,
+                      background:"var(--ss-surface-alt)",borderRadius:5,padding:"8px 12px"}}>
+                      <span style={{fontSize:9,fontWeight:700,color:pair.color,background:pair.color+"18",
+                        border:"1px solid "+pair.color+"40",padding:"1px 6px",borderRadius:3,flexShrink:0}}>A</span>
+                      <span style={{flex:1,fontSize:12,fontWeight:600}}>{getName(ext.empAId)}</span>
+                      <span style={{fontSize:10,color:"var(--ss-text-dim)",flexShrink:0}}>
+                        {pair.id==="day"?"0600–1800":pair.id==="split"?"1400–0200":"1800–0600"}
+                      </span>
+                    </div>
+                  )}
+                  {!pair.isSwing&&ext.empBId&&(
+                    <div style={{display:"flex",alignItems:"center",gap:8,
+                      background:"var(--ss-surface-alt)",borderRadius:5,padding:"8px 12px"}}>
+                      <span style={{fontSize:9,fontWeight:700,color:"#0e7490",background:"#0e749018",
+                        border:"1px solid #0e749040",padding:"1px 6px",borderRadius:3,flexShrink:0}}>B</span>
+                      <span style={{flex:1,fontSize:12,fontWeight:600}}>{getName(ext.empBId)}</span>
+                      <span style={{fontSize:10,color:"var(--ss-text-dim)",flexShrink:0}}>
+                        {pair.id==="day"?"1800–0600":pair.id==="split"?"0200–1400 (+1d)":"0600–1800"}
+                      </span>
+                    </div>
+                  )}
+                </div>
+              </div>
+            );
+          })}
+
+          {}
+          {!isReadOnly&&(
+            <button onClick={()=>setManualPairDay(mobileDay)}
+              style={{width:"100%",background:"#7c3aed14",border:"1px dashed #7c3aed50",borderRadius:7,
+                color:"#7c3aed",cursor:"pointer",fontSize:12,padding:"10px 0",fontFamily:"inherit",
+                fontWeight:700,marginBottom:8,transition:"background .2s"}}
+              onMouseEnter={e=>{e.currentTarget.style.background="#7c3aed28";}}
+              onMouseLeave={e=>{e.currentTarget.style.background="#7c3aed14";}}>
+              ⏱ Add extended / swing shift for {mobileDay}
+            </button>
+          )}
+        </div>
+      ) : (
       <div style={{overflowX:"auto"}}>
         <div style={{minWidth:760}}>
           <div style={{display:"grid",gridTemplateColumns:"64px repeat(7,1fr)",gap:2,marginBottom:2}}>
@@ -9345,15 +10248,34 @@ function ScheduleGrid({ onOpenTestModal }) {
                 const isBodyGap   = asgn.filter(a=>a.position!=="Supervisor").length < (max - ((extShifts||[]).filter(e=>extCovers(e,day,shift.id)).length));
                 const isRoleGap   = !st.ok && !isBodyGap;
                 const isFull      = st.isFull && st.ok && cellFatigue.length===0;
+                const hasExt      = cellExt.length > 0;
+
+                // Conflict shadow level for this cell relative to the active employee
+                const shadowConflict = (() => {
+                  if (!shadowEmp) return null;
+                  const sid = shadowEmp.id;
+                  const se  = employees.find(e => e.id === sid) || shadowEmp;
+                  if (asgn.some(a => a.employeeId === sid))                                              return "already";
+                  if ((se.unavailableDays || []).includes(day))                                          return "hard";
+                  if ((se.blockedShifts   || []).includes(shift.id))                                     return "hard";
+                  const rg = calcRestGap(sid, schedule, day, shift.id);
+                  if (rg < (cfg?.minRestHours ?? MIN_REST_HOURS) && rg !== Infinity)                     return "soft";
+                  const cn = shift.id === "third" ? calcConsecutiveNights(sid, schedule, day, shift.id) : 0;
+                  if (cn >= (cfg?.maxConsecutiveNights ?? MAX_CONSECUTIVE_NIGHTS))                       return "soft";
+                  return null;
+                })();
+
                 const borderColor = cellFatigue.length>0 ? "var(--ss-fatigue-80)"
                                   : isBodyGap             ? "var(--ss-danger-70)"
                                   : isRoleGap             ? "var(--ss-warning-60)"
                                   : isFull                ? "var(--ss-scale-50)"
+                                  : hasExt                ? "#7c3aed60"
                                   : "var(--ss-border)";
                 const bgColor     = cellFatigue.length>0 ? "var(--ss-fatigue-08)"
                                   : isBodyGap             ? "var(--ss-danger-0d)"
                                   : isRoleGap             ? "var(--ss-warning-0a)"
                                   : isFull                ? "var(--ss-scale-08)"
+                                  : hasExt                ? "#7c3aed08"
                                   : "var(--ss-surface)";
 
                 return (
@@ -9386,7 +10308,29 @@ function ScheduleGrid({ onOpenTestModal }) {
                       }
                     }}
                     style={{background:bgColor,border:"1px solid "+borderColor,borderRadius:4,
-                      padding:8,minHeight:105,display:"flex",flexDirection:"column",gap:4,transition:"border-color .2s",minWidth:0,overflow:"hidden"}}>
+                      padding:8,minHeight:105,display:"flex",flexDirection:"column",gap:4,transition:"border-color .2s",minWidth:0,overflow:"hidden",position:"relative"}}>
+
+                    {/* 12-hr ext shift corner ribbon */}
+                    {cellExt.length>0&&(
+                      <div style={{position:"absolute",top:0,right:0,width:0,height:0,
+                        borderStyle:"solid",borderWidth:"0 18px 18px 0",
+                        borderColor:"transparent #7c3aed transparent transparent",
+                        pointerEvents:"none",zIndex:2}} title="12-hr extended shift coverage"/>
+                    )}
+
+                    {/* Conflict shadow overlay — dims cells where shadowEmp can't or already works */}
+                    {shadowConflict&&(
+                      <div style={{position:"absolute",inset:0,borderRadius:3,pointerEvents:"none",zIndex:4,
+                        background: shadowConflict==="already"
+                          ? "repeating-linear-gradient(45deg,#ef444420 0,#ef444420 4px,transparent 4px,transparent 9px)"
+                          : shadowConflict==="hard"
+                            ? "rgba(239,68,68,0.16)"
+                            : "rgba(245,158,11,0.13)",
+                        boxShadow: shadowConflict==="soft"
+                          ? "inset 0 0 0 2px rgba(245,158,11,0.38)"
+                          : "inset 0 0 0 2px rgba(239,68,68,0.42)"
+                      }}/>
+                    )}
 
                     {(warn||cellFatigue.length>0||cellExt.length>0)&&(
                       <div style={{display:"flex",gap:3,flexWrap:"wrap",marginBottom:2}}>
@@ -9431,6 +10375,9 @@ function ScheduleGrid({ onOpenTestModal }) {
                         !asgn.some(x => x.employeeId !== a.employeeId &&
                           (a.position === "Scale" ? x.position === "Medical" : x.position === "Scale"))
                       );
+                      // 16-hr double: assigned to both this shift and an adjacent shift same day
+                      const adjShifts = shift.id==="first" ? ["second"] : shift.id==="second" ? ["first","third"] : ["second"];
+                      const is16h = adjShifts.some(otherId => getAsgn(day,otherId).some(x=>x.employeeId===a.employeeId));
                       const borderCol = hasFatigue?"var(--ss-fatigue-60)":hasReqViol?"var(--ss-danger-60)":hasPrefWarn?"var(--ss-warning-50)":isOnCallSlot?"var(--ss-warning-60)":pC(a.position,t)+"30";
                       const bgCol     = hasFatigue?"var(--ss-fatigue-18)":hasReqViol?"var(--ss-danger-0d)":hasPrefWarn?"var(--ss-warning-0a)":pC(a.position,t)+"15";
                       const dotCol    = hasFatigue?"var(--ss-fatigue)":pC(a.position,t);
@@ -9470,11 +10417,9 @@ function ScheduleGrid({ onOpenTestModal }) {
                             if(!dragChip||isDragSource||isReadOnly) return;
                             e.preventDefault(); e.stopPropagation();
                           }}
-                          onDrop={e=>{
+                          onDrop={async (e)=>{
                             if(!dragChip||isDragSource||isReadOnly) return;
                             e.preventDefault(); e.stopPropagation();
-                            e.currentTarget.closest("[data-cell]")?.dispatchEvent
-                              ? null : null; // no-op — handled below
                             const viols = getSwapViolations(
                               employees.find(x=>x.id===dragChip.employeeId), dragChip.day, dragChip.shiftId, dragChip.position,
                               employees.find(x=>x.id===a.employeeId),        day,            shift.id,          a.position
@@ -9482,11 +10427,12 @@ function ScheduleGrid({ onOpenTestModal }) {
                             const hard = viols.filter(v=>v.hard);
                             const soft = viols.filter(v=>!v.hard);
                             if(hard.length){
-                              alert("Swap blocked:\n\n"+hard.map(v=>"• "+v.msg).join("\n")+(soft.length?"\n\nAlso note:\n"+soft.map(v=>"• "+v.msg).join("\n"):""));
+                              showAlert({title:"Swap Blocked",items:[...hard,...soft],variant:"danger"});
                               setDragChip(null); return;
                             }
-                            if(soft.length && !window.confirm("Swap warnings — approve to continue:\n\n"+soft.map(v=>"⚠ "+v.msg).join("\n")+"\n\nProceed?")){
-                              setDragChip(null); return;
+                            if(soft.length){
+                              const ok = await showConfirm({title:"Swap Warnings",message:"Approve to continue.",items:soft,confirmLabel:"Proceed",variant:"warning"});
+                              if(!ok){ setDragChip(null); return; }
                             }
                             executeSwap(
                               {employeeId:dragChip.employeeId, day:dragChip.day, shiftId:dragChip.shiftId, position:dragChip.position},
@@ -9503,16 +10449,12 @@ function ScheduleGrid({ onOpenTestModal }) {
                           <span style={{width:6,height:6,borderRadius:"50%",background:dotCol,flexShrink:0}}/>
                           <span style={{flex:1,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap",
                             fontWeight:600,fontSize:10,
-                            color:isSwapSelected?"#f59e0b":isSwapTarget?"#22c55e":undefined}}>{getName(a.employeeId)}</span>
-                          {emp?.employmentType==="on-call"&&(
-                            <span style={{fontSize:8,fontWeight:800,
-                              color:"var(--ss-warning)",background:"var(--ss-warning-18)",border:"1px solid var(--ss-warning-50)",
-                              padding:"0 3px",borderRadius:2,flexShrink:0,letterSpacing:".03em"}}>OC</span>
-                          )}
-                          {emp?.employmentType==="part-time"&&(
-                            <span style={{fontSize:8,fontWeight:800,
-                              color:"var(--ss-text-muted)",background:"var(--ss-surface-alt)",border:"1px solid var(--ss-border)",
-                              padding:"0 3px",borderRadius:2,flexShrink:0,letterSpacing:".03em"}}>PT</span>
+                            color:isSwapSelected?"#f59e0b":isSwapTarget?"#22c55e":emp?.employmentType==="on-call"?"#f97316":emp?.employmentType==="part-time"?"#22c55e":undefined}}>{getName(a.employeeId)}</span>
+                          {is16h&&(
+                            <span style={{fontSize:7,fontWeight:800,
+                              color:"#ea580c",background:"#ea580c18",border:"1px solid #ea580c50",
+                              padding:"0 3px",borderRadius:2,flexShrink:0,letterSpacing:".03em"}}
+                              title="16-hour double shift">16h</span>
                           )}
                           {hasFatigue&&<span style={{fontSize:8,color:"var(--ss-fatigue)",fontWeight:800,flexShrink:0}}
                             title="Fatigue warning">⚠</span>}
@@ -9521,12 +10463,13 @@ function ScheduleGrid({ onOpenTestModal }) {
                             if(emp?.employmentType!=="full-time") return null;
                             const h = calcHours(a.employeeId, displaySchedule, extShifts);
                             const col = h >= 48 ? "var(--ss-danger)" : h >= 40 ? "var(--ss-scale)" : h > 0 ? "var(--ss-warning)" : "var(--ss-text-dim)";
+                            const tip = h+"h this week";
                             return (
                               <span style={{fontSize:8,fontWeight:800,color:col,flexShrink:0,
                                 background:col+"18",border:"1px solid "+col+"40",
                                 padding:"0 3px",borderRadius:2,letterSpacing:".02em",
                                 minWidth:22,textAlign:"center"}}
-                                title={h+"h this week"}>
+                                title={tip}>
                                 {h}h
                               </span>
                             );
@@ -9543,7 +10486,7 @@ function ScheduleGrid({ onOpenTestModal }) {
                               onClick={e=>{e.stopPropagation();setEditingCell(null);setSwapSource({employeeId:a.employeeId,day,shiftId:shift.id,position:a.position});}}
                               style={{flex:1,fontSize:9,fontWeight:700,padding:"3px 0",borderRadius:3,cursor:"pointer",
                                 background:"#f59e0b22",color:"#f59e0b",border:"1px solid #f59e0b66"}}>
-                              🔄 Swap
+                              {Icon("repeat-2", {size:10})} Swap
                             </button>
                             <button
                               onClick={e=>{e.stopPropagation();setSubSource({employeeId:a.employeeId,day,shiftId:shift.id,position:a.position});setEditingCell({day,shiftId:shift.id});}}
@@ -9659,7 +10602,8 @@ function ScheduleGrid({ onOpenTestModal }) {
                           getAssignable={getAssignable} assignEmp={assignEmp}
                           schedule={schedule} extShifts={extShifts} timeOffReqs={timeOffReqs}
                           weekStart={weekStart} executeSub={executeSub} st={st}
-                          setEditingCell={setEditingCell} setSubSource={setSubSource} t={t}/>
+                          setEditingCell={setEditingCell} setSubSource={setSubSource} t={t}
+                          onHoverEmp={setHoverPickEmp}/>
                       </div>
                     )}
                     {st.isFull&&st.ok&&cellFatigue.length===0&&(
@@ -9731,6 +10675,7 @@ function ScheduleGrid({ onOpenTestModal }) {
 
         </div>
       </div>
+      )}
 
       {}
       {!isReadOnly && (() => {
@@ -9748,7 +10693,7 @@ function ScheduleGrid({ onOpenTestModal }) {
           emps: stableEmpOrder.filter(e => primarySh(e) === sh.id)
         }));
         const renderPill = (emp) => {
-          const hours     = calcHours(emp.id, schedule);
+          const hours     = calcHours(emp.id, schedule, extShifts||[]);
           const isFT      = emp.employmentType==="full-time";
           const fatigueN  = getFatigueIssues(emp.id, schedule, cfg, employees, extShifts||[]).length;
           const borderCol = fatigueN>0 ? "var(--ss-fatigue)" : isFT&&hours>40 ? "var(--ss-warning)" : "var(--ss-border)";
@@ -9919,21 +10864,25 @@ function ScheduleGrid({ onOpenTestModal }) {
               )}
             </div>
           ) : (
-            <button onClick={()=>runAutoFill()} style={{background:"var(--ss-scale)",color:"#fff",border:"none",
-              padding:"9px 18px",borderRadius:6,cursor:"pointer",fontSize:12,fontWeight:600,fontFamily:"inherit"}}>⚡ AUTOFILL</button>
+            <button onClick={()=>runAutoFill()} className="ss-btn ss-btn-md ss-btn-success">{Icon("zap", {size:13, color:"#fff"})} AUTOFILL</button>
           )}
-          <button onClick={()=>{pushUndo();setSchedule({});setExtShifts([]);setEmpPatterns({});setScheduleIssues(null);setScheduleStale(false);}} style={{background:"transparent",color:"var(--ss-danger)",
-            border:"1px solid var(--ss-danger)",padding:"9px 18px",borderRadius:6,cursor:"pointer",fontSize:12,fontWeight:600,fontFamily:"inherit"}}>Clear</button>
+          <button onClick={()=>{pushUndo();setSchedule({});setExtShifts([]);setEmpPatterns({});setScheduleIssues(null);setScheduleStale(false);}} className="ss-btn ss-btn-md ss-btn-danger">{Icon("trash-2", {size:13, color:"var(--ss-danger)"})} Clear</button>
           <button onClick={()=>setManualPairDay(DAYS[1])}
             title="Pair two employees for 12-hour Day/Night shifts"
-            style={{background:"#7c3aed18",color:"#7c3aed",border:"1px solid #7c3aed55",
-              padding:"9px 18px",borderRadius:6,cursor:"pointer",fontSize:12,fontWeight:600,
-              fontFamily:"inherit",display:"flex",alignItems:"center",gap:6}}
-            onMouseEnter={e=>e.currentTarget.style.background="#7c3aed30"}
-            onMouseLeave={e=>e.currentTarget.style.background="#7c3aed18"}>
-            ⏱ Pair Shifts
+            className="ss-btn ss-btn-md ss-btn-secondary"
+            style={{color:"#7c3aed",borderColor:"#7c3aed55"}}>
+            {Icon("timer", {size:13, color:"#7c3aed"})} Pair Shifts
           </button>
           <ViolationMinimizeButton onClick={()=>setShowMinimize(true)}/>
+          <button onClick={()=>setMobileView&&setMobileView(v=>!v)}
+            title={mobileView?"Switch to desktop grid view":"Switch to mobile view"}
+            style={{background:mobileView?"var(--ss-accent-18)":"transparent",
+              color:mobileView?"var(--ss-accent)":"var(--ss-text-muted)",
+              border:"1px solid "+(mobileView?"var(--ss-accent)":"var(--ss-border)"),
+              padding:"9px 14px",borderRadius:6,cursor:"pointer",fontSize:13,fontFamily:"inherit"}}
+            onMouseEnter={e=>{e.currentTarget.style.borderColor="var(--ss-accent)";e.currentTarget.style.color="var(--ss-accent)";}}
+            onMouseLeave={e=>{if(!mobileView){e.currentTarget.style.borderColor="var(--ss-border)";e.currentTarget.style.color="var(--ss-text-muted)";}}}
+          >{mobileView?Icon("monitor", {size:15, color:"currentColor"}):Icon("smartphone", {size:15, color:"currentColor"})}</button>
         </>}
         {!isReadOnly && (showHistSave ? (
           <div style={{display:"flex",gap:6,alignItems:"center",background:"var(--ss-surface-alt)",
@@ -9962,30 +10911,28 @@ function ScheduleGrid({ onOpenTestModal }) {
             style={{background:"transparent",color:"var(--ss-warning)",border:"1px solid var(--ss-warning-55)",
               padding:"9px 18px",borderRadius:6,cursor:"pointer",fontSize:12,fontWeight:600,fontFamily:"inherit",
               display:"flex",alignItems:"center",gap:6}}>
-            ★ Save Snapshot
+            {Icon("bookmark", {size:13, color:"var(--ss-warning)"})} Save Snapshot
           </button>
         ))}
         {!isReadOnly && <button onClick={()=>setShowCopyModal(true)}
           style={{background:"transparent",color:"var(--ss-text-muted)",border:"1px solid var(--ss-border)",
             padding:"9px 18px",borderRadius:6,cursor:"pointer",fontSize:12,fontWeight:600,fontFamily:"inherit",
             display:"flex",alignItems:"center",gap:6}}>
-          💾 Saved Weeks{savedWeeks.length>0&&<span style={{background:"var(--ss-accent)",color:"#fff",
+          {Icon("save", {size:13, color:"var(--ss-text-muted)"})} Saved Weeks{savedWeeks.length>0&&<span style={{background:"var(--ss-accent)",color:"#fff",
             fontSize:10,fontWeight:800,padding:"1px 6px",borderRadius:10}}>{savedWeeks.length}</span>}
         </button>}
         {!isReadOnly && <button onClick={onOpenTestModal} style={{background:"transparent",color:"var(--ss-accent)",
-          border:"1px solid var(--ss-accent-55)",padding:"9px 18px",borderRadius:6,cursor:"pointer",fontSize:12,fontWeight:600,fontFamily:"inherit"}}>🧪 New Test Roster</button>}
+          border:"1px solid var(--ss-accent-55)",padding:"9px 18px",borderRadius:6,cursor:"pointer",fontSize:12,fontWeight:600,fontFamily:"inherit",display:"flex",alignItems:"center",gap:6}}>{Icon("flask-conical", {size:13, color:"var(--ss-accent)"})} New Test Roster</button>}
         {isReadOnly && <button onClick={()=>setViewingHistory(null)}
           style={{background:"var(--ss-warning)",color:"#000",border:"none",padding:"9px 18px",borderRadius:6,
             cursor:"pointer",fontSize:12,fontWeight:700,fontFamily:"inherit"}}>
-          ↩ Back to Live Schedule
+          {Icon("undo-2", {size:13, color:"#000"})} Back to Live Schedule
         </button>}
         </div>
         {}
         <div style={{display:"flex",gap:10,justifyContent:"center",alignItems:"center"}}>
-          <button onClick={()=>setShowExcelPreview(true)} style={{background:"transparent",color:"var(--ss-scale)",
-            border:"1px solid var(--ss-scale-55)",padding:"9px 18px",borderRadius:6,cursor:"pointer",fontSize:12,fontWeight:600,fontFamily:"inherit"}}>↓ Export Excel</button>
-          <button onClick={()=>setShowPublish(true)} style={{background:"transparent",color:"var(--ss-accent)",
-            border:"1px solid var(--ss-accent-55)",padding:"9px 18px",borderRadius:6,cursor:"pointer",fontSize:12,fontWeight:600,fontFamily:"inherit"}}>📋 Publish</button>
+          <button onClick={()=>setShowExcelPreview(true)} className="ss-btn ss-btn-md ss-btn-secondary" style={{color:"var(--ss-scale)",borderColor:"var(--ss-scale-55)"}}>{Icon("download", {size:13, color:"var(--ss-scale)"})} Export Excel</button>
+          <button onClick={()=>setShowPublish(true)} className="ss-btn ss-btn-md ss-btn-primary">{Icon("clipboard-list", {size:13, color:"#fff"})} Publish</button>
         </div>
       </div>
 
@@ -10349,7 +11296,7 @@ function TimeOffManager() {
 
   const iS = { background:"var(--ss-surface-alt)", border:"1px solid var(--ss-border)", color:"var(--ss-text)",
     padding:"9px 12px", borderRadius:6, outline:"none", fontSize:13,
-    fontFamily:"'JetBrains Mono',monospace", width:"100%", boxSizing:"border-box" };
+    fontFamily:"inherit", width:"100%", boxSizing:"border-box" };
 
   const btnS = (active, col) => ({
     background: active ? col+"22" : "transparent",
@@ -10579,7 +11526,7 @@ function AppVersionFooter() {
       justifyContent: "space-between", flexWrap: "wrap", gap: 8,
     }}>
       <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
-        <span style={{ fontSize: 18 }}>🗓</span>
+        {Icon("calendar-days", {size:18, color:"var(--ss-accent)"})}
         <div>
           <div style={{ fontSize: 12, fontWeight: 700, color: "var(--ss-text)" }}>
             ShiftScheduler {APP_VERSION}
@@ -10674,7 +11621,7 @@ function StorageInspector() {
         fontFamily:"inherit",
       }}>
         <div>
-          <div style={{fontSize:13,fontWeight:700,color:"var(--ss-text)",textAlign:"left"}}>🗄 Storage Inspector</div>
+          <div style={{fontSize:13,fontWeight:700,color:"var(--ss-text)",textAlign:"left",display:"flex",alignItems:"center",gap:8}}>{Icon("database", {size:15, color:"var(--ss-accent)"})} Storage Inspector</div>
           <div style={{fontSize:11,color:"var(--ss-text-dim)",marginTop:2,textAlign:"left"}}>
             View, edit, or restore raw storage data. Use this to recover lost employee data.
           </div>
@@ -10741,7 +11688,7 @@ function StorageInspector() {
                   <div style={{display:"flex",gap:8}}>
                     <button onClick={saveEdit}
                       style={{...btnBase,background:"var(--ss-accent)",color:"#fff"}}>
-                      💾 Save to Storage
+                      {Icon("save", {size:13, color:"#fff"})} Save to Storage
                     </button>
                     <button onClick={()=>setEditRaw(raw)}
                       style={{...btnBase,background:"var(--ss-surface-alt)",color:"var(--ss-text)",border:"1px solid var(--ss-border)"}}>
@@ -10749,7 +11696,7 @@ function StorageInspector() {
                     </button>
                     <button onClick={deleteKey}
                       style={{...btnBase,background:"transparent",color:"var(--ss-danger)",border:"1px solid var(--ss-danger)",marginLeft:"auto"}}>
-                      🗑 Delete Key
+                      {Icon("trash-2", {size:13, color:"var(--ss-danger)"})} Delete Key
                     </button>
                   </div>
                   <div style={{fontSize:10,color:"var(--ss-text-dim)",lineHeight:1.6}}>
@@ -10954,7 +11901,7 @@ function RosterBackup() {
     <div style={{ background: "var(--ss-surface)", border: "2px solid " + "var(--ss-accent)" + "55",
       borderRadius: 8, padding: 20, marginBottom: 20 }}>
       <div style={{ display:"flex", alignItems:"flex-start", gap:12, marginBottom:14 }}>
-        <span style={{ fontSize:22 }}>💾</span>
+        {Icon("hard-drive-download", {size:22, color:"var(--ss-accent)"})}
         <div>
           <div style={{ fontWeight:700, fontSize:14, color:"var(--ss-text)", marginBottom:4 }}>
             Roster &amp; Settings Backup
@@ -11098,7 +12045,7 @@ const THEME_COLOR_GROUPS = [
   },
 ];
 
-function ThemeCustomizer({ themeName, setThemeName, customTheme, setCustomTheme }) {
+function ThemeCustomizer({ themeName, setThemeName, customTheme, setCustomTheme, mobileView, setMobileView }) {
   const t = useTheme();
   const [open, setOpen] = useState(false);
   const baseTheme = themeName === "dark" ? dark : light;
@@ -11181,6 +12128,33 @@ function ThemeCustomizer({ themeName, setThemeName, customTheme, setCustomTheme 
                   ↺ Reset All
                 </button>
               )}
+            </div>
+          </div>
+
+          {}
+          <div style={{ marginBottom:20 }}>
+            <div style={{ fontSize:11, fontWeight:700, color:"var(--ss-text-muted)", letterSpacing:".06em",
+              textTransform:"uppercase", marginBottom:10 }}>Layout</div>
+            <div style={{ display:"flex", alignItems:"center", justifyContent:"space-between",
+              background:"var(--ss-surface-alt)", border:"1px solid var(--ss-border)", borderRadius:8,
+              padding:"12px 16px" }}>
+              <div>
+                <div style={{ fontSize:13, fontWeight:600, color:"var(--ss-text)" }}>📱 Mobile View</div>
+                <div style={{ fontSize:11, color:"var(--ss-text-dim)", marginTop:2 }}>
+                  Vertical single-day layout — optimized for phone-width screens.
+                </div>
+              </div>
+              <button onClick={()=>setMobileView&&setMobileView(v=>!v)} style={{
+                width:48, height:26, borderRadius:13, border:"none", cursor:"pointer",
+                background:mobileView?"var(--ss-accent)":"var(--ss-border)",
+                position:"relative", transition:"background .2s", flexShrink:0,
+              }}>
+                <span style={{
+                  position:"absolute", top:3, left:mobileView?24:3, width:20, height:20,
+                  borderRadius:"50%", background:"#fff",
+                  transition:"left .2s", boxShadow:"0 1px 4px rgba(0,0,0,.3)",
+                }}/>
+              </button>
             </div>
           </div>
 
@@ -11577,7 +12551,7 @@ function SwingDesigPanel() {
   const iS = {
     background: "var(--ss-surface-alt)", border: "1px solid var(--ss-border)",
     color: "var(--ss-text)", padding: "6px 10px", borderRadius: 6,
-    fontSize: 13, fontFamily: "'JetBrains Mono',monospace", width: 200,
+    fontSize: 13, fontFamily: "inherit", width: 200,
   };
 
   return (
@@ -11620,7 +12594,293 @@ function SwingDesigPanel() {
   );
 }
 
-function SettingsPanel({ themeName, setThemeName, customTheme, setCustomTheme, settingsTab: settingsTabProp, setSettingsTab: setSettingsTabProp }) {
+// ── Help Panel ────────────────────────────────────────────────────────────────
+const HELP_ARTICLES = [
+  // ── Getting Started ──────────────────────────────────────────────────────
+  { id:"h1",  cat:"Getting Started", title:"What is this app?",
+    body:"A browser-based weekly shift scheduler for security operations. No install, no server — open the HTML file in Chrome or Edge and start building schedules. All data is saved locally in your browser." },
+  { id:"h2",  cat:"Getting Started", title:"Main navigation tabs",
+    body:"Five tabs across the top: Employees (manage the roster), Schedule (the weekly grid), Dashboard (alerts and warnings), Time Off (PTO/vacation requests), Settings (configuration), and Help (this panel)." },
+  { id:"h3",  cat:"Getting Started", title:"Week selection",
+    body:"Use the ◀ ▶ arrows in the Schedule tab to move between weeks. The week label at the top shows the Monday start date. The app remembers each week's schedule separately." },
+  { id:"h4",  cat:"Getting Started", title:"Dark / Light mode",
+    body:"Click the moon/sun icon in the top-right toolbar to toggle between dark and light themes. The ▾ arrow next to it opens a menu to customize colors or reset to the default palette." },
+
+  // ── Roster / Employees ────────────────────────────────────────────────────
+  { id:"e1",  cat:"Employees", title:"Adding an employee",
+    body:"Go to the Employees tab and click Add Employee. Enter their name, employment type (Full-time, Part-time, On-call), and qualifications. All other fields (preferred days off, blocked shifts, etc.) can be set after creation." },
+  { id:"e2",  cat:"Employees", title:"Employment types",
+    body:"Full-time (FT): scheduled for ≥ 40 hours/week; overtime rules apply. Part-time (PT): flexible hours, shown with a PT badge on chips. On-call (OC): called in as needed, shown with an OC badge; limited to their configured max shifts." },
+  { id:"e3",  cat:"Employees", title:"Qualifications",
+    body:"Guard: base qualification, fills the third slot on any shift. Scale: required on every shift — handles the weighing/scale post. Medical: required on every shift — handles emergency medical response. Supervisor: works 1st shift Mon–Fri only, counts as the 4th person on those shifts." },
+  { id:"e4",  cat:"Employees", title:"Required and blocked shifts",
+    body:"Required shift: the employee must always work this shift (e.g., a 3rd-shift worker should have 'third' required). Blocked shifts: the employee can never be placed on this shift. These are hard constraints respected by both manual assignment and autofill." },
+  { id:"e5",  cat:"Employees", title:"Unavailable days",
+    body:"Specific calendar days when the employee cannot work — a standing commitment or day off. Blocked in both autofill and manual assignment. The employee's chip will show a fatigue ⚠ if assigned anyway." },
+  { id:"e6",  cat:"Employees", title:"Available days of week",
+    body:"For PT and OC employees who are only reachable on certain weekdays (e.g., Tuesdays and Wednesdays only). Autofill will not place them outside those days. Useful for employees with a primary job elsewhere." },
+  { id:"e7",  cat:"Employees", title:"Preferred days off",
+    body:"Soft preference — autofill tries to avoid scheduling on these days but won't hard-block if coverage requires it. A ⚠ preference badge appears on the chip if the preference is overridden." },
+  { id:"e8",  cat:"Employees", title:"Overtime preference",
+    body:"Blocked: never assign OT (autofill will skip this employee once they hit 40h). Neutral: allow OT with a confirmation prompt. Prefer: the autofill will actively seek OT for this employee first. Per-employee, can override the site default set in Settings → Rules." },
+  { id:"e9",  cat:"Employees", title:"Willing to work 16-hour doubles",
+    body:"Marks an employee as willing to work two back-to-back shifts in a day (1st+2nd or 2nd+3rd = 16 hours). A chip assigned to both shifts on the same day will show an orange '16h' badge." },
+  { id:"e10", cat:"Employees", title:"In training",
+    body:"Trainees do not count toward shift coverage requirements. A 'T' suffix appears on their assignment (e.g., 1T). The shift still needs a fully qualified independent employee to fill the same role. Typically used for new hires in their first 2–3 weeks." },
+  { id:"e11", cat:"Employees", title:"Swing eligibility",
+    body:"Opt-in per employee — lists which non-standard shift windows (e.g., 10A–10P, 2P–2A) this person is willing to work. Only swing-eligible employees can be assigned to swing slots. Employees not in this list will never be placed on swings." },
+  { id:"e12", cat:"Employees", title:"Cross-shift overtime",
+    body:"When enabled, autofill is allowed to pull this employee from their primary shift into an adjacent shift's OT slot to cover a gap. Useful for highly flexible employees. Appears in the roster as the crossShiftOT flag." },
+
+  // ── Schedule Grid ─────────────────────────────────────────────────────────
+  { id:"g1",  cat:"Schedule Grid", title:"Reading the grid",
+    body:"Rows are shifts (1st: 0600–1400, 2nd: 1400–2200, 3rd: 2200–0600). Columns are days Mon–Sun. Each cell shows the employees assigned to that shift/day. The colored left bar on each shift row matches the shift's color for quick scanning." },
+  { id:"g2",  cat:"Schedule Grid", title:"Cell status colors",
+    body:"Green border/tint: fully covered (Scale + Medical + enough people). Amber: role gap — Schedule requires Scale or Medical but it's missing. Red: body gap — not enough people to meet the minimum headcount. Orange: fatigue or rest violation on an assigned employee. Purple: an extended 12-hr shift is providing coverage." },
+  { id:"g3",  cat:"Schedule Grid", title:"Position color dots",
+    body:"Each chip (employee badge) has a small colored dot: green = Scale post, red = Medical, blue = Guard, gold = Supervisor. When one employee covers both Scale and Medical (dual-qualified, no other Scale/Medical assigned), their dot reflects their primary position." },
+  { id:"g4",  cat:"Schedule Grid", title:"Hours badge on chips",
+    body:"Full-time employees show their total scheduled hours for the week on their chip. Color: yellow = under 40h, green = 40h, red = 48h+ (overtime). Hover for an exact hour count tooltip." },
+  { id:"g5",  cat:"Schedule Grid", title:"Warning badges on chips",
+    body:"⚠ orange = fatigue (rest gap too short or too many consecutive night shifts). ⚠ yellow = preference mismatch (assigned to a non-preferred or blocked shift). OC = on-call employee. PT = part-time. 16h = working a double shift today." },
+  { id:"g6",  cat:"Schedule Grid", title:"12-hr corner ribbon",
+    body:"A small purple triangle in the top-right corner of a cell means an extended shift (12-hr pair or swing) is providing coverage for that slot. Hover the triangle for a tooltip. The ext shift badge at the top of the cell names the employees involved." },
+  { id:"g7",  cat:"Schedule Grid", title:"NEED SCALE / NEED MEDICAL banners",
+    body:"A yellow banner inside a cell means a required qualification role is unmet by any current assignment or extended shift. The autofill treats these as highest-priority gaps." },
+  { id:"g8",  cat:"Schedule Grid", title:"Daily summary row",
+    body:"The row beneath the three shift rows shows a per-shift, per-day count (e.g., '3/3 ✓'). Red = understaffed (body gap), amber = role gap (Scale or Medical missing), green = fully covered. A quick visual check before publishing the schedule." },
+
+  // ── Assigning Employees ──────────────────────────────────────────────────
+  { id:"a1",  cat:"Assigning Employees", title:"Click to assign (EmpPicker)",
+    body:"Click any cell to open the inline employee picker. Type to search by name. Employees with rest violations show an orange hour badge; unavailable employees are dimmed. Click a name to assign them — a position (Scale/Medical/Guard) is auto-selected based on shift needs, or you'll be prompted to choose." },
+  { id:"a2",  cat:"Assigning Employees", title:"Drag from roster bar",
+    body:"The bar below the grid shows all employees grouped by primary shift. Pick up any pill and drop it onto a cell to assign. The best available position is filled automatically. A rest-gap warning or OT prompt may appear before the assignment is committed." },
+  { id:"a3",  cat:"Assigning Employees", title:"Conflict shadowing during drag",
+    body:"The moment you pick up an employee — either by dragging from the roster bar or hovering their name in the picker — all cells show their conflict status: diagonal red stripes = employee is already assigned here; solid red = hard block (unavailable or blocked shift); amber = soft violation (rest gap or consecutive nights limit). Clear cells have no overlay and are safe drop targets." },
+  { id:"a4",  cat:"Assigning Employees", title:"Chip drag-and-drop (move and swap)",
+    body:"Drag an assigned chip (the employee name badge inside a cell) to move the employee to a different cell. Drop it on an empty slot area to move. Drop it on top of another chip to swap the two employees between their cells. Hard constraint violations block the swap; soft violations prompt for confirmation." },
+  { id:"a5",  cat:"Assigning Employees", title:"Click to Swap mode",
+    body:"Click any assigned chip to enter Swap mode. The chip turns gold. Then click any other chip in the grid — even on a different day or shift — to swap their positions. Green dashed borders appear on valid swap targets. Press Escape to cancel without making any change." },
+  { id:"a6",  cat:"Assigning Employees", title:"Substitution (Sub) mode",
+    body:"From the chip context menu, select Sub to replace the employee in that slot with someone else. The picker shows all eligible substitutes. The original employee is removed and the substitute takes their position. Used for last-minute callout coverage." },
+  { id:"a7",  cat:"Assigning Employees", title:"Removing an assignment",
+    body:"Click a chip to open its context menu and choose Remove, or click the × on the chip if available. This removes just that employee from the slot without affecting other assignments in the cell." },
+
+  // ── Extended Shifts ───────────────────────────────────────────────────────
+  { id:"x1",  cat:"Extended Shifts", title:"12-hour day/night pairs",
+    body:"A 12-hour day pair (0600–1800) covers all of 1st shift and the first half of 2nd. A 12-hour night pair (1800–0600) covers the second half of 2nd shift and all of 3rd. Pair two employees — one for each 8-hour half — to provide continuous 12-hr coverage. Both cells in the pair show the purple corner ribbon and the ⏱ ext badge." },
+  { id:"x2",  cat:"Extended Shifts", title:"Swing shifts",
+    body:"Non-standard windows that bridge two shifts: 10A–10P (mid-morning to mid-evening), 10P–10A (overnight), 2P–2A, 2A–2P. Only employees with the matching shift window in their swing eligibility list can be assigned. Swings are configured in Settings → Swing Slots." },
+  { id:"x3",  cat:"Extended Shifts", title:"Adding a shift pair",
+    body:"Click the '⏱ pair' button at the top of any day column to open the pairing modal. Select the pair type (Day 12h, Night 12h, or a swing window), assign Employee A and Employee B, and set each person's role (Scale/Medical/Guard). The pair is saved and the cells update immediately." },
+  { id:"x4",  cat:"Extended Shifts", title:"16-hour doubles",
+    body:"When an employee is assigned to both 1st and 2nd shift (or 2nd and 3rd) on the same day, they're working 16 consecutive hours. An orange '16h' badge appears on their chip in both cells. This requires the Willing 16h flag to be enabled in their roster profile." },
+
+  // ── Autofill ──────────────────────────────────────────────────────────────
+  { id:"af1", cat:"Autofill", title:"Running autofill",
+    body:"Click Auto-fill in the Schedule tab toolbar. The algorithm runs four passes: (1) FT-first reservation — locks full-time employees to their required shifts; (2) soft preference scoring — ranks candidates using a penalty system (shift preference, fatigue, days off); (3) bottleneck prioritization — fills the hardest-to-cover slots first; (4) directed local search — post-fill swaps to minimize violations. The result is committed after any OT approvals." },
+  { id:"af2", cat:"Autofill", title:"Autofill exclusions",
+    body:"In the roster bar below the grid, each employee pill has a small checkbox. Check 'Exclude' to skip that employee during the next autofill run. Useful if they're already manually placed, on vacation, or you want to hand-fill their slot." },
+  { id:"af3", cat:"Autofill", title:"OT approval flow",
+    body:"If autofill would put any full-time employee over 40 hours, an Overtime Approval modal appears before the schedule is committed. You can approve or reject each instance individually. Rejected OT assignments are removed; the rest of the schedule is kept." },
+  { id:"af4", cat:"Autofill", title:"Cross-week rest gap awareness",
+    body:"The autofill reads the previous week's saved schedule to check rest gaps at the week boundary. For example, if an employee worked 3rd shift last Saturday, they won't be placed on 1st shift this Sunday if the rest gap would be too short. If no previous week exists in history, behavior is identical to standard single-week autofill." },
+  { id:"af5", cat:"Autofill", title:"Violation minimizer pass",
+    body:"After the main fill, the algorithm runs up to three 'violation minimizer' sweeps that identify employees with preference or rest violations and attempt to swap them to a better slot without creating new violations elsewhere. This is automatic — you won't see it happen, but it reduces the number of ⚠ badges on the finished schedule." },
+
+  // ── Undo / History ────────────────────────────────────────────────────────
+  { id:"u1",  cat:"Undo & History", title:"Undo and Redo",
+    body:"Press Ctrl+Z (⌘Z on Mac) to undo the last assignment change. Press Ctrl+Shift+Z (⌘⇧Z) to redo. Up to 50 steps are kept per session. Undo covers: manual assignments, removals, chip moves, swaps, subs, autofill commits, and week loads. History is in-memory only — it resets when you reload the page." },
+  { id:"u2",  cat:"Undo & History", title:"Saving a week snapshot",
+    body:"Click Save in the Schedule tab to snapshot the current schedule under a custom label. Saved snapshots appear in the Saved Weeks list and can be loaded at any time. Use this before running autofill to preserve a manual draft, or to bookmark multiple schedule options." },
+  { id:"u3",  cat:"Undo & History", title:"Loading a previous week",
+    body:"Use the ◀ ▶ navigation to browse to a previous week. If that week has a saved schedule in history, it loads automatically. You can also pick a snapshot from the Saved Weeks list. Loading a week pushes the current state onto the undo stack." },
+
+  // ── Dashboard ─────────────────────────────────────────────────────────────
+  { id:"d1",  cat:"Dashboard", title:"Coverage alerts",
+    body:"Shows all shifts where Scale, Medical, or minimum headcount requirements are unmet. Each alert names the day and shift and lists what's missing. The main tab badge shows the total alert count so you can see at a glance if the schedule is publication-ready." },
+  { id:"d2",  cat:"Dashboard", title:"Under-hours warnings",
+    body:"Full-time employees scheduled under 40 hours for the week are listed with their current total. This is a soft warning — it won't block publishing, but it's a flag to review before the schedule goes out." },
+  { id:"d3",  cat:"Dashboard", title:"Fatigue and rest alerts",
+    body:"Employees with a rest gap shorter than the configured minimum (default 8 hours), or with more consecutive night shifts than the configured limit, appear here. The schedule grid also shows these inline via ⚠ badges, but the Dashboard gives a consolidated view." },
+  { id:"d4",  cat:"Dashboard", title:"Preference violations",
+    body:"Employees assigned outside their preferred or required shift appear in the Preference Violations section. Some violations are unavoidable during thin coverage weeks, but this list lets you review and potentially swap them manually before publishing." },
+
+  // ── Time Off ──────────────────────────────────────────────────────────────
+  { id:"t1",  cat:"Time Off", title:"Submitting a time off request",
+    body:"Go to the Time Off tab. Select the employee, choose the date range, and pick the type (PTO, Vacation, or Off). Click Submit. The request starts in Pending status and appears in the approval queue." },
+  { id:"t2",  cat:"Time Off", title:"Approving or denying requests",
+    body:"In the Time Off tab, pending requests show Approve and Deny buttons. Approved requests block the employee from being scheduled on those days — both autofill and the assignment conflict shadow will reflect the block. Denied requests are archived but do not affect the schedule." },
+  { id:"t3",  cat:"Time Off", title:"Time off on the schedule",
+    body:"Approved time off appears as an indicator on the schedule grid for the affected days. The autofill treats approved time off the same as an Unavailable Day — the employee will not be placed on those days. Manual assignment still shows a warning but doesn't hard-block." },
+
+  // ── Settings ──────────────────────────────────────────────────────────────
+  { id:"s1",  cat:"Settings", title:"Rules tab",
+    body:"Configure site-wide scheduling rules: Minimum rest hours between shifts (default 8h — any assignment closer than this triggers a fatigue warning). Maximum consecutive night shifts (default limit before a ⚠ appears). Default overtime preference applied to all employees unless overridden per-person." },
+  { id:"s2",  cat:"Settings", title:"Rotation tab",
+    body:"Controls the direction of the automatic supervisor and FT-employee day-off rotation. Set to clockwise or counter-clockwise. The rotation direction affects how the autofill distributes weekend days off across the FT pool over successive weeks." },
+  { id:"s3",  cat:"Settings", title:"Swing Slots tab",
+    body:"Define which extended shift windows are available at this site and configure their coverage properties. Each swing slot specifies its time window, which standard shifts it overlaps, and what positions it can fill (Scale, Medical, Guard)." },
+  { id:"s4",  cat:"Settings", title:"Appearance tab",
+    body:"Customize the color palette. Click any color swatch to change it — affects accent, shift colors, status indicators, and backgrounds. Use the Reset to Default button to restore the built-in dark or light palette. Changes apply immediately; they're saved in your browser." },
+  { id:"s5",  cat:"Settings", title:"Diagnostic tab",
+    body:"Runs a full analysis of the current week's schedule and reports: unmet coverage slots, rest gap violations, OT overages, and employees below 40h. More detailed than the Dashboard — includes per-slot breakdowns. Run this before publishing to catch edge cases." },
+  { id:"s6",  cat:"Settings", title:"Data tab — roster export and import",
+    body:"Export the full employee roster as a JSON file (roster-backup-YYYY-MM-DD.json). Import a previously exported roster to restore all employee profiles, qualifications, and settings. Use this to back up your roster, transfer it to another machine, or restore after clearing browser data." },
+
+  // ── Keyboard Shortcuts ────────────────────────────────────────────────────
+  { id:"k1",  cat:"Shortcuts", title:"Escape",
+    body:"Cancels any active mode: closes the cell picker, clears swap mode (deselects the gold chip), clears sub mode, cancels an in-progress drag. Safe to press anytime — it will never remove an assignment that's already been made." },
+  { id:"k2",  cat:"Shortcuts", title:"Ctrl+Z / ⌘Z — Undo",
+    body:"Undoes the most recent change to the schedule. Works for assignments, removals, swaps, subs, autofill, week loads, and clears. Up to 50 steps per session." },
+  { id:"k3",  cat:"Shortcuts", title:"Ctrl+Shift+Z / ⌘⇧Z — Redo",
+    body:"Redoes an undone change. Redo stack is cleared whenever a new change is made, so it only works immediately after one or more undos." },
+];
+
+const HELP_CATEGORIES = [...new Set(HELP_ARTICLES.map(a => a.cat))];
+
+function HelpPanel() {
+  const [query,    setQuery]    = useState("");
+  const [activeCat, setActiveCat] = useState(null);
+  const t = useTheme();
+  const q = query.toLowerCase().trim();
+
+  const filtered = HELP_ARTICLES.filter(a => {
+    const matchCat  = !activeCat || a.cat === activeCat;
+    const matchText = !q || a.title.toLowerCase().includes(q) || a.body.toLowerCase().includes(q) || a.cat.toLowerCase().includes(q);
+    return matchCat && matchText;
+  });
+
+  // Group visible articles by category
+  const grouped = filtered.reduce((acc, a) => {
+    (acc[a.cat] = acc[a.cat] || []).push(a);
+    return acc;
+  }, {});
+
+  const catColors = {
+    "Getting Started":    "#6366f1",
+    "Employees":          "var(--ss-scale)",
+    "Schedule Grid":      "var(--ss-shift-second)",
+    "Assigning Employees":"var(--ss-accent)",
+    "Extended Shifts":    "#7c3aed",
+    "Autofill":           "var(--ss-shift-third)",
+    "Undo & History":     "var(--ss-text-muted)",
+    "Dashboard":          "var(--ss-danger)",
+    "Time Off":           "var(--ss-warning)",
+    "Settings":           "var(--ss-shift-first)",
+    "Shortcuts":          "var(--ss-medical)",
+  };
+
+  const Highlight = ({ text }) => {
+    if (!q) return text;
+    const parts = text.split(new RegExp(`(${q.replace(/[.*+?^${}()|[\]\\]/g,"\\$&")})`, "gi"));
+    return parts.map((p, i) =>
+      p.toLowerCase() === q
+        ? <mark key={i} style={{background:"var(--ss-warning)",color:"#000",borderRadius:2,padding:"0 1px"}}>{p}</mark>
+        : p
+    );
+  };
+
+  return (
+    <div style={{maxWidth:860,margin:"0 auto",padding:"0 4px"}}>
+      {/* Search bar */}
+      <div style={{position:"sticky",top:0,zIndex:10,background:"var(--ss-bg)",paddingBottom:12,paddingTop:4}}>
+        <div style={{position:"relative"}}>
+          <span style={{position:"absolute",left:12,top:"50%",transform:"translateY(-50%)",
+            fontSize:15,color:"var(--ss-text-dim)",pointerEvents:"none"}}>🔍</span>
+          <input
+            autoFocus
+            placeholder="Search features, actions, settings…"
+            value={query}
+            onChange={e => setQuery(e.target.value)}
+            style={{width:"100%",boxSizing:"border-box",padding:"10px 14px 10px 36px",
+              fontSize:14,border:"1px solid var(--ss-accent)",borderRadius:8,
+              background:"var(--ss-surface)",color:"var(--ss-text)",
+              fontFamily:"inherit",outline:"none"}}/>
+          {query && (
+            <button onClick={()=>setQuery("")}
+              style={{position:"absolute",right:10,top:"50%",transform:"translateY(-50%)",
+                background:"none",border:"none",cursor:"pointer",
+                fontSize:16,color:"var(--ss-text-dim)",lineHeight:1,padding:2}}>×</button>
+          )}
+        </div>
+
+        {/* Category filter chips */}
+        <div style={{display:"flex",gap:6,flexWrap:"wrap",marginTop:10}}>
+          <button onClick={()=>setActiveCat(null)}
+            style={{padding:"4px 12px",borderRadius:12,border:"1px solid "+(activeCat===null?"var(--ss-accent)":"var(--ss-border)"),
+              background:activeCat===null?"var(--ss-accent-18)":"transparent",
+              color:activeCat===null?"var(--ss-accent)":"var(--ss-text-muted)",
+              fontSize:11,fontWeight:600,cursor:"pointer",fontFamily:"inherit",transition:"all .15s"}}>
+            All
+          </button>
+          {HELP_CATEGORIES.map(cat => (
+            <button key={cat} onClick={()=>setActiveCat(activeCat===cat?null:cat)}
+              style={{padding:"4px 12px",borderRadius:12,
+                border:"1px solid "+(activeCat===cat?(catColors[cat]||"var(--ss-accent)")+"90":"var(--ss-border)"),
+                background:activeCat===cat?(catColors[cat]||"var(--ss-accent)")+"18":"transparent",
+                color:activeCat===cat?(catColors[cat]||"var(--ss-accent)"):"var(--ss-text-muted)",
+                fontSize:11,fontWeight:600,cursor:"pointer",fontFamily:"inherit",transition:"all .15s"}}>
+              {cat}
+            </button>
+          ))}
+        </div>
+      </div>
+
+      {/* Results count */}
+      {(query||activeCat) && (
+        <div style={{fontSize:11,color:"var(--ss-text-dim)",marginBottom:12}}>
+          {filtered.length} result{filtered.length!==1?"s":""}{activeCat?` in "${activeCat}"`:""}
+          {query?` for "${query}"`:""}
+        </div>
+      )}
+
+      {/* Articles grouped by category */}
+      {filtered.length===0 ? (
+        <div style={{textAlign:"center",padding:"48px 0",color:"var(--ss-text-dim)"}}>
+          <div style={{fontSize:32,marginBottom:12}}>🔍</div>
+          <div style={{fontSize:14,fontWeight:600}}>No results for "{query}"</div>
+          <div style={{fontSize:12,marginTop:6}}>Try a shorter search term, or browse by category above.</div>
+        </div>
+      ) : (
+        Object.entries(grouped).map(([cat, articles]) => (
+          <div key={cat} style={{marginBottom:28}}>
+            <div style={{display:"flex",alignItems:"center",gap:8,marginBottom:10}}>
+              <div style={{width:3,height:18,borderRadius:2,background:catColors[cat]||"var(--ss-accent)",flexShrink:0}}/>
+              <span style={{fontSize:11,fontWeight:800,letterSpacing:".08em",textTransform:"uppercase",
+                color:catColors[cat]||"var(--ss-accent)"}}>{cat}</span>
+            </div>
+            <div style={{display:"flex",flexDirection:"column",gap:6}}>
+              {articles.map(a => (
+                <div key={a.id}
+                  style={{background:"var(--ss-surface)",border:"1px solid var(--ss-border)",
+                    borderRadius:8,padding:"12px 16px",
+                    borderLeft:"3px solid "+(catColors[a.cat]||"var(--ss-accent)")+"60"}}>
+                  <div style={{fontSize:13,fontWeight:700,color:"var(--ss-text)",marginBottom:5}}>
+                    <Highlight text={a.title}/>
+                  </div>
+                  <div style={{fontSize:12,color:"var(--ss-text-muted)",lineHeight:1.6}}>
+                    <Highlight text={a.body}/>
+                  </div>
+                </div>
+              ))}
+            </div>
+          </div>
+        ))
+      )}
+
+      {/* Footer */}
+      <div style={{marginTop:24,paddingTop:16,borderTop:"1px solid var(--ss-border)",
+        fontSize:11,color:"var(--ss-text-dim)",textAlign:"center",lineHeight:1.7}}>
+        <strong style={{color:"var(--ss-text-muted)"}}>PCA Filer City — Shift Scheduler</strong><br/>
+        All data is stored locally in your browser. No data leaves this device.<br/>
+        For roster backup, use Settings → Data → Export Roster.
+      </div>
+    </div>
+  );
+}
+
+function SettingsPanel({ themeName, setThemeName, customTheme, setCustomTheme, mobileView, setMobileView, settingsTab: settingsTabProp, setSettingsTab: setSettingsTabProp }) {
   const { setSettings, ...settings } = useSettings();
   const { employees, setEmployees, empPatterns, setEmpPatterns, setSavedRosters } = useRoster();
   const { schedule, setSchedule, extShifts, setExtShifts, setWeekStart } = useSchedule();
@@ -11638,7 +12898,7 @@ function SettingsPanel({ themeName, setThemeName, customTheme, setCustomTheme, s
   const iS = {
     background: "var(--ss-surface-alt)", border: "1px solid " + "var(--ss-border)", color: "var(--ss-text)",
     padding: "10px 14px", borderRadius: 6, outline: "none", fontSize: 14,
-    fontFamily: "'JetBrains Mono',monospace", width: "100%", boxSizing: "border-box",
+    fontFamily: "inherit", width: "100%", boxSizing: "border-box",
   };
 
   const Section = ({ title, children }) => (
@@ -11713,9 +12973,10 @@ function SettingsPanel({ themeName, setThemeName, customTheme, setCustomTheme, s
 
       {settingsTab==="appearance" && (
         <ThemeCustomizer
-        themeName={themeName} setThemeName={setThemeName}
-        customTheme={customTheme} setCustomTheme={setCustomTheme}
-      />
+          themeName={themeName} setThemeName={setThemeName}
+          customTheme={customTheme} setCustomTheme={setCustomTheme}
+          mobileView={mobileView} setMobileView={setMobileView}
+        />
       )}
 
       {settingsTab==="rules" && (
@@ -11894,6 +13155,7 @@ function ShiftSchedulerApp() {
 
   const [themeName,   setThemeName,  themeLoaded] = usePersistentState("shift_theme","dark");
   const [customTheme, setCustomTheme, customThemeLoaded] = usePersistentState("shift_custom_theme", {});
+  const [mobileView,  setMobileView, mobileLoaded] = usePersistentState("shift_mobile_view", false);
   const [buildCount,  setBuildCount, buildLoaded] = usePersistentState("shift_build", 0);
   const [customSeed, setCustomSeed] = usePersistentState("shift_custom_seed", null);
   const [employees,   setEmployees,  empLoaded]   = usePersistentState("shift_employees",[]);
@@ -12135,8 +13397,8 @@ function ShiftSchedulerApp() {
     return result;
   },[schedule,extShifts,employees,slotSMDualCoverage]);
   const underHoursCount = useMemo(()=>
-    employees.filter(e=>e.employmentType==="full-time"&&calcHours(e.id,schedule)<FT_MIN_HOURS).length
-  ,[employees,schedule]);
+    employees.filter(e=>e.employmentType==="full-time"&&calcHours(e.id,schedule,extShifts||[])<FT_MIN_HOURS).length
+  ,[employees,schedule,extShifts]);
   const fatigueCount = useMemo(()=>
     employees.filter(e=>getFatigueIssues(e.id,schedule,cfg,employees,extShifts||[]).length>0).length
   ,[employees,schedule,extShifts]);
@@ -12145,6 +13407,7 @@ function ShiftSchedulerApp() {
   ,[employees,schedule]);
 
   return (
+    <ConfirmDialogProvider>
     <ThemeCtx.Provider value={t}>
     <SettingsCtx.Provider value={{ ...cfg, setSettings }}>
     <RosterCtx.Provider value={{
@@ -12178,40 +13441,38 @@ function ShiftSchedulerApp() {
       pendingAutoFill, setPendingAutoFill,
       clearPendingAutoFill: () => setPendingAutoFill(null),
       showTestModal, setShowTestModal,
+      mobileView, setMobileView,
     }}>
       <div style={{minHeight:"100vh",fontFamily:"inherit"}}>
 
         {showTestModal&&<TestPopulationModal onGenerate={handleGenerateTest} onCancel={()=>setShowTestModal(false)}/>}
 
         {}
-        <div style={{background:"var(--ss-surface)",borderBottom:"1px solid var(--ss-border)",padding:"20px 28px",
-          display:"flex",alignItems:"center",justifyContent:"center",position:"relative"}}>
-          <div style={{display:"flex",alignItems:"center",gap:14}}>
-            <img src="logo-psi.avif" alt="PSI" style={{width:104,height:104,borderRadius:8,objectFit:"contain",flexShrink:0}}/>
-            <div style={{width:10,height:10,borderRadius:"50%",background:"var(--ss-accent)",boxShadow:"0 0 10px "+"var(--ss-accent-88)",flexShrink:0}}/>
-            <div style={{display:"flex",flexDirection:"column",gap:1}}>
-              <h1 style={{margin:0,fontSize:22,fontWeight:700,letterSpacing:"-.02em"}}>PCA Filer City Security Scheduler</h1>
-              <span style={{margin:0,fontSize:9,fontWeight:600,color:"var(--ss-text-dim)",letterSpacing:".08em",paddingLeft:2}}>{APP_VERSION}</span>
+        <div style={{background:"var(--ss-surface)",borderBottom:"1px solid var(--ss-border)",
+          padding:mobileView?"8px 12px":"10px 28px",
+          display:"flex",alignItems:"center",justifyContent:"space-between",position:"relative"}}>
+          <div style={{display:"flex",alignItems:"center",gap:mobileView?8:12}}>
+            <img src="logo-psi.avif" alt="PSI" style={{width:mobileView?32:44,height:mobileView?32:44,borderRadius:6,objectFit:"contain",flexShrink:0}}/>
+            <div style={{display:"flex",flexDirection:"column",gap:0}}>
+              <h1 style={{margin:0,fontSize:mobileView?13:16,fontWeight:700,letterSpacing:"-.01em",lineHeight:1.3}}>
+                {mobileView?"PCA Filer City":"PCA Filer City Security Scheduler"}
+              </h1>
+              <span style={{margin:0,fontSize:10,fontWeight:500,color:"var(--ss-text-dim)",letterSpacing:".04em"}}>{APP_VERSION}</span>
             </div>
           </div>
-          <div style={{display:"flex",gap:8,alignItems:"center",position:"absolute",right:28}}>
+          <div style={{display:"flex",gap:6,alignItems:"center"}}>
             <div style={{position:"relative"}}>
               <div style={{display:"flex",border:"1px solid var(--ss-border)",borderRadius:6,overflow:"hidden"}}>
                 <button onClick={()=>setThemeName(p=>p==="dark"?"light":"dark")} title="Toggle dark/light theme"
-                  style={{background:"var(--ss-surface-alt)",border:"none",borderRight:"1px solid var(--ss-border)",
-                    color:"var(--ss-text-muted)",padding:"8px 14px",cursor:"pointer",fontSize:14,fontFamily:"inherit",
-                    display:"flex",alignItems:"center",transition:"color .15s"}}
-                  onMouseEnter={e=>{e.currentTarget.style.color="var(--ss-accent)";}}
-                  onMouseLeave={e=>{e.currentTarget.style.color="var(--ss-text-muted)";}}>
-                  {themeName==="dark"?"\u2600":"\u263d"}
+                  className="ss-btn-icon"
+                  style={{border:"none",borderRight:"1px solid var(--ss-border)",borderRadius:0,
+                    background:"var(--ss-surface-alt)",padding:"6px 10px"}}>
+                  {Icon(themeName==="dark"?"sun":"moon", {size:14, color:"currentColor"})}
                 </button>
                 <button onClick={()=>setShowThemeMenu(o=>!o)} title="Theme options"
-                  style={{background:"var(--ss-surface-alt)",border:"none",color:"var(--ss-text-muted)",
-                    padding:"8px 9px",cursor:"pointer",fontSize:9,fontFamily:"inherit",
-                    display:"flex",alignItems:"center",transition:"color .15s"}}
-                  onMouseEnter={e=>{e.currentTarget.style.color="var(--ss-accent)";}}
-                  onMouseLeave={e=>{e.currentTarget.style.color="var(--ss-text-muted)";}}>
-                  ▾
+                  className="ss-btn-icon"
+                  style={{border:"none",borderRadius:0,background:"var(--ss-surface-alt)",padding:"6px 7px"}}>
+                  {Icon("chevron-down", {size:12, color:"currentColor"})}
                 </button>
               </div>
               {showThemeMenu && (
@@ -12219,33 +13480,35 @@ function ShiftSchedulerApp() {
                   <div onClick={()=>setShowThemeMenu(false)}
                     style={{position:"fixed",inset:0,zIndex:998}}/>
                   <div style={{position:"absolute",right:0,top:"calc(100% + 6px)",zIndex:999,
-                    background:"var(--ss-surface)",border:"1px solid var(--ss-border)",borderRadius:6,
-                    boxShadow:"0 4px 20px rgba(0,0,0,.35)",minWidth:190,overflow:"hidden"}}>
+                    background:"var(--ss-surface)",border:"1px solid var(--ss-border)",borderRadius:8,
+                    boxShadow:"0 8px 24px rgba(0,0,0,.3)",minWidth:200,overflow:"hidden",padding:"4px 0"}}>
                     <button onClick={()=>{setThemeName(p=>p==="dark"?"light":"dark");setShowThemeMenu(false);}}
-                      style={{width:"100%",display:"flex",alignItems:"center",gap:8,padding:"10px 14px",
+                      style={{width:"100%",display:"flex",alignItems:"center",gap:10,padding:"9px 14px",
                         background:"transparent",border:"none",cursor:"pointer",fontFamily:"inherit",
-                        fontSize:12,fontWeight:600,color:"var(--ss-text)",textAlign:"left"}}
+                        fontSize:12,fontWeight:500,color:"var(--ss-text)",textAlign:"left",transition:"background .1s"}}
                       onMouseEnter={e=>e.currentTarget.style.background="var(--ss-surface-alt)"}
                       onMouseLeave={e=>e.currentTarget.style.background="transparent"}>
-                      {themeName==="dark" ? "\u2600 Switch to Light" : "\u263d Switch to Dark"}
+                      {Icon(themeName==="dark"?"sun":"moon", {size:14, color:"var(--ss-text-muted)"})}
+                      {themeName==="dark" ? "Switch to Light" : "Switch to Dark"}
                     </button>
-                    <div style={{height:1,background:"var(--ss-border)"}}/>
                     <button onClick={()=>{setActiveTab("settings");setSettingsTab("appearance");setShowThemeMenu(false);}}
-                      style={{width:"100%",display:"flex",alignItems:"center",gap:8,padding:"10px 14px",
+                      style={{width:"100%",display:"flex",alignItems:"center",gap:10,padding:"9px 14px",
                         background:"transparent",border:"none",cursor:"pointer",fontFamily:"inherit",
-                        fontSize:12,fontWeight:600,color:"var(--ss-text)",textAlign:"left"}}
+                        fontSize:12,fontWeight:500,color:"var(--ss-text)",textAlign:"left",transition:"background .1s"}}
                       onMouseEnter={e=>e.currentTarget.style.background="var(--ss-surface-alt)"}
                       onMouseLeave={e=>e.currentTarget.style.background="transparent"}>
-                      🎨 Customize Colors
+                      {Icon("palette", {size:14, color:"var(--ss-text-muted)"})}
+                      Customize Colors
                     </button>
-                    <div style={{height:1,background:"var(--ss-border)"}}/>
+                    <div style={{height:1,background:"var(--ss-border)",margin:"4px 0"}}/>
                     <button onClick={()=>{setCustomTheme({});setShowThemeMenu(false);}}
-                      style={{width:"100%",display:"flex",alignItems:"center",gap:8,padding:"10px 14px",
+                      style={{width:"100%",display:"flex",alignItems:"center",gap:10,padding:"9px 14px",
                         background:"transparent",border:"none",cursor:"pointer",fontFamily:"inherit",
-                        fontSize:12,fontWeight:600,color:"var(--ss-danger)",textAlign:"left"}}
+                        fontSize:12,fontWeight:500,color:"var(--ss-danger)",textAlign:"left",transition:"background .1s"}}
                       onMouseEnter={e=>e.currentTarget.style.background="var(--ss-surface-alt)"}
                       onMouseLeave={e=>e.currentTarget.style.background="transparent"}>
-                      ↺ Reset to Default
+                      {Icon("rotate-ccw", {size:14, color:"var(--ss-danger)"})}
+                      Reset to Default
                     </button>
                   </div>
                 </>
@@ -12255,36 +13518,55 @@ function ShiftSchedulerApp() {
         </div>
 
         {}
-        <div style={{display:"flex",justifyContent:"center",padding:"8px 28px",background:"var(--ss-surface)",borderBottom:"1px solid var(--ss-border)",gap:6}}>
-          {[{id:"employees",label:"\u25a3 Employees"},{id:"schedule",label:"\u25a6 Schedule"},{id:"dashboard",label:"\u25a4 Dashboard"},{id:"timeoff",label:"📅 Time Off"},{id:"settings",label:"\u2699 Settings"}].map(tab=>(
+        <div style={{display:"flex",justifyContent:mobileView?"flex-start":"center",
+          padding:mobileView?"0 8px":"0 28px",
+          background:"var(--ss-surface)",borderBottom:"1px solid var(--ss-border)",
+          gap:0,overflowX:mobileView?"auto":"visible",
+          scrollbarWidth:"none",msOverflowStyle:"none",flexShrink:0}}>
+          {[
+            {id:"employees",icon:"users",label:"Employees"},
+            {id:"schedule",icon:"calendar-days",label:"Schedule"},
+            {id:"dashboard",icon:"bar-chart-3",label:"Dashboard"},
+            {id:"timeoff",icon:"calendar-off",label:"Time Off"},
+            {id:"settings",icon:"settings",label:"Settings"},
+            {id:"help",icon:"help-circle",label:"Help"},
+          ].map(tab=>{
+            const isActive = activeTab===tab.id;
+            const dashCount = tab.id==="dashboard"?(unmetReqs+(underHoursCount||0)+(fatigueCount||0)+(prefViolCount||0)):0;
+            const toCount = tab.id==="timeoff"?(timeOffReqs||[]).filter(r=>r.status==="pending").length:0;
+            return (
             <button key={tab.id} onClick={()=>setActiveTab(tab.id)} style={{
-              background:activeTab===tab.id?"var(--ss-accent-18)":"transparent",
-              border:"1px solid "+(activeTab===tab.id?"var(--ss-accent)":"var(--ss-border)"),
-              borderRadius:6,
-              color:activeTab===tab.id?"var(--ss-accent)":"var(--ss-text-muted)",
-              padding:"8px 20px",cursor:"pointer",
-              fontSize:13,fontWeight:600,fontFamily:"inherit",letterSpacing:".05em",
-              textTransform:"uppercase",transition:"all .2s",display:"flex",alignItems:"center",gap:7}}>
-              {tab.label}
-              {tab.id==="dashboard"&&(unmetReqs>0||underHoursCount>0||fatigueCount>0||prefViolCount>0)&&(
-                <span style={{background:"var(--ss-danger)",color:"#fff",fontSize:9,fontWeight:800,
-                  padding:"1px 6px",borderRadius:10,lineHeight:1.4}}>
-                  {unmetReqs+underHoursCount+fatigueCount+prefViolCount}
+              background:"transparent",
+              border:"none",
+              borderBottom:isActive?"2px solid var(--ss-accent)":"2px solid transparent",
+              color:isActive?"var(--ss-accent)":"var(--ss-text-muted)",
+              padding:mobileView?"10px 12px":"10px 18px",cursor:"pointer",
+              fontSize:mobileView?16:12,fontWeight:isActive?600:500,fontFamily:"inherit",
+              letterSpacing:".03em",flexShrink:0,
+              textTransform:"uppercase",transition:"all .15s",display:"flex",alignItems:"center",gap:7,
+              position:"relative"}}>
+              {!mobileView && Icon(tab.icon, {size:14, color:"currentColor"})}
+              {mobileView ? Icon(tab.icon, {size:18, color:"currentColor"}) : tab.label}
+              {dashCount>0&&(
+                <span style={{background:"var(--ss-danger)",color:"#fff",fontSize:9,fontWeight:700,
+                  padding:"1px 5px",borderRadius:10,lineHeight:1.3,minWidth:16,textAlign:"center"}}>
+                  {dashCount}
                 </span>
               )}
-              {tab.id==="timeoff"&&(timeOffReqs||[]).filter(r=>r.status==="pending").length>0&&(
-                <span style={{background:"var(--ss-warning)",color:"#000",fontSize:9,fontWeight:800,
-                  padding:"1px 6px",borderRadius:10,lineHeight:1.4}}>
-                  {(timeOffReqs||[]).filter(r=>r.status==="pending").length}
+              {toCount>0&&(
+                <span style={{background:"var(--ss-warning)",color:"#000",fontSize:9,fontWeight:700,
+                  padding:"1px 5px",borderRadius:10,lineHeight:1.3,minWidth:16,textAlign:"center"}}>
+                  {toCount}
                 </span>
               )}
             </button>
-          ))}
+            );
+          })}
         </div>
 
         {}
-        <div style={{display:"flex",gap:24,padding:"14px 28px",justifyContent:"center",background:"var(--ss-surface)",
-          borderBottom:"1px solid var(--ss-border)",fontSize:12,flexWrap:"wrap"}}>
+        <div style={{display:mobileView?"none":"flex",gap:16,padding:"7px 28px",justifyContent:"center",alignItems:"center",background:"var(--ss-bg)",
+          borderBottom:"1px solid var(--ss-border)",fontSize:11,flexWrap:"wrap"}}>
           <span ref={rosterRef} style={{position:"relative"}}>
             <span
               onClick={()=>setRosterOpen(o=>!o)}
@@ -12293,7 +13575,8 @@ function ShiftSchedulerApp() {
                 background:rosterOpen?"var(--ss-accent-18)":"transparent"}}
               onMouseEnter={e=>e.currentTarget.style.background="var(--ss-accent-12)"}
               onMouseLeave={e=>e.currentTarget.style.background=rosterOpen?"var(--ss-accent-18)":"transparent"}>
-              <span style={{color:"var(--ss-text-muted)"}}>ROSTER:</span>
+              {Icon("users", {size:12, color:"var(--ss-text-muted)"})}
+              <span style={{color:"var(--ss-text-muted)",fontSize:10,fontWeight:600,letterSpacing:".04em"}}>ROSTER</span>
               <span style={{color:"var(--ss-accent)",fontWeight:700}}>{employees.length}</span>
               <span style={{fontSize:9,color:"var(--ss-accent)",marginLeft:1}}>{rosterOpen?"▲":"▼"}</span>
             </span>
@@ -12402,7 +13685,8 @@ function ShiftSchedulerApp() {
                   background:"none",border:"none",padding:0,cursor:unfilledSlots.length>0?"pointer":"default",
                   fontFamily:"inherit",fontSize:"inherit",display:"flex",alignItems:"center",gap:4,color:"inherit",
                 }}>
-                  <span style={{color:"var(--ss-text-muted)"}}>FILLED:</span>{" "}
+                  {Icon("check-square", {size:12, color:"var(--ss-text-muted)"})}
+                  <span style={{color:"var(--ss-text-muted)",fontSize:10,fontWeight:600,letterSpacing:".04em"}}>FILLED</span>{" "}
                   <span style={{color:filledColor,fontWeight:700}}>{filledSlots}/{totalSlots}</span>
                   {unfilledSlots.length>0?(
                     <span style={{fontSize:9,color:filledColor,opacity:.7,marginLeft:1}}>
@@ -12458,13 +13742,14 @@ function ShiftSchedulerApp() {
                 )}
               </span>
             );})()}
-          <span><span style={{color:"var(--ss-text-muted)"}}>SHIFTS/WEEK:</span> <span style={{fontWeight:700}}>21</span></span>
+          <span style={{display:"inline-flex",alignItems:"center",gap:4}}>{Icon("layers", {size:12, color:"var(--ss-text-muted)"})}<span style={{color:"var(--ss-text-muted)",fontSize:10,fontWeight:600}}>SHIFTS/WK</span> <span style={{fontWeight:700}}>21</span></span>
           {unmetReqs>0&&(
               <span ref={covRef} style={{position:"relative",display:"inline-flex",alignItems:"center"}}>
                 <button onClick={()=>setCovOpen(o=>!o)} style={{background:"none",border:"none",padding:0,
                   cursor:"pointer",fontFamily:"inherit",fontSize:"inherit",
                   display:"flex",alignItems:"center",gap:4,color:"inherit"}}>
-                  <span style={{color:"var(--ss-warning)"}}>⚠ COVERAGE:</span>{" "}
+                  {Icon("shield-alert", {size:12, color:"var(--ss-warning)"})}
+                  <span style={{color:"var(--ss-warning)",fontSize:10,fontWeight:600}}>COVERAGE</span>{" "}
                   <span style={{color:"var(--ss-warning)",fontWeight:700}}>{unmetReqs}</span>
                   <span style={{fontSize:9,color:"var(--ss-warning)",opacity:.7,marginLeft:1}}>
                     {covOpen?"▲":"▼"}
@@ -12509,14 +13794,14 @@ function ShiftSchedulerApp() {
                 )}
               </span>
           )}
-          {underHoursCount>0&&<span><span style={{color:"var(--ss-danger)"}}>\u26a0 UNDER 40H:</span> <span style={{color:"var(--ss-danger)",fontWeight:700}}>{underHoursCount} FT</span></span>}
-          {fatigueCount>0&&<span><span style={{color:"var(--ss-fatigue)"}}>⚠ FATIGUE:</span> <span style={{color:"var(--ss-fatigue)",fontWeight:700}}>{fatigueCount} staff</span></span>}
-          {prefViolCount>0&&<span><span style={{color:"var(--ss-warning)"}}>⚠ PREF VIOLATIONS:</span> <span style={{color:"var(--ss-warning)",fontWeight:700}}>{prefViolCount} staff</span></span>}
-          {savedWeeks.length>0&&<span><span style={{color:"var(--ss-text-muted)"}}>SAVED WEEKS:</span> <span style={{color:"var(--ss-accent)",fontWeight:700}}>{savedWeeks.length}</span></span>}
+          {underHoursCount>0&&<span style={{display:"inline-flex",alignItems:"center",gap:4}}>{Icon("clock", {size:12, color:"var(--ss-danger)"})}<span style={{color:"var(--ss-danger)",fontSize:10,fontWeight:600}}>UNDER 40H</span> <span style={{color:"var(--ss-danger)",fontWeight:700}}>{underHoursCount} FT</span></span>}
+          {fatigueCount>0&&<span style={{display:"inline-flex",alignItems:"center",gap:4}}>{Icon("alert-triangle", {size:12, color:"var(--ss-fatigue)"})}<span style={{color:"var(--ss-fatigue)",fontSize:10,fontWeight:600}}>FATIGUE</span> <span style={{color:"var(--ss-fatigue)",fontWeight:700}}>{fatigueCount}</span></span>}
+          {prefViolCount>0&&<span style={{display:"inline-flex",alignItems:"center",gap:4}}>{Icon("alert-circle", {size:12, color:"var(--ss-warning)"})}<span style={{color:"var(--ss-warning)",fontSize:10,fontWeight:600}}>PREF</span> <span style={{color:"var(--ss-warning)",fontWeight:700}}>{prefViolCount}</span></span>}
+          {savedWeeks.length>0&&<span style={{display:"inline-flex",alignItems:"center",gap:4}}>{Icon("save", {size:12, color:"var(--ss-text-muted)"})}<span style={{color:"var(--ss-text-muted)",fontSize:10,fontWeight:600}}>SAVED</span> <span style={{color:"var(--ss-accent)",fontWeight:700}}>{savedWeeks.length}</span></span>}
         </div>
 
         {}
-        <div style={{padding:"24px 28px"}}>
+        <div style={{padding:mobileView?"10px 10px":"16px 28px"}}>
           {activeTab==="employees"&&(
             <EmployeeManager onOpenTestModal={()=>setShowTestModal(true)}/>
           )}
@@ -12527,8 +13812,8 @@ function ShiftSchedulerApp() {
               </div>
               {}
               <div style={{flexShrink:0,transition:"width .2s",
-                width:sidebarOpen?260:36,overflow:"hidden",
-                borderLeft:"1px solid var(--ss-border)",marginLeft:8,
+                width:mobileView?0:sidebarOpen?260:36,overflow:"hidden",
+                borderLeft:mobileView?"none":"1px solid var(--ss-border)",marginLeft:mobileView?0:8,
                 background:"var(--ss-surface)",borderRadius:6}}>
                 <button onClick={()=>setSidebarOpen(o=>!o)}
                   title={sidebarOpen?"Close coverage sidebar":"Open coverage sidebar"}
@@ -12598,7 +13883,11 @@ function ShiftSchedulerApp() {
             <SettingsPanel
                 themeName={themeName} setThemeName={setThemeName}
                 customTheme={customTheme} setCustomTheme={setCustomTheme}
+                mobileView={mobileView} setMobileView={setMobileView}
                 settingsTab={settingsTab} setSettingsTab={setSettingsTab}/>
+          )}
+          {activeTab==="help"&&(
+            <HelpPanel/>
           )}
         </div>
       {showExcelPreviewApp && (
@@ -12615,6 +13904,7 @@ function ShiftSchedulerApp() {
     </RosterCtx.Provider>
     </SettingsCtx.Provider>
     </ThemeCtx.Provider>
+    </ConfirmDialogProvider>
   );
 }
 
