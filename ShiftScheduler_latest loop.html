@@ -579,7 +579,13 @@ const canWorkExtHalf = (emp, pairId, slotIndex) => {
   if (!pair) return true;
   const shiftId = pair.covers[slotIndex]; // primary 8hr shift for this half
   if (shiftId && (emp.blockedShifts || []).includes(shiftId)) return false;
-  if (shiftId && emp.requiredShift && emp.requiredShift !== shiftId) return false;
+  // requiredShift: an ext shift spans multiple 8hr shifts. The employee's required
+  // shift is satisfied if ANY of the shifts their half physically covers matches.
+  // empA (slot 0) covers pair.covers; empB (slot 1) covers pair.coversB if defined.
+  // Example: Night 12hr empA works 1800–0600 covering ["second","third"] — a 3rd-shift
+  // employee (requiredShift="third") IS eligible because their required shift is covered.
+  const physicalCoverage = (slotIndex === 1 && pair.coversB) ? pair.coversB : pair.covers;
+  if (emp.requiredShift && !physicalCoverage.includes(emp.requiredShift)) return false;
   // Swing shifts: check per-employee swingEligible array
   if (pair.isSwing) {
     const eligible = emp.swingEligible || [];
@@ -1217,16 +1223,222 @@ function findExtShiftPairs(day, employees, schedule, extShifts) {
       }
     }
     // If no two-person pair but one person covers all: single-person 12hr (rare)
+    // Must also pass canWorkExtHalf so we don't suggest an employee whose
+    // ext12hPref forbids this pair (e.g. "day"-only emp on a Night 12hr).
     if (!pairs.length) {
       for (const emp of candidates) {
-        if (neededRoles.every(r => emp.qualifications.includes(r))) {
-          pairs.push({ pairId: pair.id, pair, day, empA: emp, empB: null, neededRoles, coveredGaps });
-          break;
-        }
+        if (!neededRoles.every(r => emp.qualifications.includes(r))) continue;
+        if (!canWorkExtHalf(emp, pair.id, 0)) continue;
+        pairs.push({ pairId: pair.id, pair, day, empA: emp, empB: null, neededRoles, coveredGaps });
+        break;
       }
     }
   }
   return pairs;
+}
+
+// ── Proactive Extended Shift Deployment (Step 0) ─────────────────────────────
+// Analyzes roster composition BEFORE buildAutoFill runs to identify shifts with
+// structural specialist deficits (≤1 dedicated Scale or Medical provider).
+// For each deficit, deploys 12hr extended shifts from adjacent-shift employees
+// so the CSP backtracker can plan around pre-committed coverage rather than
+// discovering gaps after the schedule is already built.
+//
+// Example: if 2nd shift has only 1 Medical-qualified FT employee (5 days/week),
+// the remaining 2 days have no Medical coverage. Step 0 finds an adjacent-shift
+// Medical employee with ext12hPref set and pre-deploys a 12hr ext shift to cover
+// those gap days. The CSP then sees those hours pre-committed and schedules the
+// rest of the week around them.
+function deployProactiveExtShifts(sourceEmps, cfg, empTimeOffDays, existingExtShifts) {
+  const autoExts = [];
+  const usedKeys = new Set();
+  const maxShifts = cfg?.maxConsecutiveShifts ?? 5;
+  const MAX_EXT_PER_EMP = 2;      // cap ext shifts per employee to avoid overcommit
+  const MAX_EXT_PER_DEFICIT = 3;   // cap ext shifts per role deficit
+
+  // Mark existing ext shifts to prevent duplicates
+  (existingExtShifts || []).forEach(ext => usedKeys.add(ext.day + "__" + ext.pairId));
+
+  // Track ext commitments per employee (starts from existing ext shifts)
+  const empExtCount = {};
+  (existingExtShifts || []).forEach(ext => {
+    if (ext.empAId) empExtCount[ext.empAId] = (empExtCount[ext.empAId] || 0) + 1;
+    if (ext.empBId) empExtCount[ext.empBId] = (empExtCount[ext.empBId] || 0) + 1;
+  });
+
+  // ── Classify employees definitively assigned to each shift ──────────────
+  // Only counts employees whose assignment is deterministic from roster data
+  // alone: requiredShift, Supervisor, or single preferred shift.
+  // Multi-preferred and no-preference employees float — they're distributed
+  // by Step 1 and can't be relied on for structural analysis.
+  const shiftDedicated = {};
+  SHIFTS.forEach(shift => {
+    shiftDedicated[shift.id] = sourceEmps.filter(e => {
+      if (e.employmentType !== "full-time") return false;
+      if (e.inTraining) return false;
+      const isSup = (e.qualifications || []).includes("Supervisor");
+      if (isSup) return shift.id === "first";
+      if (e.requiredShift) return e.requiredShift === shift.id;
+      const prefs = e.preferredShifts || [];
+      if (prefs.length === 1) return prefs[0] === shift.id;
+      return false;
+    });
+  });
+
+  // ── Scan each shift for specialist deficits ─────────────────────────────
+  SHIFTS.forEach(targetShift => {
+    const dedicated = shiftDedicated[targetShift.id];
+
+    for (const role of ["Medical", "Scale"]) {
+      // Count dedicated FT providers for this role on this shift
+      const providers = dedicated.filter(e =>
+        (e.qualifications || []).includes(role)
+      );
+
+      // >1 provider → adequate redundancy, no action needed
+      if (providers.length > 1) continue;
+
+      // ≤1 provider → structural deficit
+      // Gap days: a single provider covers maxShifts days, leaving the rest uncovered
+      const coveredDays = providers.length * maxShifts;
+      const gapDays = Math.max(0, 7 - coveredDays);
+      if (gapDays === 0) continue;
+
+      // Don't deploy the sole provider of this role as an ext shift — deploying
+      // them extends their hours but doesn't help when they're OFF duty.
+      const soleProviderIds = new Set(providers.map(e => e.id));
+
+      // ── Score each day by coverage urgency ────────────────────────────
+      // Days where fewer qualified employees (across ALL shifts) are available
+      // for this role are most urgent for ext shift deployment.
+      const dayScores = DAYS.map(day => {
+        const allAvail = sourceEmps.filter(e => {
+          if (e.inTraining) return false;
+          if (!(e.qualifications || []).includes(role)) return false;
+          if ((e.unavailableDays || []).includes(day)) return false;
+          if (empTimeOffDays && empTimeOffDays.has(e.id + "__" + day)) return false;
+          if ((e.blockedShifts || []).includes(targetShift.id)) return false;
+          if (e.requiredShift && e.requiredShift !== targetShift.id && !e.crossShiftOT) return false;
+          return true;
+        });
+        return { day, coverage: allAvail.length };
+      }).sort((a, b) => a.coverage - b.coverage); // most urgent first
+
+      // ── Deploy ext shifts on the most urgent gap days ──────────────────
+      let deployed = 0;
+      for (const { day } of dayScores) {
+        if (deployed >= Math.min(gapDays, MAX_EXT_PER_DEFICIT)) break;
+
+        let found = false;
+        for (const pair of EXT_PAIRS) {
+          if (found) break;
+          if (pair.isSwing) continue;      // swing shifts handled by existing reactive code
+          if (pair.id === "split") continue; // split pairs have complex cross-day logic
+
+          // Which side of this pair covers the target shift?
+          const coverIdx = pair.covers.indexOf(targetShift.id);
+          if (coverIdx === -1) continue;
+
+          const extKey = day + "__" + pair.id;
+          if (usedKeys.has(extKey)) continue;
+
+          // The role-providing half is the one aligned with targetShift in pair.covers
+          //   coverIdx 0 → empA provides roles to targetShift
+          //   coverIdx 1 → empB provides roles to targetShift
+          const providerSlot = coverIdx;
+          const otherSlot = 1 - providerSlot;
+
+          // ── Find provider candidates (must have the needed role) ─────
+          const providerCands = sourceEmps.filter(e => {
+            if (e.inTraining) return false;
+            if (soleProviderIds.has(e.id)) return false;
+            if ((e.unavailableDays || []).includes(day)) return false;
+            if (empTimeOffDays && empTimeOffDays.has(e.id + "__" + day)) return false;
+            if (!canWorkExtHalf(e, pair.id, providerSlot)) return false;
+            if (!(e.qualifications || []).includes(role)) return false;
+            if ((empExtCount[e.id] || 0) >= MAX_EXT_PER_EMP) return false;
+            return true;
+          }).sort((a, b) => {
+            // Prefer employees from a DIFFERENT shift (they extend into target)
+            const aDed = shiftDedicated[targetShift.id].some(d => d.id === a.id) ? 1 : 0;
+            const bDed = shiftDedicated[targetShift.id].some(d => d.id === b.id) ? 1 : 0;
+            if (aDed !== bDed) return aDed - bDed;
+            // Then prefer employees with more qualifications (more flexible for role assignment)
+            return (b.qualifications || []).length - (a.qualifications || []).length;
+          });
+
+          if (!providerCands.length) continue;
+
+          // ── Find candidates for the other half (optional — role not required) ──
+          const chosenProvider = providerCands[0];
+          const otherCands = sourceEmps.filter(e => {
+            if (e.inTraining) return false;
+            if (e.id === chosenProvider.id) return false;
+            if ((e.unavailableDays || []).includes(day)) return false;
+            if (empTimeOffDays && empTimeOffDays.has(e.id + "__" + day)) return false;
+            if (!canWorkExtHalf(e, pair.id, otherSlot)) return false;
+            if ((empExtCount[e.id] || 0) >= MAX_EXT_PER_EMP) return false;
+            return true;
+          }).sort((a, b) => {
+            // Prefer employees who also bring a specialist role (bonus coverage)
+            const aSpec = ["Scale", "Medical"].filter(r => (a.qualifications || []).includes(r)).length;
+            const bSpec = ["Scale", "Medical"].filter(r => (b.qualifications || []).includes(r)).length;
+            return bSpec - aSpec;
+          });
+
+          const empOther = otherCands.length ? otherCands[0] : null;
+
+          // Build empA/empB based on which slot is the provider
+          const empAId = providerSlot === 0 ? chosenProvider.id : (empOther ? empOther.id : null);
+          const empBId = providerSlot === 1 ? chosenProvider.id : (empOther ? empOther.id : null);
+
+          // Must have the provider half filled at minimum
+          if (providerSlot === 0 && !empAId) continue;
+          if (providerSlot === 1 && !empBId) continue;
+
+          const empA = empAId ? sourceEmps.find(e => e.id === empAId) : null;
+          const empB = empBId ? sourceEmps.find(e => e.id === empBId) : null;
+          const combinedRoles = [...new Set([
+            ...(empA ? ["Scale", "Medical"].filter(r => empA.qualifications.includes(r)) : []),
+            ...(empB ? ["Scale", "Medical"].filter(r => empB.qualifications.includes(r)) : []),
+          ])];
+
+          autoExts.push({
+            pairId: pair.id,
+            day,
+            empAId: empAId || null,
+            empBId: empBId || null,
+            roles: combinedRoles,
+            approvedAt: "auto-fill",
+            auto: true,
+            proactive: true,
+          });
+
+          usedKeys.add(extKey);
+          if (empAId) empExtCount[empAId] = (empExtCount[empAId] || 0) + 1;
+          if (empBId) empExtCount[empBId] = (empExtCount[empBId] || 0) + 1;
+          deployed++;
+          found = true;
+
+          console.log("[Step 0] Proactive " + pair.label + " on " + day + ": "
+            + role + " coverage for " + targetShift.id + " shift"
+            + " (empA=" + (empA ? empA.name : "\u2014") + ", empB=" + (empB ? empB.name : "\u2014") + ")");
+        }
+      }
+
+      if (deployed > 0) {
+        console.log("[Step 0] Deployed " + deployed + " ext shift(s) for "
+          + targetShift.id + "/" + role + " deficit");
+      } else if (gapDays > 0) {
+        console.log("[Step 0] WARNING: " + targetShift.id + "/" + role + " has "
+          + gapDays + " gap day(s) but no ext shift candidates qualify"
+          + " \u2014 roster may need additional " + role + "-qualified employees"
+          + " or ext12hPref settings updated");
+      }
+    }
+  });
+
+  return autoExts;
 }
 
 // ── Name Generator ────────────────────────────────────────────────────────────
@@ -2292,9 +2504,13 @@ function buildAutoFill(sourceEmps, cfg, empTimeOffDays, empPatterns, extShiftsAr
     const btElapsed = Date.now() - btSearchStart;
     console.log(`[Backtrack] Completed in ${btElapsed}ms, ${nodesExplored} nodes explored`);
 
-    // ── Improvement 6: Phase 2 hill-climbing preference optimisation ───────
-    // Try pairwise swaps to reduce preference violations and improve fairness
-    // while maintaining full coverage and role constraints.
+    // ── Improvement 6: Phase 2 — Simulated Annealing preference optimisation ──
+    // Replaces the previous 20-round greedy pairwise hill-climb. SA accepts
+    // uphill moves early with decreasing probability, escaping local minima
+    // that pairwise-best-move could not. Supports two move neighborhoods:
+    //   • Pairwise swap (70%) — swap two employees between slots
+    //   • 3-chain rotation (30%) — A→B, B→C, C→A cycle, unreachable via pairs
+    // After SA, a short greedy polish catches any obvious remaining wins.
     const btSchedule = btResult ? btResult.schedule : initialState.schedule;
 
     const btSoftScore = (sched) => {
@@ -2363,68 +2579,180 @@ function buildAutoFill(sourceEmps, cfg, empTimeOffDays, empPatterns, extShiftsAr
       return true;
     };
 
+    // Role coverage helper: a move may not cause a slot that HAD Scale/Medical
+    // to lose it (hard invariant — we never sacrifice role coverage for soft score).
+    const rolePreserved = (oldAsgn, newAsgn) => {
+      if (slotHasRole(oldAsgn, sourceEmps, "Scale")   && !slotHasRole(newAsgn, sourceEmps, "Scale"))   return false;
+      if (slotHasRole(oldAsgn, sourceEmps, "Medical") && !slotHasRole(newAsgn, sourceEmps, "Medical")) return false;
+      return true;
+    };
+
+    // Try a pairwise swap between two slots. Returns {sched, keyI, keyJ} on success,
+    // null on constraint violation. Does not mutate the input schedule.
+    const tryPairSwap = (sched, iI, iJ) => {
+      const si = btSlots[iI], sj = btSlots[iJ];
+      const keyI = cellKey(si.day, si.shiftId), keyJ = cellKey(sj.day, sj.shiftId);
+      const asgnI = sched[keyI] || [], asgnJ = sched[keyJ] || [];
+      if (!asgnI.length || !asgnJ.length) return null;
+      const aiIdx = Math.floor(Math.random() * asgnI.length);
+      const ajIdx = Math.floor(Math.random() * asgnJ.length);
+      const eA = asgnI[aiIdx], eB = asgnJ[ajIdx];
+      if (!eA || !eB) return null;
+      if (eA.employeeId === eB.employeeId) return null;
+      if (eA.position === "Supervisor" || eB.position === "Supervisor") return null;
+      const work = { ...sched };
+      work[keyI] = asgnI.filter((_, idx) => idx !== aiIdx);
+      work[keyJ] = asgnJ.filter((_, idx) => idx !== ajIdx);
+      if (!btCanWorkSlot(eA.employeeId, work, sj.day, sj.shiftId) ||
+          !btCanWorkSlot(eB.employeeId, work, si.day, si.shiftId)) return null;
+      const eAo = empMap.get(eA.employeeId), eBo = empMap.get(eB.employeeId);
+      const posA = btPickPosition(eAo, work[keyJ], sj.day, sj.shiftId);
+      const posB = btPickPosition(eBo, work[keyI], si.day, si.shiftId);
+      if (!posA || !posB) return null;
+      work[keyI] = [...work[keyI], { employeeId: eB.employeeId, position: posB }];
+      work[keyJ] = [...work[keyJ], { employeeId: eA.employeeId, position: posA }];
+      if (!rolePreserved(asgnI, work[keyI]) || !rolePreserved(asgnJ, work[keyJ])) return null;
+      return work;
+    };
+
+    // Try a 3-chain rotation: emp at slot I → J, emp at slot J → K, emp at slot K → I.
+    // Reaches improvements pairwise swaps cannot (e.g. fixing three simultaneous
+    // preference violations where no 2-swap alone helps).
+    const try3Chain = (sched, iI, iJ, iK) => {
+      const bi = btSlots[iI], bj = btSlots[iJ], bk = btSlots[iK];
+      const kI = cellKey(bi.day, bi.shiftId);
+      const kJ = cellKey(bj.day, bj.shiftId);
+      const kK = cellKey(bk.day, bk.shiftId);
+      const aI = sched[kI] || [], aJ = sched[kJ] || [], aK = sched[kK] || [];
+      if (!aI.length || !aJ.length || !aK.length) return null;
+      const rI = Math.floor(Math.random() * aI.length);
+      const rJ = Math.floor(Math.random() * aJ.length);
+      const rK = Math.floor(Math.random() * aK.length);
+      const eI = aI[rI], eJ = aJ[rJ], eK = aK[rK];
+      if (!eI || !eJ || !eK) return null;
+      if (eI.position === "Supervisor" || eJ.position === "Supervisor" || eK.position === "Supervisor") return null;
+      const idSet = new Set([eI.employeeId, eJ.employeeId, eK.employeeId]);
+      if (idSet.size !== 3) return null;
+      const work = { ...sched };
+      work[kI] = aI.filter((_, idx) => idx !== rI);
+      work[kJ] = aJ.filter((_, idx) => idx !== rJ);
+      work[kK] = aK.filter((_, idx) => idx !== rK);
+      // Rotation: eI → J, eJ → K, eK → I
+      if (!btCanWorkSlot(eI.employeeId, work, bj.day, bj.shiftId) ||
+          !btCanWorkSlot(eJ.employeeId, work, bk.day, bk.shiftId) ||
+          !btCanWorkSlot(eK.employeeId, work, bi.day, bi.shiftId)) return null;
+      const eIo = empMap.get(eI.employeeId);
+      const eJo = empMap.get(eJ.employeeId);
+      const eKo = empMap.get(eK.employeeId);
+      const pI = btPickPosition(eKo, work[kI], bi.day, bi.shiftId);
+      const pJ = btPickPosition(eIo, work[kJ], bj.day, bj.shiftId);
+      const pK = btPickPosition(eJo, work[kK], bk.day, bk.shiftId);
+      if (!pI || !pJ || !pK) return null;
+      work[kI] = [...work[kI], { employeeId: eK.employeeId, position: pI }];
+      work[kJ] = [...work[kJ], { employeeId: eI.employeeId, position: pJ }];
+      work[kK] = [...work[kK], { employeeId: eJ.employeeId, position: pK }];
+      if (!rolePreserved(aI, work[kI]) || !rolePreserved(aJ, work[kJ]) || !rolePreserved(aK, work[kK])) return null;
+      return work;
+    };
+
+    // ── SA driver ──────────────────────────────────────────────────────────
     let softScore = btSoftScore(btSchedule);
-    let totalSwaps = 0;
-    for (let round = 0; round < 20; round++) {
-      let bestImprov = 0, bestAction = null;
+    let current = { ...btSchedule };
+    let bestSchedule = { ...btSchedule };
+    let bestScore = softScore;
+
+    const SA_ITERATIONS = 8000;
+    // T₀ calibrated so ~1 preferred-day-off violation (800pts) has ~20% accept prob
+    // initially: exp(-800/500) ≈ 0.20. Cools geometrically to T_final = 1.
+    const T0 = 500;
+    const T_FINAL = 1;
+    const coolingRate = Math.pow(T_FINAL / T0, 1 / SA_ITERATIONS);
+    let T = T0;
+
+    let attempts = 0, accepted = 0, uphill = 0, improvements = 0;
+    for (let iter = 0; iter < SA_ITERATIONS; iter++) {
+      attempts++;
+      let candidate = null;
+      if (Math.random() < 0.7) {
+        // Pairwise swap
+        const iI = Math.floor(Math.random() * btSlots.length);
+        let iJ = Math.floor(Math.random() * btSlots.length);
+        if (iI === iJ) iJ = (iJ + 1) % btSlots.length;
+        candidate = tryPairSwap(current, iI, iJ);
+      } else {
+        // 3-chain
+        const iI = Math.floor(Math.random() * btSlots.length);
+        let iJ = Math.floor(Math.random() * btSlots.length);
+        let iK = Math.floor(Math.random() * btSlots.length);
+        if (iI === iJ) iJ = (iJ + 1) % btSlots.length;
+        if (iK === iI || iK === iJ) iK = (iK + 2) % btSlots.length;
+        if (iI === iJ || iJ === iK || iI === iK) { T *= coolingRate; continue; }
+        candidate = try3Chain(current, iI, iJ, iK);
+      }
+      if (!candidate) { T *= coolingRate; continue; }
+      const newSc = btSoftScore(candidate);
+      const delta = newSc - softScore;
+      if (delta <= 0 || Math.random() < Math.exp(-delta / T)) {
+        current = candidate;
+        softScore = newSc;
+        accepted++;
+        if (delta > 0) uphill++;
+        else if (delta < 0) improvements++;
+        if (softScore < bestScore) {
+          bestScore = softScore;
+          bestSchedule = { ...current };
+        }
+      }
+      T *= coolingRate;
+    }
+
+    // ── Final greedy polish on the best SA result ─────────────────────────
+    // SA is random and may leave obvious pairwise wins on the table near the end.
+    // A short deterministic pass guarantees monotone convergence at termination.
+    current = { ...bestSchedule };
+    softScore = bestScore;
+    let polishSwaps = 0;
+    for (let round = 0; round < 5; round++) {
+      let bestImprov = 0, bestWork = null;
       for (let i = 0; i < btSlots.length; i++) {
         for (let j = i + 1; j < btSlots.length; j++) {
           const si = btSlots[i], sj = btSlots[j];
           const keyI = cellKey(si.day, si.shiftId), keyJ = cellKey(sj.day, sj.shiftId);
-          const asgnI = btSchedule[keyI] || [], asgnJ = btSchedule[keyJ] || [];
+          const asgnI = current[keyI] || [], asgnJ = current[keyJ] || [];
           for (let ai = 0; ai < asgnI.length; ai++) {
             for (let aj = 0; aj < asgnJ.length; aj++) {
               const eA = asgnI[ai], eB = asgnJ[aj];
               if (eA.employeeId === eB.employeeId) continue;
               if (eA.position === "Supervisor" || eB.position === "Supervisor") continue;
-              const savedI = btSchedule[keyI], savedJ = btSchedule[keyJ];
-              btSchedule[keyI] = asgnI.filter((_, idx) => idx !== ai);
-              btSchedule[keyJ] = asgnJ.filter((_, idx) => idx !== aj);
-              if (!btCanWorkSlot(eA.employeeId, btSchedule, sj.day, sj.shiftId) ||
-                  !btCanWorkSlot(eB.employeeId, btSchedule, si.day, si.shiftId)) {
-                btSchedule[keyI] = savedI; btSchedule[keyJ] = savedJ; continue;
-              }
-              const eAObj = empMap.get(eA.employeeId), eBObj = empMap.get(eB.employeeId);
-              const posA = btPickPosition(eAObj, btSchedule[keyJ], sj.day, sj.shiftId);
-              const posB = btPickPosition(eBObj, btSchedule[keyI], si.day, si.shiftId);
-              if (!posA || !posB) { btSchedule[keyI] = savedI; btSchedule[keyJ] = savedJ; continue; }
-              btSchedule[keyI] = [...btSchedule[keyI], { employeeId: eB.employeeId, position: posB }];
-              btSchedule[keyJ] = [...btSchedule[keyJ], { employeeId: eA.employeeId, position: posA }];
-              // Verify role coverage
-              const nSI = slotHasRole(btSchedule[keyI], sourceEmps, "Scale");
-              const nMI = slotHasRole(btSchedule[keyI], sourceEmps, "Medical");
-              const nSJ = slotHasRole(btSchedule[keyJ], sourceEmps, "Scale");
-              const nMJ = slotHasRole(btSchedule[keyJ], sourceEmps, "Medical");
-              const oSI = slotHasRole(savedI, sourceEmps, "Scale");
-              const oMI = slotHasRole(savedI, sourceEmps, "Medical");
-              const oSJ = slotHasRole(savedJ, sourceEmps, "Scale");
-              const oMJ = slotHasRole(savedJ, sourceEmps, "Medical");
-              if ((!nSI && oSI) || (!nMI && oMI) || (!nSJ && oSJ) || (!nMJ && oMJ)) {
-                btSchedule[keyI] = savedI; btSchedule[keyJ] = savedJ; continue;
-              }
-              const newSc = btSoftScore(btSchedule);
+              const work = { ...current };
+              work[keyI] = asgnI.filter((_, idx) => idx !== ai);
+              work[keyJ] = asgnJ.filter((_, idx) => idx !== aj);
+              if (!btCanWorkSlot(eA.employeeId, work, sj.day, sj.shiftId) ||
+                  !btCanWorkSlot(eB.employeeId, work, si.day, si.shiftId)) continue;
+              const eAo = empMap.get(eA.employeeId), eBo = empMap.get(eB.employeeId);
+              const posA = btPickPosition(eAo, work[keyJ], sj.day, sj.shiftId);
+              const posB = btPickPosition(eBo, work[keyI], si.day, si.shiftId);
+              if (!posA || !posB) continue;
+              work[keyI] = [...work[keyI], { employeeId: eB.employeeId, position: posB }];
+              work[keyJ] = [...work[keyJ], { employeeId: eA.employeeId, position: posA }];
+              if (!rolePreserved(asgnI, work[keyI]) || !rolePreserved(asgnJ, work[keyJ])) continue;
+              const newSc = btSoftScore(work);
               const improv = softScore - newSc;
-              if (improv > bestImprov) {
-                bestImprov = improv;
-                bestAction = {
-                  keyI, keyJ,
-                  newI: btSchedule[keyI].map(a => ({...a})),
-                  newJ: btSchedule[keyJ].map(a => ({...a})),
-                  newSc,
-                };
-              }
-              btSchedule[keyI] = savedI; btSchedule[keyJ] = savedJ;
+              if (improv > bestImprov) { bestImprov = improv; bestWork = work; }
             }
           }
         }
       }
-      if (!bestAction) break;
-      btSchedule[bestAction.keyI] = bestAction.newI;
-      btSchedule[bestAction.keyJ] = bestAction.newJ;
-      softScore = bestAction.newSc;
-      totalSwaps++;
+      if (!bestWork) break;
+      current = bestWork;
+      softScore -= bestImprov;
+      polishSwaps++;
     }
-    if (totalSwaps > 0) console.log(`[Phase 2] ${totalSwaps} swaps, score ${softScore}`);
+    if (softScore < bestScore) { bestScore = softScore; bestSchedule = current; }
+
+    // Commit best schedule back to btSchedule
+    for (const k of Object.keys(bestSchedule)) btSchedule[k] = bestSchedule[k];
+    console.log(`[Phase 2 SA] ${attempts} attempts, ${accepted} accepted (${improvements} improv, ${uphill} uphill), +${polishSwaps} polish swaps, final score ${bestScore}`);
 
     // ── Write backtracking results to ns and rebuild tracking state ─────────
     for (const { day, shiftId } of btSlots) {
@@ -8416,7 +8744,12 @@ function SchedulePopout({ onClose }) {
                     {cellExt.map((ext,ei)=>{
                       const pair=EXT_PAIRS.find(p=>p.id===ext.pairId);
                       const cf=pair?.covers[0]===shift.id;
-                      const empId=cf?ext.empAId:(ext.empBId||ext.empAId);
+                      // Only show a pill for the empA cell if empA exists, and only
+                      // for the empB cell if empB exists. Don't fall back to empA
+                      // on the empB cell — that creates a phantom body at a slot
+                      // no one is physically working.
+                      const empId=cf?ext.empAId:ext.empBId;
+                      if(!empId) return null;
                       const extEmp=employees.find(e=>e.id===empId);
                       if(!extEmp) return null;
                       const ec=pair?.id==="day"?"#7c3aed":"#0e7490";
@@ -9556,10 +9889,19 @@ function ScheduleGrid({ onOpenTestModal }) {
     // ── Single-attempt worker — pure function, no side effects ───────────────
     const attempt = (jitter) => {
       const manualExtShifts = (extShifts||[]).filter(e => e.approvedAt !== "auto-fill");
-      const {schedule:ns, hourTracker, shiftsWorked, usedPatterns} = buildAutoFill(source, cfg, empTimeOffDays, enrichedPatterns, manualExtShifts, jitter);
 
-      const autoExtShifts = [];
-      const usedExtPairs  = new Set();
+      // Step 0: proactive ext shift deployment — analyze roster for structural
+      // specialist deficits and pre-create 12hr ext shifts so the CSP plans
+      // around pre-committed coverage rather than discovering gaps afterward.
+      const proactiveExts = deployProactiveExtShifts(source, cfg, empTimeOffDays, manualExtShifts);
+      const inputExtShifts = [...manualExtShifts, ...proactiveExts];
+
+      const {schedule:ns, hourTracker, shiftsWorked, usedPatterns} = buildAutoFill(source, cfg, empTimeOffDays, enrichedPatterns, inputExtShifts, jitter);
+
+      // Seed autoExtShifts with proactive deployments; reactive code below will
+      // skip any day+pairId already covered via usedExtPairs.
+      const autoExtShifts = [...proactiveExts];
+      const usedExtPairs  = new Set(proactiveExts.map(e => e.day + "__" + e.pairId));
       DAYS.forEach(day => {
         EXT_PAIRS.forEach(pair => {
           if (usedExtPairs.has(day + "__" + pair.id)) return;
@@ -9572,9 +9914,15 @@ function ScheduleGrid({ onOpenTestModal }) {
               return bodies < REGULAR_SLOTS(day, shiftId);
             });
             if (!hasGap) return;
+            // Exclude employees already scheduled on any slot this swing covers —
+            // otherwise we'd double-count them (regular body + phantom ext body).
+            const alreadyOnCoveredSlot = (empId) => pair.covers.some(shiftId =>
+              (ns[cellKey(day, shiftId)] || []).some(a => a.employeeId === empId)
+            );
             const swingCandidates = source.filter(emp => {
               if ((emp.unavailableDays || []).includes(day)) return false;
               if (emp.maxShiftsPerWeek !== null && (shiftsWorked[emp.id]||0) >= emp.maxShiftsPerWeek) return false;
+              if (alreadyOnCoveredSlot(emp.id)) return false;
               return canWorkExtHalf(emp, pair.id, 0); // checks swingEligible[]
             });
             const swingDesigId = (swingDesig || {})[pair.id];
@@ -9597,9 +9945,24 @@ function ScheduleGrid({ onOpenTestModal }) {
           });
           const uniqueNeeded = [...new Set(neededRoles)];
           if (!uniqueNeeded.length) return;
-          const alreadyInBoth = (empId) => pair.covers.every(shiftId =>
-            (ns[cellKey(day, shiftId)] || []).some(a => a.employeeId === empId)
-          );
+
+          // Hard cap: ext body occupies one of the 3 regular slots on each covered
+          // shift. If the CSP has already filled a covered shift to REGULAR_SLOTS,
+          // adding an ext body would push that slot to 4 bodies. Skip.
+          const hasRoomForExtBody = pair.covers.every(shiftId => {
+            const asgn = ns[cellKey(day, shiftId)] || [];
+            const regCount = asgn.filter(a => a.position !== "Supervisor").length;
+            return regCount < REGULAR_SLOTS(day, shiftId);
+          });
+          if (!hasRoomForExtBody) return;
+
+          // Helper: is emp already scheduled on the covered slot they'd occupy?
+          // empA occupies pair.covers[0], empB occupies pair.covers[1]. If the
+          // candidate is already on either slot, they'd be double-counted.
+          const onSlot = (empId, shiftId) =>
+            (ns[cellKey(day, shiftId)] || []).some(a => a.employeeId === empId);
+          const alreadyInBoth = (empId) => pair.covers.every(shiftId => onSlot(empId, shiftId));
+
           const candidates = source.filter(emp => {
             if ((emp.unavailableDays || []).includes(day)) return false;
             if (alreadyInBoth(emp.id)) return false;
@@ -9615,8 +9978,12 @@ function ScheduleGrid({ onOpenTestModal }) {
             for (let j = i + 1; j < candidates.length; j++) {
               const [empA, empB] = (() => {
                 const a = candidates[i], b = candidates[j];
-                const abOk = canWorkExtHalf(a, pair.id, 0) && canWorkExtHalf(b, pair.id, 1);
-                const baOk = canWorkExtHalf(b, pair.id, 0) && canWorkExtHalf(a, pair.id, 1);
+                // Orientation must satisfy canWorkExtHalf AND candidate must not
+                // already be on the slot they'd cover (else double-count).
+                const abOk = canWorkExtHalf(a, pair.id, 0) && canWorkExtHalf(b, pair.id, 1)
+                          && !onSlot(a.id, pair.covers[0]) && !onSlot(b.id, pair.covers[1]);
+                const baOk = canWorkExtHalf(b, pair.id, 0) && canWorkExtHalf(a, pair.id, 1)
+                          && !onSlot(b.id, pair.covers[0]) && !onSlot(a.id, pair.covers[1]);
                 if (abOk) return [a, b];
                 if (baOk) return [b, a];
                 return [null, null];
