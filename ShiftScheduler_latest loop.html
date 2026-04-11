@@ -2363,8 +2363,35 @@ function buildAutoFill(sourceEmps, cfg, empTimeOffDays, empPatterns, extShiftsAr
       if (!hasScale && (emp.qualifications||[]).includes("Scale")) score -= 200;
       if (!hasMedical && (emp.qualifications||[]).includes("Medical")) score -= 200;
       score += hours * 3;
-      // Phase 1: mild day-off hint
-      if ((emp.preferredDaysOff||[]).includes(day)) score += 50;
+      // Phase 1: day-off hint. Raised from +50 to +300 so it outweighs the
+      // stacked preferredShift + rhythm pull and redirects Phase 1 search
+      // toward non-day-off candidates when alternatives exist. At 99999 this
+      // helped harms-pto errors (−9) by steering the CSP onto different
+      // branches; 300 keeps that nudge without being an absolute block.
+      if ((emp.preferredDaysOff||[]).includes(day)) score += 300;
+      // A1b: employee's direct preferredShifts bonus.
+      // plan.shiftId already covers FT, but PT has no plan shift and FT crossShiftOT
+      // can rotate — this term rewards hitting the employee's own stated preference.
+      const prefShifts = emp.preferredShifts || [];
+      if (prefShifts.includes(shiftId)) score -= 80;
+      // A1b: PT preferred-shift mismatch — PT with a shift preference but landing
+      // on a non-preferred shift gets strongly deprioritised (mirrors empScore's
+      // ptPrefMismatch). Scaled smaller than empScore's 800 so it doesn't outweigh
+      // the FT-underhours -400 that must dominate Phase 1.
+      if (!isFT && prefShifts.length > 0 && !prefShifts.includes(shiftId)) score += 400;
+      // A1b: rhythm bonus — reward extending an active 1–4 day streak so runs
+      // stay consecutive rather than fragmenting across the week.
+      const todayIdx = dayIdx(day);
+      let consec = 0;
+      for (let i = todayIdx - 1; i >= 0; i--) {
+        if (state.dayWorked[empId] && state.dayWorked[empId].has(DAYS[i])) consec++;
+        else break;
+      }
+      if (consec >= 1 && consec <= 4) score -= 40;
+      // A1b: FT overtime ramp — spread scheduling pressure before the hard 40h
+      // wall so the search doesn't back itself into a corner where only already-OT
+      // employees remain. Mirrors empScore's overtimeRampPenalty at lower magnitude.
+      if (isFT && hours > 32) score += (hours - 32) * 8;
       let appearances = 0;
       for (let j = 0; j < state.domains.length; j++) {
         if (j === slotIdx) continue;
@@ -2524,13 +2551,40 @@ function buildAutoFill(sourceEmps, cfg, empTimeOffDays, empPatterns, extShiftsAr
           empH[a.employeeId] = (empH[a.employeeId] || 0) + SHIFT_HOURS;
           if ((emp.preferredDaysOff||[]).includes(day)) sc += 800;
           const empP = plan[emp.id];
-          if (emp.employmentType === "full-time" && empP && empP.shiftId !== shift.id && !emp.crossShiftOT) sc += 500;
+          const isFT = emp.employmentType === "full-time";
+          if (isFT && empP && empP.shiftId !== shift.id && !emp.crossShiftOT) sc += 500;
+          // A2: FT crossShiftOT on non-planned shift — still a mismatch, should
+          // cost something. Previously zero, meaning Harms-type employees could
+          // drift off their preferred shift without SA caring.
+          if (isFT && empP && empP.shiftId !== shift.id && emp.crossShiftOT) sc += 400;
+          // A2: PT preferredShifts mismatch — PT with a stated preference assigned
+          // to a non-preferred shift. Previously zero. Mirrors empScore's
+          // ptPrefMismatch at slightly reduced magnitude (800 → 600).
+          if (!isFT) {
+            const prefs = emp.preferredShifts || [];
+            if (prefs.length > 0 && !prefs.includes(shift.id)) sc += 600;
+          }
         }
       }
+      // A3: asymmetric hour objective.
+      // Symmetric (h-40)² treated under-40 and over-40 as equally bad. Wrong —
+      // under-40 is a payroll-guarantee violation, over-40 is ordinary paid OT.
+      // Under-40 now weighted 10× so SA pulls FTs toward 40h first and accepts
+      // OT only when alternatives are worse.
+      // Note: this won't reduce FT>48h on rosters where ext shifts (committed
+      // pre-CSP) already pushed FTs over — SA can't touch ext shifts. Tested
+      // with 50000+10000(h-48)² as a forcing penalty and FT>48h count was
+      // identical, confirming structural lock.
       for (const emp of sourceEmps) {
         if (emp.employmentType !== "full-time") continue;
         const h = empH[emp.id] || 0;
-        sc += (h - FT_MIN_HOURS) * (h - FT_MIN_HOURS);
+        if (h < FT_MIN_HOURS) {
+          const d = FT_MIN_HOURS - h;
+          sc += 10 * d * d;
+        } else {
+          const d = h - FT_MIN_HOURS;
+          sc += d * d;
+        }
       }
       return sc;
     };
@@ -2870,8 +2924,14 @@ function buildAutoFill(sourceEmps, cfg, empTimeOffDays, empPatterns, extShiftsAr
             if (e.maxShiftsPerWeek !== null && (shiftsWorked[e.id]||0) >= e.maxShiftsPerWeek) return false;
             return true;
           })
-          .sort((a, b) => (hourTracker[a.id]||0) - (hourTracker[b.id]||0));
-
+          .sort((a, b) => {
+            const sa = empScore(a, day, shift.id, null);
+            const sb = empScore(b, day, shift.id, null);
+            const scoreA = sa == null ? 999999 : sa;
+            const scoreB = sb == null ? 999999 : sb;
+            if (scoreA !== scoreB) return scoreA - scoreB;
+            return (hourTracker[a.id]||0) - (hourTracker[b.id]||0);
+          });
         for (const emp of candidates) {
           if (asgn.length >= cap) break;
           const pos = pickPosition(emp, asgn, day, shift.id);
