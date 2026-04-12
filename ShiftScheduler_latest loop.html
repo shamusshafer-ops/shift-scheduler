@@ -2738,6 +2738,149 @@ function buildAutoFill(sourceEmps, cfg, empTimeOffDays, empPatterns, extShiftsAr
       return work;
     };
 
+    // ── C3: Large Neighborhood Search (LNS) move ─────────────────────────
+    // Unassigns 5–8 related slots, greedily re-fills. Escapes deep local
+    // minima unreachable via pair-swap or 3-chain. Three neighborhood
+    // selection strategies, picked at random:
+    //   • day-based: all 3 shifts on 2 random days (6 slots)
+    //   • shift-based: all 7 days for 1 random shift (7 slots)
+    //   • employee-based: all slots where a specific employee is assigned (varies)
+    const tryLNS = (sched) => {
+      const work = { ...sched };
+      let targetSlots = [];
+      const strategy = Math.random();
+
+      if (strategy < 0.4) {
+        // Day-based: 2 random days × 3 shifts = 6 slots
+        const d1 = Math.floor(Math.random() * DAYS.length);
+        let d2 = Math.floor(Math.random() * DAYS.length);
+        if (d1 === d2) d2 = (d2 + 1) % DAYS.length;
+        for (const d of [DAYS[d1], DAYS[d2]]) {
+          for (const s of SHIFTS) targetSlots.push({ day: d, shiftId: s.id });
+        }
+      } else if (strategy < 0.7) {
+        // Shift-based: 1 random shift × all 7 days = 7 slots
+        const s = SHIFTS[Math.floor(Math.random() * SHIFTS.length)];
+        for (const d of DAYS) targetSlots.push({ day: d, shiftId: s.id });
+      } else {
+        // Employee-based: all slots where a random employee is assigned
+        const empIds = [...new Set(btSlots.flatMap(sl =>
+          (work[cellKey(sl.day, sl.shiftId)] || []).map(a => a.employeeId)
+        ))];
+        if (!empIds.length) return null;
+        const targetEmpId = empIds[Math.floor(Math.random() * empIds.length)];
+        for (const sl of btSlots) {
+          if ((work[cellKey(sl.day, sl.shiftId)] || []).some(a => a.employeeId === targetEmpId)) {
+            targetSlots.push(sl);
+          }
+        }
+        // Also include neighboring slots to give room for rearrangement
+        const extraSlots = [];
+        for (const sl of targetSlots) {
+          const adj = sl.shiftId === "first" ? ["second"] : sl.shiftId === "second" ? ["first", "third"] : ["second"];
+          for (const as of adj) {
+            if (!targetSlots.some(t => t.day === sl.day && t.shiftId === as) &&
+                !extraSlots.some(t => t.day === sl.day && t.shiftId === as)) {
+              extraSlots.push({ day: sl.day, shiftId: as });
+            }
+          }
+        }
+        // Add up to 2 extra adjacent slots
+        for (let i = 0; i < Math.min(2, extraSlots.length); i++) {
+          targetSlots.push(extraSlots[Math.floor(Math.random() * extraSlots.length)]);
+        }
+      }
+
+      if (targetSlots.length < 3) return null;
+
+      // Destroy: collect all employees from target slots, remove non-supervisors
+      const displaced = []; // {empId, day, shiftId, position}
+      for (const sl of targetSlots) {
+        const key = cellKey(sl.day, sl.shiftId);
+        const asgn = work[key] || [];
+        for (const a of asgn) {
+          if (a.position === "Supervisor") continue;
+          displaced.push({ empId: a.employeeId, day: sl.day, shiftId: sl.shiftId, position: a.position });
+        }
+        work[key] = asgn.filter(a => a.position === "Supervisor");
+      }
+
+      if (!displaced.length) return null;
+
+      // Repair: greedily re-insert displaced employees into target slots.
+      // Sort slots by MRV (fewest current assignees first) for better filling.
+      const slotsByMRV = [...targetSlots].sort((a, b) => {
+        const cA = (work[cellKey(a.day, a.shiftId)] || []).length;
+        const cB = (work[cellKey(b.day, b.shiftId)] || []).length;
+        return cA - cB;
+      });
+
+      // Shuffle displaced employees so we don't always fill in same order
+      for (let i = displaced.length - 1; i > 0; i--) {
+        const j = Math.floor(Math.random() * (i + 1));
+        [displaced[i], displaced[j]] = [displaced[j], displaced[i]];
+      }
+
+      const placedEmps = new Set();
+      for (const sl of slotsByMRV) {
+        const key = cellKey(sl.day, sl.shiftId);
+        const cap = getSlotCount(sl.day, sl.shiftId);
+        const currentCount = (work[key] || []).length;
+        const slotsLeft = cap - currentCount;
+        if (slotsLeft <= 0) continue;
+
+        // Find best employees to fill this slot
+        const slotCandidates = [];
+        for (const d of displaced) {
+          if (placedEmps.has(d.empId + "__" + sl.day)) continue; // already placed on this day
+          const emp = empMap.get(d.empId);
+          if (!emp) continue;
+          if (!btCanWorkSlot(d.empId, work, sl.day, sl.shiftId)) continue;
+          const pos = btPickPosition(emp, work[key] || [], sl.day, sl.shiftId);
+          if (!pos) continue;
+
+          // Score: prefer placing employee back on their preferred shift,
+          // and filling critical roles (Scale/Medical)
+          let score = 0;
+          const prefs = emp.preferredShifts || [];
+          if (prefs.length && prefs.includes(sl.shiftId)) score -= 50;
+          if (prefs.length && !prefs.includes(sl.shiftId)) score += 30;
+          if (pos === "Scale" && !slotHasRole(work[key] || [], sourceEmps, "Scale")) score -= 40;
+          if (pos === "Medical" && !slotHasRole(work[key] || [], sourceEmps, "Medical")) score -= 40;
+          // Prefer FT employees who need hours
+          if (emp.employmentType === "full-time") {
+            const empPlan = plan[emp.id];
+            if (empPlan && empPlan.shiftId === sl.shiftId) score -= 30; // on-plan shift
+          }
+          slotCandidates.push({ d, emp, pos, score });
+        }
+
+        slotCandidates.sort((a, b) => a.score - b.score);
+
+        let placed = 0;
+        for (const c of slotCandidates) {
+          if (placed >= slotsLeft) break;
+          // Re-check position with updated slot state
+          const pos = btPickPosition(c.emp, work[key] || [], sl.day, sl.shiftId);
+          if (!pos) continue;
+          work[key] = [...(work[key] || []), { employeeId: c.d.empId, position: pos }];
+          placedEmps.add(c.d.empId + "__" + sl.day);
+          placed++;
+        }
+      }
+
+      // Verify no slot lost coverage (LNS shouldn't make things worse)
+      for (const sl of targetSlots) {
+        const key = cellKey(sl.day, sl.shiftId);
+        const origAsgn = sched[key] || [];
+        const newAsgn = work[key] || [];
+        if (newAsgn.length < origAsgn.length) return null; // lost bodies, reject
+        if (!rolePreserved(origAsgn, newAsgn)) return null; // lost role coverage
+      }
+
+      return work;
+    };
+
     // ── SA driver (lexicographic) ───────────────────────────────────────────
     let curScore = btSoftScore(btSchedule);
     let current = { ...btSchedule };
@@ -2752,25 +2895,47 @@ function buildAutoFill(sourceEmps, cfg, empTimeOffDays, empPatterns, extShiftsAr
     const coolingRate = Math.pow(T_FINAL / T0, 1 / SA_ITERATIONS);
     let T = T0;
 
-    let attempts = 0, accepted = 0, uphill = 0, improvements = 0;
+    let attempts = 0, accepted = 0, uphill = 0, improvements = 0, lnsAccepted = 0;
     for (let iter = 0; iter < SA_ITERATIONS; iter++) {
       attempts++;
       let candidate = null;
-      if (Math.random() < 0.7) {
-        // Pairwise swap
-        const iI = Math.floor(Math.random() * btSlots.length);
-        let iJ = Math.floor(Math.random() * btSlots.length);
-        if (iI === iJ) iJ = (iJ + 1) % btSlots.length;
-        candidate = tryPairSwap(current, iI, iJ);
+      let wasLNS = false;
+      if (iter < SA_ITERATIONS / 2) {
+        // First half: original 70/30 split — PRNG sequence identical to pre-LNS
+        if (Math.random() < 0.7) {
+          const iI = Math.floor(Math.random() * btSlots.length);
+          let iJ = Math.floor(Math.random() * btSlots.length);
+          if (iI === iJ) iJ = (iJ + 1) % btSlots.length;
+          candidate = tryPairSwap(current, iI, iJ);
+        } else {
+          const iI = Math.floor(Math.random() * btSlots.length);
+          let iJ = Math.floor(Math.random() * btSlots.length);
+          let iK = Math.floor(Math.random() * btSlots.length);
+          if (iI === iJ) iJ = (iJ + 1) % btSlots.length;
+          if (iK === iI || iK === iJ) iK = (iK + 2) % btSlots.length;
+          if (iI === iJ || iJ === iK || iI === iK) { T *= coolingRate; continue; }
+          candidate = try3Chain(current, iI, iJ, iK);
+        }
       } else {
-        // 3-chain
-        const iI = Math.floor(Math.random() * btSlots.length);
-        let iJ = Math.floor(Math.random() * btSlots.length);
-        let iK = Math.floor(Math.random() * btSlots.length);
-        if (iI === iJ) iJ = (iJ + 1) % btSlots.length;
-        if (iK === iI || iK === iJ) iK = (iK + 2) % btSlots.length;
-        if (iI === iJ || iJ === iK || iI === iK) { T *= coolingRate; continue; }
-        candidate = try3Chain(current, iI, iJ, iK);
+        // Second half: C3 LNS at ~5%, pair-swap ~66%, 3-chain ~29%
+        const r = Math.random();
+        if (r < 0.05) {
+          candidate = tryLNS(current);
+          wasLNS = true;
+        } else if (r < 0.71) {
+          const iI = Math.floor(Math.random() * btSlots.length);
+          let iJ = Math.floor(Math.random() * btSlots.length);
+          if (iI === iJ) iJ = (iJ + 1) % btSlots.length;
+          candidate = tryPairSwap(current, iI, iJ);
+        } else {
+          const iI = Math.floor(Math.random() * btSlots.length);
+          let iJ = Math.floor(Math.random() * btSlots.length);
+          let iK = Math.floor(Math.random() * btSlots.length);
+          if (iI === iJ) iJ = (iJ + 1) % btSlots.length;
+          if (iK === iI || iK === iJ) iK = (iK + 2) % btSlots.length;
+          if (iI === iJ || iJ === iK || iI === iK) { T *= coolingRate; continue; }
+          candidate = try3Chain(current, iI, iJ, iK);
+        }
       }
       if (!candidate) { T *= coolingRate; continue; }
       const newSc = btSoftScore(candidate);
@@ -2784,6 +2949,7 @@ function buildAutoFill(sourceEmps, cfg, empTimeOffDays, empPatterns, extShiftsAr
         current = candidate;
         curScore = newSc;
         accepted++;
+        if (wasLNS) lnsAccepted++;
         if (hardDelta > 0 || (hardDelta === 0 && softDelta > 0)) uphill++;
         else if (hardDelta < 0 || softDelta < 0) improvements++;
         if (lexCmp(curScore, bestScore) < 0) {
@@ -2840,7 +3006,7 @@ function buildAutoFill(sourceEmps, cfg, empTimeOffDays, empPatterns, extShiftsAr
 
     // Commit best schedule back to btSchedule
     for (const k of Object.keys(bestSchedule)) btSchedule[k] = bestSchedule[k];
-    console.log(`[Phase 2 SA] ${attempts} attempts, ${accepted} accepted (${improvements} improv, ${uphill} uphill), +${polishSwaps} polish swaps, final score [hard=${bestScore[0]}, soft=${bestScore[1]}]`);
+    console.log(`[Phase 2 SA] ${attempts} attempts, ${accepted} accepted (${improvements} improv, ${uphill} uphill, ${lnsAccepted} LNS), +${polishSwaps} polish swaps, final score [hard=${bestScore[0]}, soft=${bestScore[1]}]`);
 
     // ── Write backtracking results to ns and rebuild tracking state ─────────
     for (const { day, shiftId } of btSlots) {
