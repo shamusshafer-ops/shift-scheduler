@@ -148,6 +148,9 @@ if (typeof buildAutoFill !== 'function') {
   process.exit(1);
 }
 
+// C4: Per-employee preference strength multiplier (mirrors browser-side ps())
+const ps = (emp, key) => (emp.prefStrength && emp.prefStrength[key]) || 1;
+
 // ── Standalone validateSchedule (adapted from HTML:9718-9848) ─────────────
 // We keep it in the harness so the test doesn't depend on the Babel block.
 function validateSchedule(sched, exts, emps, handoffsArg) {
@@ -431,16 +434,18 @@ function repairGaps(ns, autoExtShifts, source, empTimeOffDays) {
     if (strategyType === 'steal')   cost += 50;
     if (strategyType === 'handoff') cost += 30;
     const prefs = emp.preferredShifts || [];
-    if (prefs.length && !prefs.includes(gapShiftId)) cost += 80;
-    if (prefs.length && prefs.includes(gapShiftId))  cost -= 20;
+    const sw = ps(emp, 'shift');
+    if (prefs.length && !prefs.includes(gapShiftId)) cost += 80 * sw;
+    if (prefs.length && prefs.includes(gapShiftId))  cost -= 20 * sw;
     const h = hourTracker[emp.id] || 0;
+    const ow = ps(emp, 'overtime');
     if (h < 32)      cost -= 40;
     else if (h < 40) cost -= 20;
-    else if (h > 48) cost += 100;
-    else if (h > 40) cost += 30;
+    else if (h > 48) cost += 100 * ow;
+    else if (h > 40) cost += 30 * ow;
     const otPref = emp.overtimePref || 'neutral';
-    if (otPref === 'preferred' && h >= 40) cost -= 30;
-    if (otPref === 'blocked' && h + hoursAdded > 40) cost += 120;
+    if (otPref === 'preferred' && h >= 40) cost -= 30 * ow;
+    if (otPref === 'blocked' && h + hoursAdded > 40) cost += 120 * ow;
     if (fillsRole === 'Scale' || fillsRole === 'Medical') cost -= 50;
     if (emp.employmentType === 'part-time') cost += 20;
     if (emp.employmentType === 'on-call')   cost += 40;

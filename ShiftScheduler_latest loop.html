@@ -406,7 +406,7 @@ const APP_BUILD_DATE = (() => {
   } catch(_) { return "2026-03-12"; }
 })();
 
-const SCHEMA_VERSION = 4;
+const SCHEMA_VERSION = 5;
 const APP_VERSION_MAJOR = 35;
 // Version auto-combines major (hand-bumped per session) +
 // minor (SCHEMA_VERSION, bumped when data shape changes).
@@ -425,6 +425,7 @@ const EMP_MIGRATIONS = {
     ...e,
   })),
   4: (emps) => emps.map(e => ({ ...e, splitShiftEligible: e.splitShiftEligible ?? false })),
+  5: (emps) => emps.map(e => ({ ...e, prefStrength: e.prefStrength ?? { shift: 1, daysOff: 1, overtime: 1 } })),
 };
 
 // runSchemaMigrations: call once on startup before usePersistentState loads.
@@ -483,6 +484,11 @@ const FT_MIN_HOURS = 40;
 // Fallback values used in module-level helpers that can't access context:
 const MAX_CONSECUTIVE_NIGHTS = 3;   // fallback only
 const MIN_REST_HOURS = 12;          // fallback only
+
+// C4: Per-employee preference strength multiplier (default 1.0).
+// emp.prefStrength = { shift, daysOff, overtime } — values > 1 amplify,
+// < 1 dampen the corresponding preference penalty in scoring.
+const ps = (emp, key) => (emp.prefStrength && emp.prefStrength[key]) || 1;
 
 // ── 12-Hour Extended Shift constants ─────────────────────────────────────────
 // A 12-hr extended shift pairs two employees to cover a gap:
@@ -2403,17 +2409,17 @@ function buildAutoFill(sourceEmps, cfg, empTimeOffDays, empPatterns, extShiftsAr
       // toward non-day-off candidates when alternatives exist. At 99999 this
       // helped harms-pto errors (−9) by steering the CSP onto different
       // branches; 300 keeps that nudge without being an absolute block.
-      if ((emp.preferredDaysOff||[]).includes(day)) score += 300;
+      if ((emp.preferredDaysOff||[]).includes(day)) score += 300 * ps(emp, "daysOff");
       // A1b: employee's direct preferredShifts bonus.
       // plan.shiftId already covers FT, but PT has no plan shift and FT crossShiftOT
       // can rotate — this term rewards hitting the employee's own stated preference.
       const prefShifts = emp.preferredShifts || [];
-      if (prefShifts.includes(shiftId)) score -= 80;
+      if (prefShifts.includes(shiftId)) score -= 80 * ps(emp, "shift");
       // A1b: PT preferred-shift mismatch — PT with a shift preference but landing
       // on a non-preferred shift gets strongly deprioritised (mirrors empScore's
       // ptPrefMismatch). Scaled smaller than empScore's 800 so it doesn't outweigh
       // the FT-underhours -400 that must dominate Phase 1.
-      if (!isFT && prefShifts.length > 0 && !prefShifts.includes(shiftId)) score += 400;
+      if (!isFT && prefShifts.length > 0 && !prefShifts.includes(shiftId)) score += 400 * ps(emp, "shift");
       // A1b: rhythm bonus — reward extending an active 1–4 day streak so runs
       // stay consecutive rather than fragmenting across the week.
       const todayIdx = dayIdx(day);
@@ -2590,14 +2596,14 @@ function buildAutoFill(sourceEmps, cfg, empTimeOffDays, empPatterns, extShiftsAr
           const emp = empMap.get(a.employeeId);
           if (!emp) continue;
           empH[a.employeeId] = (empH[a.employeeId] || 0) + SHIFT_HOURS;
-          if ((emp.preferredDaysOff||[]).includes(day)) soft += 800;
+          if ((emp.preferredDaysOff||[]).includes(day)) soft += 800 * ps(emp, "daysOff");
           const empP = plan[emp.id];
           const isFT = emp.employmentType === "full-time";
-          if (isFT && empP && empP.shiftId !== shift.id && !emp.crossShiftOT) hard += 500;
-          if (isFT && empP && empP.shiftId !== shift.id && emp.crossShiftOT) soft += 400;
+          if (isFT && empP && empP.shiftId !== shift.id && !emp.crossShiftOT) hard += 500 * ps(emp, "shift");
+          if (isFT && empP && empP.shiftId !== shift.id && emp.crossShiftOT) soft += 400 * ps(emp, "shift");
           if (!isFT) {
             const prefs = emp.preferredShifts || [];
-            if (prefs.length > 0 && !prefs.includes(shift.id)) soft += 600;
+            if (prefs.length > 0 && !prefs.includes(shift.id)) soft += 600 * ps(emp, "shift");
           }
         }
       }
@@ -2606,10 +2612,10 @@ function buildAutoFill(sourceEmps, cfg, empTimeOffDays, empPatterns, extShiftsAr
         const h = empH[emp.id] || 0;
         if (h < FT_MIN_HOURS) {
           const d = FT_MIN_HOURS - h;
-          hard += 10 * d * d;   // under-40 is a payroll-guarantee issue → hard
+          hard += 10 * d * d;   // under-40 is a payroll-guarantee issue → hard (not weighted)
         } else {
           const d = h - FT_MIN_HOURS;
-          soft += d * d;        // over-40 is ordinary OT → soft
+          soft += d * d * ps(emp, "overtime"); // over-40 weighted by OT preference strength
         }
       }
       return [hard, soft];
@@ -6964,6 +6970,52 @@ function Willing16hToggle({ val, set }) {
   );
 }
 
+function PrefStrengthEditor({ val, set }) {
+  const t = useTheme();
+  const strength = val || { shift: 1, daysOff: 1, overtime: 1 };
+  const FIELDS = [
+    { key: "shift",   label: "Shift preference", desc: "How strongly preferred shift assignments are weighted" },
+    { key: "daysOff", label: "Days off",          desc: "How strongly preferred days off are respected" },
+    { key: "overtime", label: "Overtime",          desc: "How strongly overtime avoidance/seeking is weighted" },
+  ];
+  const LEVELS = [
+    { v: 0.5, label: "Low",    color: "var(--ss-text-dim)" },
+    { v: 1,   label: "Normal", color: "var(--ss-accent)" },
+    { v: 1.5, label: "High",   color: "var(--ss-warning)" },
+    { v: 2,   label: "Strong", color: "var(--ss-danger)" },
+  ];
+  return (
+    <div style={{marginTop:12}}>
+      <div style={{fontSize:11,color:"var(--ss-text-dim)",fontWeight:600,letterSpacing:".04em",marginBottom:6}}>
+        PREFERENCE STRENGTH
+      </div>
+      <div style={{fontSize:10,color:"var(--ss-text-dim)",marginBottom:8}}>
+        Controls how heavily the scheduler weighs this employee's preferences relative to others.
+        Normal = default weight. Higher = scheduler tries harder to honor this preference.
+      </div>
+      {FIELDS.map(({ key, label, desc }) => (
+        <div key={key} style={{display:"flex",alignItems:"center",gap:8,marginBottom:6,flexWrap:"wrap"}}>
+          <span style={{fontSize:10,fontWeight:700,color:"var(--ss-text-dim)",minWidth:110}}>{label}</span>
+          <div style={{display:"flex",gap:4}}>
+            {LEVELS.map(({ v, label: lbl, color }) => {
+              const active = (strength[key] || 1) === v;
+              return (
+                <button key={v} onClick={()=>set({...strength, [key]: v})} title={desc} style={{
+                  background: active ? color+"22" : "var(--ss-surface-alt)",
+                  border: "1.5px solid "+(active ? color : "var(--ss-border)"),
+                  color: active ? color : "var(--ss-text-dim)",
+                  padding:"3px 10px", borderRadius:4, cursor:"pointer",
+                  fontSize:10, fontWeight:700, fontFamily:"inherit", transition:"all .15s",
+                }}>{lbl}</button>
+              );
+            })}
+          </div>
+        </div>
+      ))}
+    </div>
+  );
+}
+
 function Ext12hPrefToggle({ val, set }) {
   const t = useTheme();
   const OPTIONS = [
@@ -7279,6 +7331,7 @@ function EmployeeManager({ onOpenTestModal }) {
                 <AvailabilityEditor emp={{unavailableDays:newUnavail}} onUpdate={setNewUnavail}/>
                 <PreferenceEditor prefShifts={newPrefShifts||[]} setPrefShifts={setNewPrefShifts} blockedShifts={newBlockedShifts||[]} setBlockedShifts={setNewBlockedShifts} requiredShift={newRequiredShift||null} setRequiredShift={setNewRequiredShift} daysOff={newPrefDaysOff} setDaysOff={setNewPrefDaysOff}/>
                 <OtPrefToggle val={newForm.overtimePref||"neutral"} set={v=>setNewForm(f=>({...f,overtimePref:v}))} isFT={newType==="full-time"}/>
+                <PrefStrengthEditor val={newForm.prefStrength||{shift:1,daysOff:1,overtime:1}} set={v=>setNewForm(f=>({...f,prefStrength:v}))}/>
                 <Willing16hToggle val={newForm.willing16h||false} set={v=>setNewForm(f=>({...f,willing16h:v}))}/>
                 <Ext12hPrefToggle val={newForm.ext12hPref??null} set={v=>setNewForm(f=>({...f,ext12hPref:v}))}/>
                 <SplitShiftEligibleToggle val={newForm.splitShiftEligible||false} set={v=>setNewForm(f=>({...f,splitShiftEligible:v}))}/>
@@ -7340,7 +7393,7 @@ function EmployeeManager({ onOpenTestModal }) {
                 <AvailabilityEditor emp={{unavailableDays:editUnavail}} onUpdate={setEditUnavail}/>
                 <PreferenceEditor prefShifts={editPrefShifts||[]} setPrefShifts={setEditPrefShifts} blockedShifts={editBlockedShifts||[]} setBlockedShifts={setEditBlockedShifts} requiredShift={editRequiredShift||null} setRequiredShift={setEditRequiredShift} daysOff={editPrefDaysOff} setDaysOff={setEditPrefDaysOff}/>
                 <OtPrefToggle val={editState?.overtimePref||"neutral"} set={v=>setEditState(s=>({...s,overtimePref:v}))} isFT={(editState?.type||"full-time")==="full-time"}/>
-
+                <PrefStrengthEditor val={editState?.prefStrength||{shift:1,daysOff:1,overtime:1}} set={v=>setEditState(s=>({...s,prefStrength:v}))}/>
                 <Willing16hToggle val={editState?.willing16h||false} set={v=>setEditState(s=>({...s,willing16h:v}))}/>
                 <Ext12hPrefToggle val={editState?.ext12hPref??null} set={v=>setEditState(s=>({...s,ext12hPref:v}))}/>
                 <SplitShiftEligibleToggle val={editState?.splitShiftEligible||false} set={v=>setEditState(s=>({...s,splitShiftEligible:v}))}/>
@@ -10417,20 +10470,22 @@ function ScheduleGrid({ onOpenTestModal }) {
         if (strategyType === "insert")  cost += 0;
         if (strategyType === "steal")   cost += 50;
         if (strategyType === "handoff") cost += 30;
-        // Shift preference alignment
+        // Shift preference alignment (scaled by prefStrength.shift)
         const prefs = emp.preferredShifts || [];
-        if (prefs.length && !prefs.includes(gapShiftId)) cost += 80;
-        if (prefs.length && prefs.includes(gapShiftId))  cost -= 20;
+        const sw = ps(emp, "shift");
+        if (prefs.length && !prefs.includes(gapShiftId)) cost += 80 * sw;
+        if (prefs.length && prefs.includes(gapShiftId))  cost -= 20 * sw;
         // Hour impact: under-40 employees benefit from more hours
         const h = hourTracker ? (hourTracker[emp.id] || 0) : 0;
+        const ow = ps(emp, "overtime");
         if (h < 32)      cost -= 40;  // very under-hours, adding is great
         else if (h < 40) cost -= 20;  // slightly under, still good
-        else if (h > 48) cost += 100; // already over 48, avoid piling on
-        else if (h > 40) cost += 30;  // OT territory
+        else if (h > 48) cost += 100 * ow; // already over 48, avoid piling on
+        else if (h > 40) cost += 30 * ow;  // OT territory
         // OT preference
         const otPref = emp.overtimePref || "neutral";
-        if (otPref === "preferred" && h >= 40) cost -= 30; // wants OT
-        if (otPref === "blocked" && h + hoursAdded > 40) cost += 120; // doesn't want OT
+        if (otPref === "preferred" && h >= 40) cost -= 30 * ow; // wants OT
+        if (otPref === "blocked" && h + hoursAdded > 40) cost += 120 * ow; // doesn't want OT
         // Role-fill bonus: filling a missing critical role is valuable
         if (fillsRole === "Scale" || fillsRole === "Medical") cost -= 50;
         // Employment type: prefer using FT for coverage (more reliable)

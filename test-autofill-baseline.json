@@ -1,5 +1,5 @@
 {
-  "capturedAt": "2026-04-12T23:42:58.362Z",
+  "capturedAt": "2026-04-12T23:47:55.084Z",
   "rosterVersion": "v35.4",
   "rosterSize": 15,
   "seeds": [
@@ -34,7 +34,7 @@
         "extShifts": 4,
         "handoffCount": 0
       },
-      "elapsedAvgMs": 273,
+      "elapsedAvgMs": 281,
       "perSeed": [
         {
           "seed": 12345,
@@ -217,7 +217,7 @@
         "extShifts": 47,
         "handoffCount": 4
       },
-      "elapsedAvgMs": 238,
+      "elapsedAvgMs": 249,
       "perSeed": [
         {
           "seed": 12345,
@@ -400,7 +400,7 @@
         "extShifts": 97,
         "handoffCount": 1
       },
-      "elapsedAvgMs": 211,
+      "elapsedAvgMs": 212,
       "perSeed": [
         {
           "seed": 12345,
