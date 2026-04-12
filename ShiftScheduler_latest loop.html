@@ -10209,10 +10209,11 @@ function ScheduleGrid({ onOpenTestModal }) {
       setScheduleStale(false);
     };
 
-    // ── B2: Targeted gap repair ─────────────────────────────────────────────
-    // After each attempt, parse validation errors to find specific coverage gaps
-    // and try targeted strategies to fill them — much more effective than blind
-    // jittered retries for structurally-blocked gaps.
+    // ── C2: Cost-ranked strategy generator for gap repair ──────────────────
+    // Instead of trying strategies in fixed S1→S2→S3 order and taking the first
+    // eligible candidate, generate ALL feasible candidates across all strategy
+    // types, score each by estimated cost, and apply cheapest first. This picks
+    // the least-disruptive repair for each gap.
     const repairGaps = (result) => {
       const { ns, autoExtShifts, hourTracker } = result;
       const handoffs = result.handoffs || [];
@@ -10240,6 +10241,41 @@ function ScheduleGrid({ onOpenTestModal }) {
       const empShiftCount = {};
       for (const [id, s] of Object.entries(empDayShifts)) empShiftCount[id] = s.size;
 
+      // ── Cost scoring helper ──
+      // Lower cost = better candidate. Factors: base type cost, shift preference
+      // alignment, hour impact (under-40 good, over-48 bad), OT preference,
+      // role-fill bonus for missing Scale/Medical.
+      const candidateCost = (emp, gapShiftId, strategyType, hoursAdded, fillsRole) => {
+        let cost = 0;
+        // Base cost by strategy type
+        if (strategyType === "insert")  cost += 0;
+        if (strategyType === "steal")   cost += 50;
+        if (strategyType === "handoff") cost += 30;
+        // Shift preference alignment
+        const prefs = emp.preferredShifts || [];
+        if (prefs.length && !prefs.includes(gapShiftId)) cost += 80;
+        if (prefs.length && prefs.includes(gapShiftId))  cost -= 20;
+        // Hour impact: under-40 employees benefit from more hours
+        const h = hourTracker ? (hourTracker[emp.id] || 0) : 0;
+        if (h < 32)      cost -= 40;  // very under-hours, adding is great
+        else if (h < 40) cost -= 20;  // slightly under, still good
+        else if (h > 48) cost += 100; // already over 48, avoid piling on
+        else if (h > 40) cost += 30;  // OT territory
+        // OT preference
+        const otPref = emp.overtimePref || "neutral";
+        if (otPref === "preferred" && h >= 40) cost -= 30; // wants OT
+        if (otPref === "blocked" && h + hoursAdded > 40) cost += 120; // doesn't want OT
+        // Role-fill bonus: filling a missing critical role is valuable
+        if (fillsRole === "Scale" || fillsRole === "Medical") cost -= 50;
+        // Employment type: prefer using FT for coverage (more reliable)
+        if (emp.employmentType === "part-time") cost += 20;
+        if (emp.employmentType === "on-call")   cost += 40;
+        return cost;
+      };
+
+      const ADJACENT_HANDOFF = { first: ["second"], second: ["first", "third"], third: ["second"] };
+      const shiftOrder = { first: 0, second: 1, third: 2 };
+
       for (const gap of gaps) {
         const gapKey = cellKey(gap.day, gap.shiftId);
         const currentAsgn = ns[gapKey] || [];
@@ -10247,151 +10283,140 @@ function ScheduleGrid({ onOpenTestModal }) {
         const deficit = gap.need - gap.have;
         let filled = 0;
 
-        // Strategy 1: Insert unassigned-that-day employee
-        // Find employees not working this day who can take the gap slot.
+        // Determine which roles the gap slot still needs
+        const needsScale = !slotHasRole(currentAsgn, source, "Scale");
+        const needsMedical = !slotHasRole(currentAsgn, source, "Medical");
+
+        const pickPosition = (emp, existingBodies) => {
+          const q = emp.qualifications || [];
+          const isSup = q.includes("Supervisor");
+          if (isSup && !(isWeekday(gap.day) && gap.shiftId === "first")) return null;
+          if (isSup) return "Supervisor";
+          const hs = slotHasRole(existingBodies, source, "Scale");
+          const hm = slotHasRole(existingBodies, source, "Medical");
+          if (!hs && q.includes("Scale"))     return "Scale";
+          if (!hm && q.includes("Medical"))   return "Medical";
+          if (q.includes("Guard"))            return "Guard";
+          return null;
+        };
+
+        // ── Generate all feasible candidates ──
+        const candidates = [];
+
+        // Type: insert — add unassigned employee to gap slot
         for (const emp of source) {
-          if (filled >= deficit) break;
           if (assignedIds.has(emp.id)) continue;
           if (emp.inTraining) continue;
           if ((emp.unavailableDays || []).includes(gap.day)) continue;
           if (empTimeOffDays && empTimeOffDays.has(emp.id + "__" + gap.day)) continue;
           if ((emp.blockedShifts || []).includes(gap.shiftId)) continue;
           if (emp.requiredShift && emp.requiredShift !== gap.shiftId && !emp.crossShiftOT) continue;
-          // Already working a different shift this day?
           const onThisDay = SHIFTS.some(s =>
             s.id !== gap.shiftId && (ns[cellKey(gap.day, s.id)] || []).some(a => a.employeeId === emp.id)
           );
           if (onThisDay && !emp.willing16h) continue;
-          // maxShiftsPerWeek check
           if (emp.maxShiftsPerWeek != null && (empShiftCount[emp.id] || 0) >= emp.maxShiftsPerWeek) continue;
-
-          // Pick position
-          const q = emp.qualifications || [];
-          const isSup = q.includes("Supervisor");
-          if (isSup && !(isWeekday(gap.day) && gap.shiftId === "first")) continue;
-          const hasScale = slotHasRole(currentAsgn, source, "Scale");
-          const hasMedical = slotHasRole(currentAsgn, source, "Medical");
-          let pos = isSup ? "Supervisor"
-            : (!hasScale && q.includes("Scale")) ? "Scale"
-            : (!hasMedical && q.includes("Medical")) ? "Medical"
-            : q.includes("Guard") ? "Guard" : null;
+          const pos = pickPosition(emp, currentAsgn);
           if (!pos) continue;
-
-          ns[gapKey] = [...(ns[gapKey] || []), { employeeId: emp.id, position: pos }];
-          assignedIds.add(emp.id);
-          empShiftCount[emp.id] = (empShiftCount[emp.id] || 0) + 1;
-          if (hourTracker) hourTracker[emp.id] = (hourTracker[emp.id] || 0) + SHIFT_HOURS;
-          filled++;
-          changed = true;
-        }
-
-        // Strategy 2: Steal from overstaffed adjacent slot
-        // If an adjacent shift on the same day has more than its required headcount,
-        // move one qualified employee to the gap slot.
-        if (filled < deficit) {
-          for (const donor of SHIFTS) {
-            if (filled >= deficit) break;
-            if (donor.id === gap.shiftId) continue;
-            const donorKey = cellKey(gap.day, donor.id);
-            const donorAsgn = ns[donorKey] || [];
-            const donorNeed = REGULAR_SLOTS(gap.day, donor.id) + (SUP_SLOT_DAY(gap.day, donor.id) ? 1 : 0);
-            if (donorAsgn.length <= donorNeed) continue;  // not overstaffed
-
-            for (let di = donorAsgn.length - 1; di >= 0; di--) {
-              if (filled >= deficit) break;
-              const a = donorAsgn[di];
-              if (a.position === "Supervisor") continue;
-              const emp = source.find(e => e.id === a.employeeId);
-              if (!emp) continue;
-              if ((emp.blockedShifts || []).includes(gap.shiftId)) continue;
-              if (emp.requiredShift && emp.requiredShift !== gap.shiftId && !emp.crossShiftOT) continue;
-              if (assignedIds.has(emp.id)) continue;
-
-              const q = emp.qualifications || [];
-              const hasScale = slotHasRole(ns[gapKey] || [], source, "Scale");
-              const hasMedical = slotHasRole(ns[gapKey] || [], source, "Medical");
-              let pos = (!hasScale && q.includes("Scale")) ? "Scale"
-                : (!hasMedical && q.includes("Medical")) ? "Medical"
-                : q.includes("Guard") ? "Guard" : null;
-              if (!pos) continue;
-
-              // Verify removing from donor doesn't break its role coverage
-              const donorWithout = donorAsgn.filter((_, idx) => idx !== di);
-              if (slotHasRole(donorAsgn, source, "Scale") && !slotHasRole(donorWithout, source, "Scale")) continue;
-              if (slotHasRole(donorAsgn, source, "Medical") && !slotHasRole(donorWithout, source, "Medical")) continue;
-
-              ns[donorKey] = donorWithout;
+          const fillsRole = (pos === "Scale" && needsScale) || (pos === "Medical" && needsMedical) ? pos : null;
+          candidates.push({
+            type: "insert", emp, pos, fillsRole,
+            cost: candidateCost(emp, gap.shiftId, "insert", SHIFT_HOURS, fillsRole),
+            apply: () => {
               ns[gapKey] = [...(ns[gapKey] || []), { employeeId: emp.id, position: pos }];
               assignedIds.add(emp.id);
-              filled++;
-              changed = true;
-            }
+              empShiftCount[emp.id] = (empShiftCount[emp.id] || 0) + 1;
+              if (hourTracker) hourTracker[emp.id] = (hourTracker[emp.id] || 0) + SHIFT_HOURS;
+            },
+          });
+        }
+
+        // Type: steal — move from overstaffed slot on same day
+        for (const donor of SHIFTS) {
+          if (donor.id === gap.shiftId) continue;
+          const donorKey = cellKey(gap.day, donor.id);
+          const donorAsgn = ns[donorKey] || [];
+          const donorNeed = REGULAR_SLOTS(gap.day, donor.id) + (SUP_SLOT_DAY(gap.day, donor.id) ? 1 : 0);
+          if (donorAsgn.length <= donorNeed) continue;
+
+          for (let di = donorAsgn.length - 1; di >= 0; di--) {
+            const a = donorAsgn[di];
+            if (a.position === "Supervisor") continue;
+            const emp = source.find(e => e.id === a.employeeId);
+            if (!emp) continue;
+            if ((emp.blockedShifts || []).includes(gap.shiftId)) continue;
+            if (emp.requiredShift && emp.requiredShift !== gap.shiftId && !emp.crossShiftOT) continue;
+            if (assignedIds.has(emp.id)) continue;
+            const pos = pickPosition(emp, ns[gapKey] || []);
+            if (!pos) continue;
+            const donorWithout = donorAsgn.filter((_, idx) => idx !== di);
+            if (slotHasRole(donorAsgn, source, "Scale") && !slotHasRole(donorWithout, source, "Scale")) continue;
+            if (slotHasRole(donorAsgn, source, "Medical") && !slotHasRole(donorWithout, source, "Medical")) continue;
+            const fillsRole = (pos === "Scale" && needsScale) || (pos === "Medical" && needsMedical) ? pos : null;
+            const capturedDi = di;
+            const capturedDonorKey = donorKey;
+            candidates.push({
+              type: "steal", emp, pos, fillsRole, donorShiftId: donor.id,
+              cost: candidateCost(emp, gap.shiftId, "steal", 0, fillsRole),
+              apply: () => {
+                ns[capturedDonorKey] = ns[capturedDonorKey].filter((_, idx) => idx !== capturedDi);
+                ns[gapKey] = [...(ns[gapKey] || []), { employeeId: emp.id, position: pos }];
+                assignedIds.add(emp.id);
+                // No hour change — employee moves from one 8h slot to another
+              },
+            });
           }
         }
 
-        // Strategy 3: Partial-shift handoff (4h late-stay / early-arrival)
-        // An employee on an adjacent shift stays 4h late or arrives 4h early
-        // to provide partial coverage for the gap slot. The employee is NOT
-        // added to the gap slot's assignment array — they're tracked in the
-        // handoffs array and counted as a body by validateSchedule.
-        const ADJACENT_HANDOFF = { first: ["second"], second: ["first", "third"], third: ["second"] };
-        if (filled < deficit) {
-          const adjShifts = ADJACENT_HANDOFF[gap.shiftId] || [];
-          for (const adjShiftId of adjShifts) {
-            if (filled >= deficit) break;
-            const adjKey = cellKey(gap.day, adjShiftId);
-            const adjAsgn = ns[adjKey] || [];
+        // Type: handoff — 4h partial shift from adjacent shift employee
+        const adjShifts = ADJACENT_HANDOFF[gap.shiftId] || [];
+        for (const adjShiftId of adjShifts) {
+          const adjKey = cellKey(gap.day, adjShiftId);
+          const adjAsgn = ns[adjKey] || [];
+          for (const a of adjAsgn) {
+            if (handoffs.some(h => h.day === gap.day && h.employeeId === a.employeeId && h.targetShiftId === gap.shiftId)) continue;
+            if (assignedIds.has(a.employeeId)) continue;
+            if (a.position === "Supervisor") continue;
+            const emp = source.find(e => e.id === a.employeeId);
+            if (!emp) continue;
+            if (emp.inTraining) continue;
+            if ((emp.blockedShifts || []).includes(gap.shiftId)) continue;
 
-            for (const a of adjAsgn) {
-              if (filled >= deficit) break;
-              // Don't handoff the same employee twice into the same gap slot
-              if (handoffs.some(h => h.day === gap.day && h.employeeId === a.employeeId && h.targetShiftId === gap.shiftId)) continue;
-              // Don't handoff an employee who's already covering the gap slot as a regular assignment
-              if (assignedIds.has(a.employeeId)) continue;
-              if (a.position === "Supervisor") continue;
-
-              const emp = source.find(e => e.id === a.employeeId);
-              if (!emp) continue;
-              if (emp.inTraining) continue;
-              if ((emp.blockedShifts || []).includes(gap.shiftId)) continue;
-
-              // Determine handoff type based on shift order
-              // first→second: employee on 1st stays late into 2nd (late-stay)
-              // second→first: employee on 2nd arrives early for 1st (early-arrival)
-              // second→third: employee on 2nd stays late into 3rd (late-stay)
-              // third→second: employee on 3rd arrives early for 2nd (early-arrival)
-              const shiftOrder = { first: 0, second: 1, third: 2 };
-              const type = shiftOrder[adjShiftId] < shiftOrder[gap.shiftId] ? "late-stay" : "early-arrival";
-
-              // Check qualifications — handoff body needs to fill a needed role
-              const q = emp.qualifications || [];
-              const currentGapAsgn = ns[gapKey] || [];
-              const handoffBodiesInGap = handoffs.filter(h => h.day === gap.day && h.targetShiftId === gap.shiftId);
-              const allBodies = [...currentGapAsgn, ...handoffBodiesInGap.map(h => {
-                const he = source.find(e => e.id === h.employeeId);
-                return he ? { employeeId: h.employeeId, position: h.position } : null;
-              }).filter(Boolean)];
-              const hasScale = slotHasRole(allBodies, source, "Scale");
-              const hasMedical = slotHasRole(allBodies, source, "Medical");
-              let pos = (!hasScale && q.includes("Scale")) ? "Scale"
-                : (!hasMedical && q.includes("Medical")) ? "Medical"
-                : q.includes("Guard") ? "Guard" : null;
-              if (!pos) continue;
-
-              handoffs.push({
-                day: gap.day,
-                employeeId: emp.id,
-                type,
-                sourceShiftId: adjShiftId,
-                targetShiftId: gap.shiftId,
-                position: pos,
-                hours: HANDOFF_HOURS,
-              });
-              if (hourTracker) hourTracker[emp.id] = (hourTracker[emp.id] || 0) + HANDOFF_HOURS;
-              filled++;
-              changed = true;
-            }
+            const hoType = shiftOrder[adjShiftId] < shiftOrder[gap.shiftId] ? "late-stay" : "early-arrival";
+            // Build current bodies including previously-added handoffs for role check
+            const handoffBodiesInGap = handoffs.filter(h => h.day === gap.day && h.targetShiftId === gap.shiftId);
+            const allBodies = [...(ns[gapKey] || []), ...handoffBodiesInGap.map(h => {
+              const he = source.find(e => e.id === h.employeeId);
+              return he ? { employeeId: h.employeeId, position: h.position } : null;
+            }).filter(Boolean)];
+            const pos = pickPosition(emp, allBodies);
+            if (!pos) continue;
+            const fillsRole = (pos === "Scale" && needsScale) || (pos === "Medical" && needsMedical) ? pos : null;
+            candidates.push({
+              type: "handoff", emp, pos, fillsRole, adjShiftId, hoType,
+              cost: candidateCost(emp, gap.shiftId, "handoff", HANDOFF_HOURS, fillsRole),
+              apply: () => {
+                handoffs.push({
+                  day: gap.day, employeeId: emp.id, type: hoType,
+                  sourceShiftId: adjShiftId, targetShiftId: gap.shiftId,
+                  position: pos, hours: HANDOFF_HOURS,
+                });
+                if (hourTracker) hourTracker[emp.id] = (hourTracker[emp.id] || 0) + HANDOFF_HOURS;
+              },
+            });
           }
+        }
+
+        // ── Sort by cost ascending, apply cheapest until deficit filled ──
+        candidates.sort((a, b) => a.cost - b.cost);
+        const usedEmpIds = new Set();
+        for (const c of candidates) {
+          if (filled >= deficit) break;
+          if (usedEmpIds.has(c.emp.id)) continue; // one move per employee per gap
+          c.apply();
+          usedEmpIds.add(c.emp.id);
+          filled++;
+          changed = true;
         }
       }
 

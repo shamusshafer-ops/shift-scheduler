@@ -1,5 +1,5 @@
 {
-  "capturedAt": "2026-04-12T19:14:22.164Z",
+  "capturedAt": "2026-04-12T23:09:33.080Z",
   "rosterVersion": "v35.4",
   "rosterSize": 15,
   "seeds": [
@@ -34,7 +34,7 @@
         "extShifts": 50,
         "handoffCount": 0
       },
-      "elapsedAvgMs": 89,
+      "elapsedAvgMs": 99,
       "perSeed": [
         {
           "seed": 12345,
@@ -206,18 +206,18 @@
         "errors": 18,
         "coverageErrors": 0,
         "hardViolations": 18,
-        "warns": 62,
-        "ftUnder40": 25,
-        "ftOver48": 12,
+        "warns": 60,
+        "ftUnder40": 24,
+        "ftOver48": 11,
         "noScale": 0,
         "noMedical": 25,
-        "prefShiftMisses": 31,
+        "prefShiftMisses": 29,
         "prefDayOffHits": 10,
         "assignmentsTotal": 618,
         "extShifts": 84,
         "handoffCount": 0
       },
-      "elapsedAvgMs": 81,
+      "elapsedAvgMs": 87,
       "perSeed": [
         {
           "seed": 12345,
@@ -256,12 +256,12 @@
           "errors": 1,
           "coverageErrors": 0,
           "hardViolations": 1,
-          "warns": 6,
-          "ftUnder40": 3,
+          "warns": 5,
+          "ftUnder40": 2,
           "ftOver48": 1,
           "noScale": 0,
           "noMedical": 2,
-          "prefShiftMisses": 3,
+          "prefShiftMisses": 2,
           "prefDayOffHits": 1,
           "assignmentsTotal": 59,
           "extShifts": 14,
@@ -336,12 +336,12 @@
           "errors": 1,
           "coverageErrors": 0,
           "hardViolations": 1,
-          "warns": 8,
+          "warns": 7,
           "ftUnder40": 3,
-          "ftOver48": 2,
+          "ftOver48": 1,
           "noScale": 0,
           "noMedical": 3,
-          "prefShiftMisses": 3,
+          "prefShiftMisses": 2,
           "prefDayOffHits": 1,
           "assignmentsTotal": 60,
           "extShifts": 10,
@@ -400,7 +400,7 @@
         "extShifts": 62,
         "handoffCount": 0
       },
-      "elapsedAvgMs": 82,
+      "elapsedAvgMs": 86,
       "perSeed": [
         {
           "seed": 12345,
