@@ -1,15 +1,17 @@
 {
   "_meta": {
-    "version": "v35.2-csp",
-    "exportedAt": "2026-03-28T12:51:07.815Z",
-    "convertedAt": "2026-03-28",
-    "originalVersion": "v34.2",
-    "employeeCount": 14,
-    "label": "ShiftScheduler Full Backup (CSP autofill)"
+    "version": "v35.4",
+    "exportedAt": "2026-04-08T15:18:58.261Z",
+    "employeeCount": 15,
+    "label": "ShiftScheduler Full Backup"
   },
   "data": {
     "shift_employees": [
       {
+        "availableDaysOfWeek": null,
+        "inTraining": false,
+        "swingEligible": [],
+        "crossShiftOT": false,
         "notes": "",
         "id": "psi-1",
         "name": "J Boerder",
@@ -32,12 +34,13 @@
         "maxShiftsPerWeek": 1,
         "ext12hPref": null,
         "maxWeekendDays": null,
+        "splitShiftEligible": false
+      },
+      {
         "availableDaysOfWeek": null,
         "inTraining": false,
         "swingEligible": [],
-        "crossShiftOT": false
-      },
-      {
+        "crossShiftOT": false,
         "notes": "",
         "id": "psi-2",
         "name": "S Staffan",
@@ -58,12 +61,13 @@
         "maxShiftsPerWeek": null,
         "ext12hPref": "day",
         "maxWeekendDays": null,
+        "splitShiftEligible": false
+      },
+      {
         "availableDaysOfWeek": null,
         "inTraining": false,
         "swingEligible": [],
-        "crossShiftOT": false
-      },
-      {
+        "crossShiftOT": false,
         "notes": "",
         "id": "psi-3",
         "name": "G Hanna",
@@ -83,12 +87,13 @@
         "maxShiftsPerWeek": null,
         "ext12hPref": "day",
         "maxWeekendDays": null,
+        "splitShiftEligible": false
+      },
+      {
         "availableDaysOfWeek": null,
         "inTraining": false,
         "swingEligible": [],
-        "crossShiftOT": false
-      },
-      {
+        "crossShiftOT": false,
         "notes": "",
         "id": "psi-4",
         "name": "J Parks",
@@ -112,17 +117,17 @@
         "maxShiftsPerWeek": null,
         "ext12hPref": "day",
         "maxWeekendDays": null,
+        "splitShiftEligible": false
+      },
+      {
         "availableDaysOfWeek": null,
         "inTraining": false,
         "swingEligible": [],
-        "crossShiftOT": false
-      },
-      {
+        "crossShiftOT": false,
         "notes": "",
         "id": "psi-5",
         "name": "B Harms",
         "qualifications": [
-          "Guard",
           "Scale",
           "Medical"
         ],
@@ -139,15 +144,13 @@
         "maxShiftsPerWeek": null,
         "ext12hPref": "day",
         "maxWeekendDays": null,
-        "availableDaysOfWeek": null,
-        "inTraining": false,
-        "swingEligible": [
-          "swing-2p-2a",
-          "swing-10a-10p"
-        ],
-        "crossShiftOT": true
+        "splitShiftEligible": false
       },
       {
+        "availableDaysOfWeek": null,
+        "inTraining": false,
+        "swingEligible": [],
+        "crossShiftOT": false,
         "notes": "",
         "id": "psi-6",
         "name": "S Shafer",
@@ -176,12 +179,13 @@
         "maxShiftsPerWeek": null,
         "ext12hPref": "day",
         "maxWeekendDays": null,
+        "splitShiftEligible": false
+      },
+      {
         "availableDaysOfWeek": null,
         "inTraining": false,
         "swingEligible": [],
-        "crossShiftOT": false
-      },
-      {
+        "crossShiftOT": false,
         "notes": "",
         "id": "psi-8",
         "name": "H Cameron",
@@ -205,12 +209,13 @@
         "maxShiftsPerWeek": null,
         "ext12hPref": "night",
         "maxWeekendDays": null,
+        "splitShiftEligible": false
+      },
+      {
         "availableDaysOfWeek": null,
         "inTraining": false,
         "swingEligible": [],
-        "crossShiftOT": false
-      },
-      {
+        "crossShiftOT": false,
         "notes": "",
         "id": "psi-9",
         "name": "J Londo",
@@ -220,23 +225,26 @@
         "employmentType": "full-time",
         "unavailableDays": [],
         "preferredShifts": [
-          "third",
           "second"
         ],
         "blockedShifts": [],
         "requiredShift": null,
         "preferredDaysOff": [],
         "overtimePref": "neutral",
-        "willing16h": false,
+        "willing16h": true,
         "maxShiftsPerWeek": null,
         "ext12hPref": "night",
         "maxWeekendDays": null,
-        "availableDaysOfWeek": null,
-        "inTraining": false,
-        "swingEligible": [],
-        "crossShiftOT": false
+        "splitShiftEligible": false
       },
       {
+        "availableDaysOfWeek": [
+          "Tuesday",
+          "Wednesday"
+        ],
+        "inTraining": false,
+        "swingEligible": [],
+        "crossShiftOT": false,
         "notes": "",
         "id": "psi-10",
         "name": "B Ray",
@@ -262,18 +270,16 @@
         "preferredDaysOff": [],
         "overtimePref": "neutral",
         "willing16h": true,
-        "maxShiftsPerWeek": null,
+        "maxShiftsPerWeek": 4,
         "ext12hPref": "day",
         "maxWeekendDays": null,
-        "availableDaysOfWeek": [
-          "Tuesday",
-          "Wednesday"
-        ],
-        "inTraining": false,
-        "swingEligible": [],
-        "crossShiftOT": false
+        "splitShiftEligible": false
       },
       {
+        "availableDaysOfWeek": null,
+        "inTraining": false,
+        "swingEligible": [],
+        "crossShiftOT": false,
         "notes": "",
         "id": "psi-11",
         "name": "T Bentley",
@@ -286,19 +292,20 @@
           "third"
         ],
         "blockedShifts": [],
-        "requiredShift": null,
+        "requiredShift": "third",
         "preferredDaysOff": [],
         "overtimePref": "neutral",
         "willing16h": false,
         "maxShiftsPerWeek": null,
-        "ext12hPref": null,
+        "ext12hPref": "night",
         "maxWeekendDays": null,
+        "splitShiftEligible": false
+      },
+      {
         "availableDaysOfWeek": null,
         "inTraining": false,
         "swingEligible": [],
-        "crossShiftOT": false
-      },
-      {
+        "crossShiftOT": false,
         "notes": "",
         "id": "psi-12",
         "name": "B Cole",
@@ -311,25 +318,32 @@
           "third"
         ],
         "blockedShifts": [],
-        "requiredShift": null,
+        "requiredShift": "third",
         "preferredDaysOff": [],
         "overtimePref": "neutral",
         "willing16h": false,
         "maxShiftsPerWeek": null,
         "ext12hPref": null,
         "maxWeekendDays": null,
-        "availableDaysOfWeek": null,
-        "inTraining": false,
-        "swingEligible": [],
-        "crossShiftOT": false
+        "splitShiftEligible": false
       },
       {
+        "availableDaysOfWeek": null,
+        "inTraining": false,
+        "swingEligible": [
+          "swing-10a-10p",
+          "swing-10p-10a",
+          "swing-2p-2a",
+          "swing-2a-2p"
+        ],
+        "crossShiftOT": true,
         "notes": "",
         "id": "psi-13",
         "name": "L Hillenburg",
         "qualifications": [
           "Scale",
-          "Medical"
+          "Medical",
+          "Guard"
         ],
         "employmentType": "full-time",
         "unavailableDays": [],
@@ -340,18 +354,20 @@
         "requiredShift": "third",
         "preferredDaysOff": [],
         "willing16h": true,
-        "overtimePref": "neutral",
+        "overtimePref": "preferred",
         "maxShiftsPerWeek": null,
-        "ext12hPref": "night",
+        "ext12hPref": "both",
         "maxWeekendDays": null,
-        "availableDaysOfWeek": null,
-        "inTraining": false,
-        "swingEligible": [
-          "swing-10p-10a"
-        ],
-        "crossShiftOT": false
+        "splitShiftEligible": false
       },
       {
+        "availableDaysOfWeek": [
+          "Monday",
+          "Wednesday"
+        ],
+        "inTraining": false,
+        "swingEligible": [],
+        "crossShiftOT": false,
         "notes": "",
         "id": "psi-14",
         "name": "T Beverly",
@@ -371,18 +387,20 @@
         "maxShiftsPerWeek": 2,
         "ext12hPref": null,
         "maxWeekendDays": null,
+        "splitShiftEligible": false
+      },
+      {
         "availableDaysOfWeek": null,
         "inTraining": false,
         "swingEligible": [],
-        "crossShiftOT": false
-      },
-      {
+        "crossShiftOT": false,
         "notes": "",
         "id": "psi-15",
         "name": "D Pete",
         "qualifications": [
           "Guard",
-          "Medical"
+          "Medical",
+          "Scale"
         ],
         "employmentType": "full-time",
         "unavailableDays": [],
@@ -397,10 +415,33 @@
         "maxShiftsPerWeek": null,
         "ext12hPref": "night",
         "maxWeekendDays": null,
+        "splitShiftEligible": false
+      },
+      {
+        "id": "1775661517949",
+        "name": "O. Anderson",
+        "qualifications": [
+          "Guard"
+        ],
+        "employmentType": "full-time",
+        "unavailableDays": [
+          "Sunday"
+        ],
+        "preferredShifts": [
+          "second"
+        ],
+        "blockedShifts": [],
+        "requiredShift": "second",
+        "preferredDaysOff": [],
+        "overtimePref": "neutral",
+        "willing16h": false,
+        "maxShiftsPerWeek": null,
+        "ext12hPref": null,
         "availableDaysOfWeek": null,
         "inTraining": false,
         "swingEligible": [],
-        "crossShiftOT": false
+        "crossShiftOT": false,
+        "splitShiftEligible": false
       }
     ],
     "shift_settings": {
@@ -432,11 +473,7 @@
         },
         {
           "employeeId": "psi-1",
-          "position": "Guard"
-        },
-        {
-          "employeeId": "psi-9",
-          "position": "Guard"
+          "position": "Medical"
         }
       ],
       "Sunday__third": [
@@ -469,15 +506,7 @@
       ],
       "Monday__second": [
         {
-          "employeeId": "psi-5",
-          "position": "Scale"
-        },
-        {
           "employeeId": "psi-8",
-          "position": "Guard"
-        },
-        {
-          "employeeId": "psi-9",
           "position": "Guard"
         }
       ],
@@ -562,14 +591,10 @@
       "Wednesday__second": [
         {
           "employeeId": "psi-5",
-          "position": "Scale"
+          "position": "Medical"
         },
         {
           "employeeId": "psi-8",
-          "position": "Guard"
-        },
-        {
-          "employeeId": "psi-9",
           "position": "Guard"
         }
       ],
@@ -608,14 +633,10 @@
       "Thursday__second": [
         {
           "employeeId": "psi-5",
-          "position": "Scale"
+          "position": "Medical"
         },
         {
           "employeeId": "psi-8",
-          "position": "Guard"
-        },
-        {
-          "employeeId": "psi-9",
           "position": "Guard"
         }
       ],
@@ -654,11 +675,7 @@
       "Friday__second": [
         {
           "employeeId": "psi-5",
-          "position": "Scale"
-        },
-        {
-          "employeeId": "psi-8",
-          "position": "Guard"
+          "position": "Medical"
         },
         {
           "employeeId": "psi-9",
@@ -736,6 +753,9 @@
         "auto": true
       }
     ],
+    "shift_saved_weeks": [],
+    "shift_history": [],
+    "shift_timeoff": [],
     "shift_patterns": {
       "psi-1": {
         "blockStart": 0,
@@ -765,6 +785,11 @@
       "psi-6": {
         "blockStart": 5,
         "shiftId": "first",
+        "trailingDays": 0
+      },
+      "psi-7": {
+        "blockStart": 0,
+        "shiftId": "second",
         "trailingDays": 0
       },
       "psi-8": {
@@ -800,6 +825,427 @@
     },
     "shift_week_start": "2026-04-05",
     "shift_saved_rosters": [
+      {
+        "id": "1775661488481",
+        "name": "Current 4/8/36",
+        "savedAt": "Apr 8, 2026",
+        "savedAtISO": "2026-04-08T15:18:08.481Z",
+        "employees": [
+          {
+            "availableDaysOfWeek": null,
+            "inTraining": false,
+            "swingEligible": [],
+            "crossShiftOT": false,
+            "notes": "",
+            "id": "psi-1",
+            "name": "J Boerder",
+            "qualifications": [
+              "Guard",
+              "Medical"
+            ],
+            "employmentType": "on-call",
+            "unavailableDays": [],
+            "preferredShifts": [
+              "first"
+            ],
+            "blockedShifts": [
+              "third"
+            ],
+            "requiredShift": null,
+            "preferredDaysOff": [],
+            "overtimePref": "blocked",
+            "willing16h": false,
+            "maxShiftsPerWeek": 1,
+            "ext12hPref": null,
+            "maxWeekendDays": null,
+            "splitShiftEligible": false
+          },
+          {
+            "availableDaysOfWeek": null,
+            "inTraining": false,
+            "swingEligible": [],
+            "crossShiftOT": false,
+            "notes": "",
+            "id": "psi-2",
+            "name": "S Staffan",
+            "qualifications": [
+              "Guard",
+              "Medical"
+            ],
+            "employmentType": "full-time",
+            "unavailableDays": [],
+            "preferredShifts": [
+              "first"
+            ],
+            "blockedShifts": [],
+            "requiredShift": "first",
+            "preferredDaysOff": [],
+            "overtimePref": "neutral",
+            "willing16h": false,
+            "maxShiftsPerWeek": null,
+            "ext12hPref": "day",
+            "maxWeekendDays": null,
+            "splitShiftEligible": false
+          },
+          {
+            "availableDaysOfWeek": null,
+            "inTraining": false,
+            "swingEligible": [],
+            "crossShiftOT": false,
+            "notes": "",
+            "id": "psi-3",
+            "name": "G Hanna",
+            "qualifications": [
+              "Scale"
+            ],
+            "employmentType": "full-time",
+            "unavailableDays": [],
+            "preferredShifts": [
+              "first"
+            ],
+            "blockedShifts": [],
+            "requiredShift": "first",
+            "preferredDaysOff": [],
+            "overtimePref": "neutral",
+            "willing16h": false,
+            "maxShiftsPerWeek": null,
+            "ext12hPref": "day",
+            "maxWeekendDays": null,
+            "splitShiftEligible": false
+          },
+          {
+            "availableDaysOfWeek": null,
+            "inTraining": false,
+            "swingEligible": [],
+            "crossShiftOT": false,
+            "notes": "",
+            "id": "psi-4",
+            "name": "J Parks",
+            "qualifications": [
+              "Guard",
+              "Medical"
+            ],
+            "employmentType": "full-time",
+            "unavailableDays": [],
+            "preferredShifts": [
+              "first"
+            ],
+            "blockedShifts": [],
+            "requiredShift": "first",
+            "preferredDaysOff": [
+              "Saturday",
+              "Sunday"
+            ],
+            "overtimePref": "neutral",
+            "willing16h": false,
+            "maxShiftsPerWeek": null,
+            "ext12hPref": "day",
+            "maxWeekendDays": null,
+            "splitShiftEligible": false
+          },
+          {
+            "availableDaysOfWeek": null,
+            "inTraining": false,
+            "swingEligible": [],
+            "crossShiftOT": false,
+            "notes": "",
+            "id": "psi-5",
+            "name": "B Harms",
+            "qualifications": [
+              "Scale",
+              "Medical"
+            ],
+            "employmentType": "full-time",
+            "unavailableDays": [],
+            "preferredShifts": [
+              "second"
+            ],
+            "blockedShifts": [],
+            "requiredShift": "second",
+            "preferredDaysOff": [],
+            "overtimePref": "neutral",
+            "willing16h": true,
+            "maxShiftsPerWeek": null,
+            "ext12hPref": "day",
+            "maxWeekendDays": null,
+            "splitShiftEligible": false
+          },
+          {
+            "availableDaysOfWeek": null,
+            "inTraining": false,
+            "swingEligible": [],
+            "crossShiftOT": false,
+            "notes": "",
+            "id": "psi-6",
+            "name": "S Shafer",
+            "qualifications": [
+              "Supervisor",
+              "Scale",
+              "Medical",
+              "Guard"
+            ],
+            "employmentType": "full-time",
+            "unavailableDays": [],
+            "preferredShifts": [
+              "first"
+            ],
+            "blockedShifts": [
+              "second",
+              "third"
+            ],
+            "requiredShift": "first",
+            "preferredDaysOff": [
+              "Saturday",
+              "Sunday"
+            ],
+            "overtimePref": "neutral",
+            "willing16h": false,
+            "maxShiftsPerWeek": null,
+            "ext12hPref": "day",
+            "maxWeekendDays": null,
+            "splitShiftEligible": false
+          },
+          {
+            "availableDaysOfWeek": null,
+            "inTraining": false,
+            "swingEligible": [],
+            "crossShiftOT": false,
+            "notes": "",
+            "id": "psi-8",
+            "name": "H Cameron",
+            "qualifications": [
+              "Guard",
+              "Scale"
+            ],
+            "employmentType": "full-time",
+            "unavailableDays": [],
+            "preferredShifts": [
+              "second",
+              "third"
+            ],
+            "blockedShifts": [
+              "first"
+            ],
+            "requiredShift": null,
+            "preferredDaysOff": [],
+            "overtimePref": "neutral",
+            "willing16h": false,
+            "maxShiftsPerWeek": null,
+            "ext12hPref": "night",
+            "maxWeekendDays": null,
+            "splitShiftEligible": false
+          },
+          {
+            "availableDaysOfWeek": null,
+            "inTraining": false,
+            "swingEligible": [],
+            "crossShiftOT": false,
+            "notes": "",
+            "id": "psi-9",
+            "name": "J Londo",
+            "qualifications": [
+              "Guard"
+            ],
+            "employmentType": "full-time",
+            "unavailableDays": [],
+            "preferredShifts": [
+              "second"
+            ],
+            "blockedShifts": [],
+            "requiredShift": null,
+            "preferredDaysOff": [],
+            "overtimePref": "neutral",
+            "willing16h": true,
+            "maxShiftsPerWeek": null,
+            "ext12hPref": "night",
+            "maxWeekendDays": null,
+            "splitShiftEligible": false
+          },
+          {
+            "availableDaysOfWeek": [
+              "Tuesday",
+              "Wednesday"
+            ],
+            "inTraining": false,
+            "swingEligible": [],
+            "crossShiftOT": false,
+            "notes": "",
+            "id": "psi-10",
+            "name": "B Ray",
+            "qualifications": [
+              "Guard"
+            ],
+            "employmentType": "part-time",
+            "unavailableDays": [
+              "Sunday",
+              "Monday",
+              "Thursday",
+              "Friday",
+              "Saturday"
+            ],
+            "preferredShifts": [
+              "second",
+              "first"
+            ],
+            "blockedShifts": [
+              "third"
+            ],
+            "requiredShift": null,
+            "preferredDaysOff": [],
+            "overtimePref": "neutral",
+            "willing16h": true,
+            "maxShiftsPerWeek": 4,
+            "ext12hPref": "day",
+            "maxWeekendDays": null,
+            "splitShiftEligible": false
+          },
+          {
+            "availableDaysOfWeek": null,
+            "inTraining": false,
+            "swingEligible": [],
+            "crossShiftOT": false,
+            "notes": "",
+            "id": "psi-11",
+            "name": "T Bentley",
+            "qualifications": [
+              "Guard"
+            ],
+            "employmentType": "full-time",
+            "unavailableDays": [],
+            "preferredShifts": [
+              "third"
+            ],
+            "blockedShifts": [],
+            "requiredShift": "third",
+            "preferredDaysOff": [],
+            "overtimePref": "neutral",
+            "willing16h": false,
+            "maxShiftsPerWeek": null,
+            "ext12hPref": "night",
+            "maxWeekendDays": null,
+            "splitShiftEligible": false
+          },
+          {
+            "availableDaysOfWeek": null,
+            "inTraining": false,
+            "swingEligible": [],
+            "crossShiftOT": false,
+            "notes": "",
+            "id": "psi-12",
+            "name": "B Cole",
+            "qualifications": [
+              "Guard"
+            ],
+            "employmentType": "full-time",
+            "unavailableDays": [],
+            "preferredShifts": [
+              "third"
+            ],
+            "blockedShifts": [],
+            "requiredShift": "third",
+            "preferredDaysOff": [],
+            "overtimePref": "neutral",
+            "willing16h": false,
+            "maxShiftsPerWeek": null,
+            "ext12hPref": null,
+            "maxWeekendDays": null,
+            "splitShiftEligible": false
+          },
+          {
+            "availableDaysOfWeek": null,
+            "inTraining": false,
+            "swingEligible": [
+              "swing-10a-10p",
+              "swing-10p-10a",
+              "swing-2p-2a",
+              "swing-2a-2p"
+            ],
+            "crossShiftOT": true,
+            "notes": "",
+            "id": "psi-13",
+            "name": "L Hillenburg",
+            "qualifications": [
+              "Scale",
+              "Medical",
+              "Guard"
+            ],
+            "employmentType": "full-time",
+            "unavailableDays": [],
+            "preferredShifts": [
+              "third"
+            ],
+            "blockedShifts": [],
+            "requiredShift": "third",
+            "preferredDaysOff": [],
+            "willing16h": true,
+            "overtimePref": "preferred",
+            "maxShiftsPerWeek": null,
+            "ext12hPref": "both",
+            "maxWeekendDays": null,
+            "splitShiftEligible": false
+          },
+          {
+            "availableDaysOfWeek": [
+              "Monday",
+              "Wednesday"
+            ],
+            "inTraining": false,
+            "swingEligible": [],
+            "crossShiftOT": false,
+            "notes": "",
+            "id": "psi-14",
+            "name": "T Beverly",
+            "qualifications": [
+              "Guard"
+            ],
+            "employmentType": "part-time",
+            "unavailableDays": [],
+            "preferredShifts": [
+              "second"
+            ],
+            "blockedShifts": [],
+            "requiredShift": "second",
+            "preferredDaysOff": [],
+            "overtimePref": "neutral",
+            "willing16h": false,
+            "maxShiftsPerWeek": 2,
+            "ext12hPref": null,
+            "maxWeekendDays": null,
+            "splitShiftEligible": false
+          },
+          {
+            "availableDaysOfWeek": null,
+            "inTraining": false,
+            "swingEligible": [],
+            "crossShiftOT": false,
+            "notes": "",
+            "id": "psi-15",
+            "name": "D Pete",
+            "qualifications": [
+              "Guard",
+              "Medical",
+              "Scale"
+            ],
+            "employmentType": "full-time",
+            "unavailableDays": [],
+            "preferredShifts": [
+              "third"
+            ],
+            "blockedShifts": [],
+            "requiredShift": "third",
+            "preferredDaysOff": [],
+            "overtimePref": "neutral",
+            "willing16h": false,
+            "maxShiftsPerWeek": null,
+            "ext12hPref": "night",
+            "maxWeekendDays": null,
+            "splitShiftEligible": false
+          }
+        ],
+        "count": 14,
+        "ft": 11,
+        "pt": 3
+      },
       {
         "id": "1773343822208",
         "name": "3122026 current Roster",
@@ -1510,9 +1956,6 @@
       "textMuted": "#ffffff",
       "textDim": "#ffffff"
     },
-    "shift_theme": "dark",
-    "shift_timeoff": [],
-    "shift_saved_weeks": [],
-    "shift_history": []
+    "shift_theme": "dark"
   }
 }
