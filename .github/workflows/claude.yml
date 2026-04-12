@@ -1,23 +1,23 @@
 name: Claude
 
-aon: "Claude Code"
-schedule:
-  - cron: '0 * * * *'
-
-# Trigger on issue comments
 on:
+  # Trigger on hourly schedule
+  schedule:
+    - cron: '0 * * * *'
+  
+  # Trigger on issue comments
   issue_comment:
     types: [created]
-
-# Trigger on pull request review comments
+  
+  # Trigger on pull request review comments
   pull_request_review_comment:
     types: [created]
-
-# Trigger on issues
+  
+  # Trigger on issues
   issues:
     types: [opened, edited, closed]
-
-# Trigger on pull request reviews
+  
+  # Trigger on pull request reviews
   pull_request_review:
     types: [submitted, edited]
 
