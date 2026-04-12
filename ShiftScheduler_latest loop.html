@@ -477,6 +477,7 @@ const SHIFTS = [
 const POSITIONS = ["Guard","Scale","Medical"];
 const ALL_POSITIONS = ["Supervisor",...POSITIONS];
 const SHIFT_HOURS = 8;
+const HANDOFF_HOURS = 4;  // partial-shift handoff: late-stay or early-arrival
 const FT_MIN_HOURS = 40;
 // MAX_CONSECUTIVE_NIGHTS and MIN_REST_HOURS are now user-configurable via SettingsCtx.
 // Fallback values used in module-level helpers that can't access context:
@@ -877,7 +878,7 @@ function extEmpHours(pair, isEmpA) {
   return EXT_SHIFT_HOURS;
 }
 
-function calcHoursDetail(empId, schedule, extShifts) {
+function calcHoursDetail(empId, schedule, extShifts, handoffsArr) {
   // Returns { hours, regularSlots, extCredits, dedupedKeys } for debugging.
   const extCoveredKeys = new Set();
   const extCredits = [];
@@ -907,11 +908,12 @@ function calcHoursDetail(empId, schedule, extShifts) {
     regHours += SHIFT_HOURS;
   });
   const extHours = extCredits.reduce((s, c) => s + c.h, 0);
-  return { hours: regHours + extHours, regHours, extHours, regularSlots, extCredits, dedupedKeys: [...extCoveredKeys] };
+  const hoHours = (handoffsArr || []).filter(h => h.employeeId === empId).reduce((s, h) => s + (h.hours || HANDOFF_HOURS), 0);
+  return { hours: regHours + extHours + hoHours, regHours, extHours, hoHours, regularSlots, extCredits, dedupedKeys: [...extCoveredKeys] };
 }
 
-function calcHours(empId, schedule, extShifts) {
-  return calcHoursDetail(empId, schedule, extShifts).hours;
+function calcHours(empId, schedule, extShifts, handoffsArr) {
+  return calcHoursDetail(empId, schedule, extShifts, handoffsArr).hours;
 }
 
 // Count how many distinct shift slots an employee is assigned in the current week
@@ -9370,6 +9372,7 @@ function ScheduleGrid({ onOpenTestModal }) {
   const [showHistSave,     setShowHistSave]    = useState(false);
   const [scheduleIssues,   setScheduleIssues]  = useState(null);
   const [assignLog,        setAssignLog]       = useState(null);
+  const [handoffs,         setHandoffs]        = useState([]);
   const [undoStack,        setUndoStack]        = useState([]);
   const [redoStack,        setRedoStack]        = useState([]);
   const [bannersExpanded,  setBannersExpanded]  = useState(false);
@@ -9829,12 +9832,16 @@ function ScheduleGrid({ onOpenTestModal }) {
     assignEmp(d,s,dragEmp.id,pos); setDragEmp(null);
   };
 
-  const validateSchedule = useCallback((sched, exts, emps) => {
+  const validateSchedule = useCallback((sched, exts, emps, handoffsArg) => {
     const issues = [];
     const E = (msg) => issues.push({ level:"error", msg });
     const W = (msg) => issues.push({ level:"warn",  msg });
     const rmap = Object.fromEntries((emps||employees).map(e => [e.id, e]));
     const allExts = exts || extShifts || [];
+    const allHandoffs = handoffsArg || [];
+
+    const handoffBodyCount = (day, shiftId) =>
+      allHandoffs.filter(h => h.day === day && h.targetShiftId === shiftId).length;
 
     const extBodyCount = (day, shiftId) => {
       let n = 0;
@@ -9857,7 +9864,8 @@ function ScheduleGrid({ onOpenTestModal }) {
         const key = cellKey(day, shift.id);
         const asgn = sched[key] || [];
         const extBodies = extBodyCount(day, shift.id);
-        const regCount = asgn.length + extBodies;
+        const hoHandoffs = handoffBodyCount(day, shift.id);
+        const regCount = asgn.length + extBodies + hoHandoffs;
         const supCount = asgn.filter(a => a.position === "Supervisor").length;
         const total = regCount + supCount;
 
@@ -9884,8 +9892,12 @@ function ScheduleGrid({ onOpenTestModal }) {
             }));
         const extHasScale   = extEmps.some(e => (e.qualifications||[]).includes("Scale"));
         const extHasMedical = extEmps.some(e => (e.qualifications||[]).includes("Medical"));
-        if (!hasScale && !extHasScale)   W(`No Scale on ${day} ${shift.id}`);
-        if (!hasMedical && !extHasMedical) W(`No Medical on ${day} ${shift.id}`);
+        const hoEmps = allHandoffs.filter(h => h.day === day && h.targetShiftId === shift.id)
+          .map(h => rmap[h.employeeId]).filter(Boolean);
+        const hoHasScale   = hoEmps.some(e => (e.qualifications||[]).includes("Scale"));
+        const hoHasMedical = hoEmps.some(e => (e.qualifications||[]).includes("Medical"));
+        if (!hasScale && !extHasScale && !hoHasScale)     W(`No Scale on ${day} ${shift.id}`);
+        if (!hasMedical && !extHasMedical && !hoHasMedical) W(`No Medical on ${day} ${shift.id}`);
       });
     });
 
@@ -9950,6 +9962,9 @@ function ScheduleGrid({ onOpenTestModal }) {
           hoursByEmp[a.employeeId] = (hoursByEmp[a.employeeId]||0) + SHIFT_HOURS;
         });
       });
+    });
+    allHandoffs.forEach(h => {
+      hoursByEmp[h.employeeId] = (hoursByEmp[h.employeeId]||0) + (h.hours || HANDOFF_HOURS);
     });
     (emps||employees).forEach(emp => {
       if (emp.employmentType !== "full-time") return;
@@ -10164,11 +10179,11 @@ function ScheduleGrid({ onOpenTestModal }) {
       const issues = validateSchedule(ns, autoExtShifts, source);
       const errors = issues.filter(i => i.level === "error").length;
       const warns  = issues.filter(i => i.level === "warn").length;
-      return { ns, autoExtShifts, issues, errors, warns, usedPatterns, hourTracker, assignLog };
+      return { ns, autoExtShifts, issues, errors, warns, usedPatterns, hourTracker, assignLog, handoffs: [] };
     };
 
     // ── Commit best result to state ──────────────────────────────────────────
-    const commit = ({ ns, autoExtShifts, issues, usedPatterns, hourTracker, assignLog }) => {
+    const commit = ({ ns, autoExtShifts, issues, usedPatterns, hourTracker, assignLog, handoffs: ho }) => {
       pushUndo();
       if (usedPatterns && Object.keys(usedPatterns).length)
         setEmpPatterns(prev => ({...prev, ...usedPatterns}));
@@ -10190,6 +10205,7 @@ function ScheduleGrid({ onOpenTestModal }) {
         setScheduleIssues(issues);
       }
       if (assignLog) setAssignLog(assignLog);
+      setHandoffs(ho || []);
       setScheduleStale(false);
     };
 
@@ -10199,6 +10215,7 @@ function ScheduleGrid({ onOpenTestModal }) {
     // jittered retries for structurally-blocked gaps.
     const repairGaps = (result) => {
       const { ns, autoExtShifts, hourTracker } = result;
+      const handoffs = result.handoffs || [];
       let changed = false;
 
       // Parse coverage gap errors → list of {day, shiftId, have, need}
@@ -10311,15 +10328,80 @@ function ScheduleGrid({ onOpenTestModal }) {
             }
           }
         }
+
+        // Strategy 3: Partial-shift handoff (4h late-stay / early-arrival)
+        // An employee on an adjacent shift stays 4h late or arrives 4h early
+        // to provide partial coverage for the gap slot. The employee is NOT
+        // added to the gap slot's assignment array — they're tracked in the
+        // handoffs array and counted as a body by validateSchedule.
+        const ADJACENT_HANDOFF = { first: ["second"], second: ["first", "third"], third: ["second"] };
+        if (filled < deficit) {
+          const adjShifts = ADJACENT_HANDOFF[gap.shiftId] || [];
+          for (const adjShiftId of adjShifts) {
+            if (filled >= deficit) break;
+            const adjKey = cellKey(gap.day, adjShiftId);
+            const adjAsgn = ns[adjKey] || [];
+
+            for (const a of adjAsgn) {
+              if (filled >= deficit) break;
+              // Don't handoff the same employee twice into the same gap slot
+              if (handoffs.some(h => h.day === gap.day && h.employeeId === a.employeeId && h.targetShiftId === gap.shiftId)) continue;
+              // Don't handoff an employee who's already covering the gap slot as a regular assignment
+              if (assignedIds.has(a.employeeId)) continue;
+              if (a.position === "Supervisor") continue;
+
+              const emp = source.find(e => e.id === a.employeeId);
+              if (!emp) continue;
+              if (emp.inTraining) continue;
+              if ((emp.blockedShifts || []).includes(gap.shiftId)) continue;
+
+              // Determine handoff type based on shift order
+              // first→second: employee on 1st stays late into 2nd (late-stay)
+              // second→first: employee on 2nd arrives early for 1st (early-arrival)
+              // second→third: employee on 2nd stays late into 3rd (late-stay)
+              // third→second: employee on 3rd arrives early for 2nd (early-arrival)
+              const shiftOrder = { first: 0, second: 1, third: 2 };
+              const type = shiftOrder[adjShiftId] < shiftOrder[gap.shiftId] ? "late-stay" : "early-arrival";
+
+              // Check qualifications — handoff body needs to fill a needed role
+              const q = emp.qualifications || [];
+              const currentGapAsgn = ns[gapKey] || [];
+              const handoffBodiesInGap = handoffs.filter(h => h.day === gap.day && h.targetShiftId === gap.shiftId);
+              const allBodies = [...currentGapAsgn, ...handoffBodiesInGap.map(h => {
+                const he = source.find(e => e.id === h.employeeId);
+                return he ? { employeeId: h.employeeId, position: h.position } : null;
+              }).filter(Boolean)];
+              const hasScale = slotHasRole(allBodies, source, "Scale");
+              const hasMedical = slotHasRole(allBodies, source, "Medical");
+              let pos = (!hasScale && q.includes("Scale")) ? "Scale"
+                : (!hasMedical && q.includes("Medical")) ? "Medical"
+                : q.includes("Guard") ? "Guard" : null;
+              if (!pos) continue;
+
+              handoffs.push({
+                day: gap.day,
+                employeeId: emp.id,
+                type,
+                sourceShiftId: adjShiftId,
+                targetShiftId: gap.shiftId,
+                position: pos,
+                hours: HANDOFF_HOURS,
+              });
+              if (hourTracker) hourTracker[emp.id] = (hourTracker[emp.id] || 0) + HANDOFF_HOURS;
+              filled++;
+              changed = true;
+            }
+          }
+        }
       }
 
       if (!changed) return result;
 
-      // Re-validate after repairs
-      const issues = validateSchedule(ns, autoExtShifts, source);
+      // Re-validate after repairs (pass handoffs so they count as bodies)
+      const issues = validateSchedule(ns, autoExtShifts, source, handoffs);
       const errors = issues.filter(i => i.level === "error").length;
       const warns  = issues.filter(i => i.level === "warn").length;
-      return { ...result, ns, issues, errors, warns };
+      return { ...result, ns, issues, errors, warns, handoffs };
     };
 
     // ── Iterative loop (B2: targeted retry) ──────────────────────────────────
@@ -10682,7 +10764,7 @@ function ScheduleGrid({ onOpenTestModal }) {
                   {asgn.map(a=>{
                     const emp=employees.find(e=>e.id===a.employeeId);
                     const nameCol=emp?.employmentType==="on-call"?"#f97316":emp?.employmentType==="part-time"?"#22c55e":"var(--ss-text)";
-                    const h=calcHours(a.employeeId,displaySchedule,extShifts);
+                    const h=calcHours(a.employeeId,displaySchedule,extShifts,handoffs);
                     const hCol=h>=48?"var(--ss-danger)":h>=40?"var(--ss-scale)":h>0?"var(--ss-warning)":"var(--ss-text-dim)";
                     const isFT=emp?.employmentType==="full-time";
                     return (
@@ -10989,6 +11071,8 @@ function ScheduleGrid({ onOpenTestModal }) {
                       // 16-hr double: assigned to both this shift and an adjacent shift same day
                       const adjShifts = shift.id==="first" ? ["second"] : shift.id==="second" ? ["first","third"] : ["second"];
                       const is16h = adjShifts.some(otherId => getAsgn(day,otherId).some(x=>x.employeeId===a.employeeId));
+                      const hoInto = handoffs.find(h => h.day === day && h.targetShiftId === shift.id && h.employeeId === a.employeeId);
+                      const hoFrom = handoffs.find(h => h.day === day && h.sourceShiftId === shift.id && h.employeeId === a.employeeId);
                       const borderCol = hasFatigue?"var(--ss-fatigue-60)":hasReqViol?"var(--ss-danger-60)":hasPrefWarn?"var(--ss-warning-50)":isOnCallSlot?"var(--ss-warning-60)":pC(a.position,t)+"30";
                       const bgCol     = hasFatigue?"var(--ss-fatigue-18)":hasReqViol?"var(--ss-danger-0d)":hasPrefWarn?"var(--ss-warning-0a)":pC(a.position,t)+"15";
                       const dotCol    = hasFatigue?"var(--ss-fatigue)":pC(a.position,t);
@@ -11068,12 +11152,18 @@ function ScheduleGrid({ onOpenTestModal }) {
                               padding:"0 3px",borderRadius:2,flexShrink:0,letterSpacing:".03em"}}
                               title="16-hour double shift">16h</span>
                           )}
+                          {hoFrom&&(
+                            <span style={{fontSize:7,fontWeight:800,
+                              color:"#6366f1",background:"#6366f118",border:"1px solid #6366f150",
+                              padding:"0 3px",borderRadius:2,flexShrink:0,letterSpacing:".03em"}}
+                              title={`${hoFrom.type === "late-stay" ? "Stays late" : "Arrives early"} → ${hoFrom.targetShiftId} (+${HANDOFF_HOURS}h)`}>+{HANDOFF_HOURS}h</span>
+                          )}
                           {hasFatigue&&<span style={{fontSize:8,color:"var(--ss-fatigue)",fontWeight:800,flexShrink:0}}
                             title="Fatigue warning">⚠</span>}
                           {!hasFatigue&&hasPrefWarn&&<span style={{fontSize:8,color:hasReqViol?"var(--ss-danger)":"var(--ss-warning)",fontWeight:800,flexShrink:0}} title={prefViolations.map(v=>v.msg).join("; ")}>⚠</span>}
                           {(()=>{
                             if(emp?.employmentType!=="full-time") return null;
-                            const h = calcHours(a.employeeId, displaySchedule, extShifts);
+                            const h = calcHours(a.employeeId, displaySchedule, extShifts, handoffs);
                             const col = h >= 48 ? "var(--ss-danger)" : h >= 40 ? "var(--ss-scale)" : h > 0 ? "var(--ss-warning)" : "var(--ss-text-dim)";
                             const tip = h+"h this week";
                             return (
@@ -11115,6 +11205,22 @@ function ScheduleGrid({ onOpenTestModal }) {
                           </div>
                         )}
                         </Fragment>
+                      );
+                    })}
+
+                    {handoffs.filter(h => h.day === day && h.targetShiftId === shift.id).map((h, hi) => {
+                      const hoEmp = employees.find(e => e.id === h.employeeId);
+                      if (!hoEmp) return null;
+                      const label = h.type === "late-stay" ? "Late stay" : "Early arrival";
+                      return (
+                        <div key={"ho-"+hi} style={{display:"flex",alignItems:"center",gap:5,padding:"3px 6px",
+                          background:"#6366f112",border:"1px dashed #6366f160",borderRadius:4,fontSize:11}}>
+                          <span style={{fontSize:9,flexShrink:0,color:"#6366f1"}}>+{HANDOFF_HOURS}h</span>
+                          <span style={{flex:1,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap",
+                            fontWeight:600,fontSize:10,color:"#6366f1"}}>{hoEmp.name}</span>
+                          <span style={{fontSize:7,fontWeight:700,color:"#6366f1",background:"#6366f118",
+                            border:"1px solid #6366f140",padding:"0 3px",borderRadius:2,flexShrink:0}}>{label}</span>
+                        </div>
                       );
                     })}
 

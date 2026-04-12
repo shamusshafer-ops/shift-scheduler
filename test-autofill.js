@@ -43,7 +43,7 @@ const scriptBody = extractPlainScriptBlock(HTML);
 const EXPORTS = [
   'buildAutoFill', 'deployProactiveExtShifts', 'canWorkExtHalf', 'slotHasRole',
   'DAYS', 'SHIFTS', 'EXT_PAIRS', 'REGULAR_SLOTS', 'SUP_SLOT_DAY', 'cellKey',
-  'SHIFT_HOURS', 'isWeekday', 'getSlotCount',
+  'SHIFT_HOURS', 'HANDOFF_HOURS', 'isWeekday', 'getSlotCount',
 ];
 const scriptWithExports = scriptBody + '\n;(function(){\n' +
   EXPORTS.map(n => `  try { globalThis.${n} = ${n}; } catch(_) {}`).join('\n') +
@@ -140,7 +140,7 @@ try {
 const {
   buildAutoFill, deployProactiveExtShifts, canWorkExtHalf, slotHasRole,
   DAYS, SHIFTS, EXT_PAIRS, REGULAR_SLOTS, SUP_SLOT_DAY, cellKey,
-  SHIFT_HOURS, isWeekday,
+  SHIFT_HOURS, HANDOFF_HOURS, isWeekday,
 } = ctx;
 
 if (typeof buildAutoFill !== 'function') {
@@ -150,12 +150,16 @@ if (typeof buildAutoFill !== 'function') {
 
 // ── Standalone validateSchedule (adapted from HTML:9718-9848) ─────────────
 // We keep it in the harness so the test doesn't depend on the Babel block.
-function validateSchedule(sched, exts, emps) {
+function validateSchedule(sched, exts, emps, handoffsArg) {
   const issues = [];
   const E = (msg) => issues.push({ level: 'error', msg });
   const W = (msg) => issues.push({ level: 'warn',  msg });
   const rmap = Object.fromEntries((emps || []).map(e => [e.id, e]));
   const allExts = exts || [];
+  const allHandoffs = handoffsArg || [];
+
+  const handoffBodyCount = (day, shiftId) =>
+    allHandoffs.filter(h => h.day === day && h.targetShiftId === shiftId).length;
 
   const extBodyCount = (day, shiftId) => {
     let n = 0;
@@ -177,7 +181,8 @@ function validateSchedule(sched, exts, emps) {
       const key  = cellKey(day, shift.id);
       const asgn = sched[key] || [];
       const extBodies = extBodyCount(day, shift.id);
-      const regCount  = asgn.length + extBodies;
+      const hoHandoffs = handoffBodyCount(day, shift.id);
+      const regCount  = asgn.length + extBodies + hoHandoffs;
       const supCount  = asgn.filter(a => a.position === 'Supervisor').length;
       const total     = regCount + supCount;
 
@@ -201,8 +206,12 @@ function validateSchedule(sched, exts, emps) {
         });
       const extHasScale   = extEmpsHere.some(e => (e.qualifications || []).includes('Scale'));
       const extHasMedical = extEmpsHere.some(e => (e.qualifications || []).includes('Medical'));
-      if (!hasScale   && !extHasScale)   W(`No Scale on ${day} ${shift.id}`);
-      if (!hasMedical && !extHasMedical) W(`No Medical on ${day} ${shift.id}`);
+      const hoEmps = allHandoffs.filter(h => h.day === day && h.targetShiftId === shift.id)
+        .map(h => rmap[h.employeeId]).filter(Boolean);
+      const hoHasScale   = hoEmps.some(e => (e.qualifications || []).includes('Scale'));
+      const hoHasMedical = hoEmps.some(e => (e.qualifications || []).includes('Medical'));
+      if (!hasScale   && !extHasScale   && !hoHasScale)   W(`No Scale on ${day} ${shift.id}`);
+      if (!hasMedical && !extHasMedical && !hoHasMedical) W(`No Medical on ${day} ${shift.id}`);
 
       // Hard-constraint violations on this cell.
       for (const a of asgn) {
@@ -218,7 +227,7 @@ function validateSchedule(sched, exts, emps) {
     });
   });
 
-  // FT hour totals (regular shifts only — ext hours are extra).
+  // FT hour totals (regular shifts + handoff hours — ext hours are extra).
   const hoursByEmp = {};
   DAYS.forEach(day => {
     SHIFTS.forEach(shift => {
@@ -226,6 +235,9 @@ function validateSchedule(sched, exts, emps) {
         hoursByEmp[a.employeeId] = (hoursByEmp[a.employeeId] || 0) + SHIFT_HOURS;
       });
     });
+  });
+  allHandoffs.forEach(h => {
+    hoursByEmp[h.employeeId] = (hoursByEmp[h.employeeId] || 0) + (h.hours || HANDOFF_HOURS);
   });
   (emps || []).forEach(emp => {
     if (emp.employmentType !== 'full-time') return;
@@ -238,8 +250,8 @@ function validateSchedule(sched, exts, emps) {
 }
 
 // ── Metrics scorer ────────────────────────────────────────────────────────
-function scoreRun(sched, exts, emps, elapsedMs) {
-  const issues = validateSchedule(sched, exts, emps);
+function scoreRun(sched, exts, emps, elapsedMs, handoffsArg) {
+  const issues = validateSchedule(sched, exts, emps, handoffsArg);
   const errors = issues.filter(i => i.level === 'error');
   const warns  = issues.filter(i => i.level === 'warn');
   const coverageErrors = errors.filter(e => /^Coverage gap/.test(e.msg)).length;
@@ -281,6 +293,7 @@ function scoreRun(sched, exts, emps, elapsedMs) {
     prefDayOffHits,
     assignmentsTotal,
     extShifts: (exts || []).length,
+    handoffCount: (handoffsArg || []).length,
     errorSample: errors.slice(0, 8).map(e => e.msg),
   };
 }
@@ -391,7 +404,8 @@ function repairGaps(ns, autoExtShifts, source, empTimeOffDays) {
       return { day: m[1], shiftId: m[2], have: +m[3], need: +m[4] };
     }).filter(Boolean);
 
-  if (!gaps.length) return false;
+  const handoffs = [];
+  if (!gaps.length) return { changed: false, handoffs };
 
   const empShiftCount = {};
   for (const day of DAYS) for (const shift of SHIFTS) {
@@ -481,8 +495,60 @@ function repairGaps(ns, autoExtShifts, source, empTimeOffDays) {
         }
       }
     }
+
+    // Strategy 3: Partial-shift handoff (4h late-stay / early-arrival)
+    const ADJACENT_HANDOFF = { first: ['second'], second: ['first', 'third'], third: ['second'] };
+    if (filled < deficit) {
+      const adjShifts = ADJACENT_HANDOFF[gap.shiftId] || [];
+      for (const adjShiftId of adjShifts) {
+        if (filled >= deficit) break;
+        const adjKey = cellKey(gap.day, adjShiftId);
+        const adjAsgn = ns[adjKey] || [];
+
+        for (const a of adjAsgn) {
+          if (filled >= deficit) break;
+          if (handoffs.some(h => h.day === gap.day && h.employeeId === a.employeeId && h.targetShiftId === gap.shiftId)) continue;
+          if (assignedIds.has(a.employeeId)) continue;
+          if (a.position === 'Supervisor') continue;
+
+          const emp = source.find(e => e.id === a.employeeId);
+          if (!emp) continue;
+          if (emp.inTraining) continue;
+          if ((emp.blockedShifts || []).includes(gap.shiftId)) continue;
+
+          const shiftOrder = { first: 0, second: 1, third: 2 };
+          const type = shiftOrder[adjShiftId] < shiftOrder[gap.shiftId] ? 'late-stay' : 'early-arrival';
+
+          const q = emp.qualifications || [];
+          const currentGapAsgn = ns[gapKey] || [];
+          const handoffBodiesInGap = handoffs.filter(h => h.day === gap.day && h.targetShiftId === gap.shiftId);
+          const allBodies = [...currentGapAsgn, ...handoffBodiesInGap.map(h => {
+            const he = source.find(e => e.id === h.employeeId);
+            return he ? { employeeId: h.employeeId, position: h.position } : null;
+          }).filter(Boolean)];
+          const hasScale = slotHasRole(allBodies, source, 'Scale');
+          const hasMedical = slotHasRole(allBodies, source, 'Medical');
+          let pos = (!hasScale && q.includes('Scale')) ? 'Scale'
+            : (!hasMedical && q.includes('Medical')) ? 'Medical'
+            : q.includes('Guard') ? 'Guard' : null;
+          if (!pos) continue;
+
+          handoffs.push({
+            day: gap.day,
+            employeeId: emp.id,
+            type,
+            sourceShiftId: adjShiftId,
+            targetShiftId: gap.shiftId,
+            position: pos,
+            hours: HANDOFF_HOURS,
+          });
+          filled++;
+          changed = true;
+        }
+      }
+    }
   }
-  return changed;
+  return { changed, handoffs };
 }
 
 // ── Single non-jitter attempt ─────────────────────────────────────────────
@@ -493,9 +559,9 @@ function runAttempt(source, cfg, empTimeOffDays, empPatterns) {
     source, cfg, empTimeOffDays, empPatterns || {}, [...proactiveExts], false
   );
   const autoExtShifts = runReactiveExtLoop(ns, source, proactiveExts, shiftsWorked);
-  // B2: targeted gap repair
-  repairGaps(ns, autoExtShifts, source, empTimeOffDays);
-  return { ns, autoExtShifts, elapsed: Date.now() - t0 };
+  // B2: targeted gap repair (+ C1 handoffs)
+  const { handoffs } = repairGaps(ns, autoExtShifts, source, empTimeOffDays);
+  return { ns, autoExtShifts, handoffs, elapsed: Date.now() - t0 };
 }
 
 // ── Scenarios ─────────────────────────────────────────────────────────────
@@ -542,7 +608,7 @@ const METRIC_FIELDS = [
   'errors', 'coverageErrors', 'hardViolations',
   'warns', 'ftUnder40', 'ftOver48', 'noScale', 'noMedical',
   'prefShiftMisses', 'prefDayOffHits',
-  'assignmentsTotal', 'extShifts',
+  'assignmentsTotal', 'extShifts', 'handoffCount',
 ];
 
 const results = {};
@@ -554,8 +620,8 @@ for (const sc of scenarios) {
   for (const seed of SEEDS) {
     try {
       rng.reseed(seed);
-      const { ns, autoExtShifts, elapsed } = runAttempt(sc.emps, cfg, null, {});
-      const score = scoreRun(ns, autoExtShifts, sc.emps, elapsed);
+      const { ns, autoExtShifts, handoffs, elapsed } = runAttempt(sc.emps, cfg, null, {});
+      const score = scoreRun(ns, autoExtShifts, sc.emps, elapsed, handoffs);
       perSeed.push({ seed, ...Object.fromEntries(METRIC_FIELDS.map(f => [f, score[f]])) });
       for (const f of METRIC_FIELDS) totals[f] += score[f];
       elapsedSum += elapsed;
@@ -583,6 +649,7 @@ for (const sc of scenarios) {
   console.log(`   Σ prefDayOffHits  ${totals.prefDayOffHits}`);
   console.log(`   Σ assignments     ${totals.assignmentsTotal}`);
   console.log(`   Σ ext-shifts      ${totals.extShifts}`);
+  console.log(`   Σ handoffs        ${totals.handoffCount}`);
 }
 
 fs.writeFileSync(BASELINE_OUT, JSON.stringify({
