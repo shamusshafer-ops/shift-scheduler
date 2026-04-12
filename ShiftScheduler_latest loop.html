@@ -1573,6 +1573,16 @@ function buildAutoFill(sourceEmps, cfg, empTimeOffDays, empPatterns, extShiftsAr
   const dayWorked   = {};
   const shiftsWorked = {};
   sourceEmps.forEach(e => { hourTracker[e.id] = 0; dayWorked[e.id] = new Set(); shiftsWorked[e.id] = 0; });
+
+  // B3: Per-assignment explanation log.
+  // Key: "day__shiftId__employeeId" → { phase, reason }
+  // Populated at each assignment point so the UI can show why each employee
+  // landed in each slot.
+  const assignLog = {};
+  const logAssign = (day, shiftId, empId, phase, reason) => {
+    assignLog[day + "__" + shiftId + "__" + empId] = { phase, reason };
+  };
+
   // Seed ext shift hours so the algorithm knows these employees are pre-committed.
   // Uses extEmpHours() so empA and empB get their actual working hours, not the
   // full 12h window (e.g. Day pair: empA=8h, empB=4h; Night pair: empA=4h, empB=8h).
@@ -2834,6 +2844,10 @@ function buildAutoFill(sourceEmps, cfg, empTimeOffDays, empPatterns, extShiftsAr
     for (const { day, shiftId } of btSlots) {
       const key = cellKey(day, shiftId);
       ns[key] = btSchedule[key] || [];
+      // B3: log CSP+SA assignments
+      for (const a of ns[key]) {
+        logAssign(day, shiftId, a.employeeId, "CSP+SA", `position=${a.position}`);
+      }
     }
     sourceEmps.forEach(e => {
       hourTracker[e.id] = 0;
@@ -2965,6 +2979,7 @@ function buildAutoFill(sourceEmps, cfg, empTimeOffDays, empPatterns, extShiftsAr
           dayWorked[emp.id].add(day);
           asgn.push({ employeeId: emp.id, position: pos, ...(isOnCall ? { isOnCall: true } : {}) });
           assigned.add(emp.id);
+          logAssign(day, shift.id, emp.id, "fillPass", `type=${empType} pos=${pos}${capAt40?" capAt40":""}${isOnCall?" OC":""}`);
         }
         ns[key] = asgn;
       }
@@ -3020,6 +3035,7 @@ function buildAutoFill(sourceEmps, cfg, empTimeOffDays, empPatterns, extShiftsAr
           dayWorked[emp.id].add(day);
           adjAsgn.push({ employeeId: emp.id, position: pos });
           ns[adjKey] = adjAsgn;
+          logAssign(day, adjShift, emp.id, "Step4b", `willing16h double on ${plannedShift}+${adjShift}`);
         }
       }
     }
@@ -3065,6 +3081,7 @@ function buildAutoFill(sourceEmps, cfg, empTimeOffDays, empPatterns, extShiftsAr
         shiftsWorked[replacement.id] = (shiftsWorked[replacement.id] || 0) + 1;
         dayWorked[replacement.id].add(day);
         ns[key] = asgn;
+        logAssign(day, shift.id, replacement.id, "Step4c", `OC→FT sub replacing ${ocEmp.name}`);
       }
     }
   }
@@ -3191,6 +3208,8 @@ function buildAutoFill(sourceEmps, cfg, empTimeOffDays, empPatterns, extShiftsAr
             dayWorked[ftEmp.id].add(day);
 
             console.log(`[Ripple] ${ftEmp.name} (FT, ${hourTracker[ftEmp.id]}h) takes ${day}/${shift.id} from ${displacedEmp.name} → ${displacedEmp.name} relocated to ${relocateDay}/${relocateShift.id}`);
+            logAssign(day, shift.id, ftEmp.id, "Step5e", `ripple: displaced ${displacedEmp.name} to ${relocateDay}/${relocateShift.id}`);
+            logAssign(relocateDay, relocateShift.id, displacedEmp.id, "Step5e", `ripple: relocated from ${day}/${shift.id}`);
             ripped = rippleThisPass = true;
           }
         }
@@ -3265,6 +3284,7 @@ function buildAutoFill(sourceEmps, cfg, empTimeOffDays, empPatterns, extShiftsAr
         hourTracker[replacement.id]  = (hourTracker[replacement.id]  || 0) + SHIFT_HOURS;
         shiftsWorked[replacement.id] = (shiftsWorked[replacement.id] || 0) + 1;
         dayWorked[replacement.id].add(day);
+        logAssign(day, shift.id, replacement.id, "Step5c", `role-enforce: added ${missingRole} coverage`);
       }
     }
   }
@@ -3419,6 +3439,8 @@ function buildAutoFill(sourceEmps, cfg, empTimeOffDays, empPatterns, extShiftsAr
           (dayWorked[sub.id] = dayWorked[sub.id] || new Set()).add(donorSourceDay);
 
           console.log(`[DLS] Swap: ${donor.name} freed from ${donorSourceDay}/${donorSourceShift.id} → fills ${neededRole} on ${gapDay}/${gapShift.id} | Sub: ${sub.name} covers vacated slot`);
+          logAssign(gapDay, gapShift.id, donor.id, "Step5d", `DLS: moved from ${donorSourceDay}/${donorSourceShift.id} for ${neededRole}`);
+          logAssign(donorSourceDay, donorSourceShift.id, sub.id, "Step5d", `DLS: sub covering ${donor.name}'s vacated slot`);
           swapDone        = true;
           swappedThisPass = true;
         }
@@ -3446,7 +3468,16 @@ function buildAutoFill(sourceEmps, cfg, empTimeOffDays, empPatterns, extShiftsAr
   const { fixCount } = violationMinimizerPass(
     ns, sourceEmps, cfg, empTimeOffDays, extShiftsArg, plan, hourTracker, shiftsWorked
   );
-  if (fixCount > 0) console.log("[AutoFill] Violation minimizer fixed " + fixCount + " slot(s)");
+  if (fixCount > 0) {
+    console.log("[AutoFill] Violation minimizer fixed " + fixCount + " slot(s)");
+    // B3: mark any new/changed assignments from Step 6
+    for (const day of DAYS) for (const shift of SHIFTS) {
+      for (const a of (ns[cellKey(day, shift.id)] || [])) {
+        const logKey = day + "__" + shift.id + "__" + a.employeeId;
+        if (!assignLog[logKey]) logAssign(day, shift.id, a.employeeId, "Step6", "violation minimizer swap");
+      }
+    }
+  }
 
   // ── Final dedup safety net: remove duplicate employee entries in any slot ──
   for (const day of DAYS) {
@@ -3467,7 +3498,7 @@ function buildAutoFill(sourceEmps, cfg, empTimeOffDays, empPatterns, extShiftsAr
     }
   }
 
-  return { schedule: ns, hourTracker, shiftsWorked, usedPatterns };
+  return { schedule: ns, hourTracker, shiftsWorked, usedPatterns, assignLog };
 }
 
 // ── Excel Export ──────────────────────────────────────────────────────────────
@@ -9338,6 +9369,7 @@ function ScheduleGrid({ onOpenTestModal }) {
   const [histSaveLabel,    setHistSaveLabel]   = useState("");
   const [showHistSave,     setShowHistSave]    = useState(false);
   const [scheduleIssues,   setScheduleIssues]  = useState(null);
+  const [assignLog,        setAssignLog]       = useState(null);
   const [undoStack,        setUndoStack]        = useState([]);
   const [redoStack,        setRedoStack]        = useState([]);
   const [bannersExpanded,  setBannersExpanded]  = useState(false);
@@ -9978,7 +10010,7 @@ function ScheduleGrid({ onOpenTestModal }) {
       const proactiveExts = deployProactiveExtShifts(source, cfg, empTimeOffDays, manualExtShifts);
       const inputExtShifts = [...manualExtShifts, ...proactiveExts];
 
-      const {schedule:ns, hourTracker, shiftsWorked, usedPatterns} = buildAutoFill(source, cfg, empTimeOffDays, enrichedPatterns, inputExtShifts, jitter);
+      const {schedule:ns, hourTracker, shiftsWorked, usedPatterns, assignLog} = buildAutoFill(source, cfg, empTimeOffDays, enrichedPatterns, inputExtShifts, jitter);
 
       // Seed autoExtShifts with proactive deployments; reactive code below will
       // skip any day+pairId already covered via usedExtPairs.
@@ -10132,11 +10164,11 @@ function ScheduleGrid({ onOpenTestModal }) {
       const issues = validateSchedule(ns, autoExtShifts, source);
       const errors = issues.filter(i => i.level === "error").length;
       const warns  = issues.filter(i => i.level === "warn").length;
-      return { ns, autoExtShifts, issues, errors, warns, usedPatterns, hourTracker };
+      return { ns, autoExtShifts, issues, errors, warns, usedPatterns, hourTracker, assignLog };
     };
 
     // ── Commit best result to state ──────────────────────────────────────────
-    const commit = ({ ns, autoExtShifts, issues, usedPatterns, hourTracker }) => {
+    const commit = ({ ns, autoExtShifts, issues, usedPatterns, hourTracker, assignLog }) => {
       pushUndo();
       if (usedPatterns && Object.keys(usedPatterns).length)
         setEmpPatterns(prev => ({...prev, ...usedPatterns}));
@@ -10157,6 +10189,7 @@ function ScheduleGrid({ onOpenTestModal }) {
         if (autoExtShifts.length) setExtShifts(autoExtShifts);
         setScheduleIssues(issues);
       }
+      if (assignLog) setAssignLog(assignLog);
       setScheduleStale(false);
     };
 
@@ -11019,6 +11052,7 @@ function ScheduleGrid({ onOpenTestModal }) {
                             setDragChip(null);
                           }}
                           onClick={!isReadOnly ? (e=>handleChipClick(a.employeeId,day,shift.id,a.position,e)) : undefined}
+                          title={assignLog?.[day+"__"+shift.id+"__"+a.employeeId] ? `[${assignLog[day+"__"+shift.id+"__"+a.employeeId].phase}] ${assignLog[day+"__"+shift.id+"__"+a.employeeId].reason}` : undefined}
                           style={{display:"flex",alignItems:"center",gap:5,padding:"4px 6px",
                             background:swapBg,border:swapBorder,borderRadius:4,fontSize:11,
                             opacity:swapOpacity,overflow:"hidden",minWidth:0,
