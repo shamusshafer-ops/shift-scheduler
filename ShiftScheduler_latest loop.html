@@ -2563,8 +2563,14 @@ function buildAutoFill(sourceEmps, cfg, empTimeOffDays, empPatterns, extShiftsAr
     // After SA, a short greedy polish catches any obvious remaining wins.
     const btSchedule = btResult ? btResult.schedule : initialState.schedule;
 
+    // B1: Lexicographic SA objective — returns [hard, soft] tuple.
+    // Tier 0 (hard): FT shift mismatch (non-crossShiftOT) + FT under-40h deviation.
+    //   These are near-violations the algorithm should fix before optimising comfort.
+    // Tier 1 (soft): day-off hits, crossShiftOT mismatch, PT pref mismatch, FT over-40h.
+    //   These are quality-of-life — SA may trade among them freely but never at
+    //   the expense of tier 0.
     const btSoftScore = (sched) => {
-      let sc = 0;
+      let hard = 0, soft = 0;
       const empH = {};
       sourceEmps.forEach(e => empH[e.id] = hourTracker[e.id] || 0); // start from ext-shift hours
       for (const day of DAYS) for (const shift of SHIFTS) {
@@ -2572,45 +2578,33 @@ function buildAutoFill(sourceEmps, cfg, empTimeOffDays, empPatterns, extShiftsAr
           const emp = empMap.get(a.employeeId);
           if (!emp) continue;
           empH[a.employeeId] = (empH[a.employeeId] || 0) + SHIFT_HOURS;
-          if ((emp.preferredDaysOff||[]).includes(day)) sc += 800;
+          if ((emp.preferredDaysOff||[]).includes(day)) soft += 800;
           const empP = plan[emp.id];
           const isFT = emp.employmentType === "full-time";
-          if (isFT && empP && empP.shiftId !== shift.id && !emp.crossShiftOT) sc += 500;
-          // A2: FT crossShiftOT on non-planned shift — still a mismatch, should
-          // cost something. Previously zero, meaning Harms-type employees could
-          // drift off their preferred shift without SA caring.
-          if (isFT && empP && empP.shiftId !== shift.id && emp.crossShiftOT) sc += 400;
-          // A2: PT preferredShifts mismatch — PT with a stated preference assigned
-          // to a non-preferred shift. Previously zero. Mirrors empScore's
-          // ptPrefMismatch at slightly reduced magnitude (800 → 600).
+          if (isFT && empP && empP.shiftId !== shift.id && !emp.crossShiftOT) hard += 500;
+          if (isFT && empP && empP.shiftId !== shift.id && emp.crossShiftOT) soft += 400;
           if (!isFT) {
             const prefs = emp.preferredShifts || [];
-            if (prefs.length > 0 && !prefs.includes(shift.id)) sc += 600;
+            if (prefs.length > 0 && !prefs.includes(shift.id)) soft += 600;
           }
         }
       }
-      // A3: asymmetric hour objective.
-      // Symmetric (h-40)² treated under-40 and over-40 as equally bad. Wrong —
-      // under-40 is a payroll-guarantee violation, over-40 is ordinary paid OT.
-      // Under-40 now weighted 10× so SA pulls FTs toward 40h first and accepts
-      // OT only when alternatives are worse.
-      // Note: this won't reduce FT>48h on rosters where ext shifts (committed
-      // pre-CSP) already pushed FTs over — SA can't touch ext shifts. Tested
-      // with 50000+10000(h-48)² as a forcing penalty and FT>48h count was
-      // identical, confirming structural lock.
       for (const emp of sourceEmps) {
         if (emp.employmentType !== "full-time") continue;
         const h = empH[emp.id] || 0;
         if (h < FT_MIN_HOURS) {
           const d = FT_MIN_HOURS - h;
-          sc += 10 * d * d;
+          hard += 10 * d * d;   // under-40 is a payroll-guarantee issue → hard
         } else {
           const d = h - FT_MIN_HOURS;
-          sc += d * d;
+          soft += d * d;        // over-40 is ordinary OT → soft
         }
       }
-      return sc;
+      return [hard, soft];
     };
+
+    // Lexicographic comparison: negative = a better, positive = b better, 0 = tie.
+    const lexCmp = (a, b) => a[0] !== b[0] ? a[0] - b[0] : a[1] - b[1];
 
     const btCanWorkSlot = (empId, sched, day, shiftId) => {
       const emp = empMap.get(empId);
@@ -2732,11 +2726,11 @@ function buildAutoFill(sourceEmps, cfg, empTimeOffDays, empPatterns, extShiftsAr
       return work;
     };
 
-    // ── SA driver ──────────────────────────────────────────────────────────
-    let softScore = btSoftScore(btSchedule);
+    // ── SA driver (lexicographic) ───────────────────────────────────────────
+    let curScore = btSoftScore(btSchedule);
     let current = { ...btSchedule };
     let bestSchedule = { ...btSchedule };
-    let bestScore = softScore;
+    let bestScore = [...curScore];
 
     const SA_ITERATIONS = 8000;
     // T₀ calibrated so ~1 preferred-day-off violation (800pts) has ~20% accept prob
@@ -2768,15 +2762,20 @@ function buildAutoFill(sourceEmps, cfg, empTimeOffDays, empPatterns, extShiftsAr
       }
       if (!candidate) { T *= coolingRate; continue; }
       const newSc = btSoftScore(candidate);
-      const delta = newSc - softScore;
-      if (delta <= 0 || Math.random() < Math.exp(-delta / T)) {
+      // Lexicographic: never accept a move that worsens hard tier.
+      // Within same hard tier, use SA acceptance on soft tier.
+      const hardDelta = newSc[0] - curScore[0];
+      const softDelta = newSc[1] - curScore[1];
+      const accept = hardDelta < 0                                        // hard improved → always accept
+        || (hardDelta === 0 && (softDelta <= 0 || Math.random() < Math.exp(-softDelta / T))); // same hard → SA on soft
+      if (accept) {
         current = candidate;
-        softScore = newSc;
+        curScore = newSc;
         accepted++;
-        if (delta > 0) uphill++;
-        else if (delta < 0) improvements++;
-        if (softScore < bestScore) {
-          bestScore = softScore;
+        if (hardDelta > 0 || (hardDelta === 0 && softDelta > 0)) uphill++;
+        else if (hardDelta < 0 || softDelta < 0) improvements++;
+        if (lexCmp(curScore, bestScore) < 0) {
+          bestScore = [...curScore];
           bestSchedule = { ...current };
         }
       }
@@ -2787,10 +2786,10 @@ function buildAutoFill(sourceEmps, cfg, empTimeOffDays, empPatterns, extShiftsAr
     // SA is random and may leave obvious pairwise wins on the table near the end.
     // A short deterministic pass guarantees monotone convergence at termination.
     current = { ...bestSchedule };
-    softScore = bestScore;
+    let polishScore = [...bestScore];
     let polishSwaps = 0;
     for (let round = 0; round < 5; round++) {
-      let bestImprov = 0, bestWork = null;
+      let bestCmp = 0, bestWork = null, bestNewSc = null;
       for (let i = 0; i < btSlots.length; i++) {
         for (let j = i + 1; j < btSlots.length; j++) {
           const si = btSlots[i], sj = btSlots[j];
@@ -2814,22 +2813,22 @@ function buildAutoFill(sourceEmps, cfg, empTimeOffDays, empPatterns, extShiftsAr
               work[keyJ] = [...work[keyJ], { employeeId: eA.employeeId, position: posA }];
               if (!rolePreserved(asgnI, work[keyI]) || !rolePreserved(asgnJ, work[keyJ])) continue;
               const newSc = btSoftScore(work);
-              const improv = softScore - newSc;
-              if (improv > bestImprov) { bestImprov = improv; bestWork = work; }
+              const cmp = lexCmp(newSc, polishScore);  // negative = improvement
+              if (cmp < bestCmp) { bestCmp = cmp; bestWork = work; bestNewSc = newSc; }
             }
           }
         }
       }
       if (!bestWork) break;
       current = bestWork;
-      softScore -= bestImprov;
+      polishScore = bestNewSc;
       polishSwaps++;
     }
-    if (softScore < bestScore) { bestScore = softScore; bestSchedule = current; }
+    if (lexCmp(polishScore, bestScore) < 0) { bestScore = [...polishScore]; bestSchedule = current; }
 
     // Commit best schedule back to btSchedule
     for (const k of Object.keys(bestSchedule)) btSchedule[k] = bestSchedule[k];
-    console.log(`[Phase 2 SA] ${attempts} attempts, ${accepted} accepted (${improvements} improv, ${uphill} uphill), +${polishSwaps} polish swaps, final score ${bestScore}`);
+    console.log(`[Phase 2 SA] ${attempts} attempts, ${accepted} accepted (${improvements} improv, ${uphill} uphill), +${polishSwaps} polish swaps, final score [hard=${bestScore[0]}, soft=${bestScore[1]}]`);
 
     // ── Write backtracking results to ns and rebuild tracking state ─────────
     for (const { day, shiftId } of btSlots) {
