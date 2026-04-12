@@ -1,23 +1,29 @@
-# Claude Workflow
+name: Claude
 
-name: Claude Workflows
+aon: "Claude Code"
+schedule:
+  - cron: '0 * * * *'
 
-env:
-  PROJECT: "Claude Project"
-  EXECUTOR: 'Claude'
-
+# Trigger on issue comments
 on:
-  push:
-    branches:
-      - main
+  issue_comment:
+    types: [created]
+
+# Trigger on pull request review comments
+  pull_request_review_comment:
+    types: [created]
+
+# Trigger on issues
+  issues:
+    types: [opened, edited, closed]
+
+# Trigger on pull request reviews
+  pull_request_review:
+    types: [submitted, edited]
 
 jobs:
-  build:
+  claude:
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout
-        uses: actions/checkout@v2
       - name: Run Claude
-        run: |
-          echo "Running Claude Workflow..."
-
+        uses: claude-run/claude-action@v1
