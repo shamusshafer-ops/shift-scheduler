@@ -1254,6 +1254,7 @@ function deployProactiveExtShifts(sourceEmps, cfg, empTimeOffDays, existingExtSh
   const usedKeys = new Set();
   const maxShifts = cfg?.maxConsecutiveShifts ?? 5;
   const MAX_EXT_PER_EMP = 2;      // cap ext shifts per employee to avoid overcommit
+  const MAX_EXT_PER_EMP_STRICT = 1; // stricter cap for non-willing16h FTs (1 ext = +4h = 44h)
   const MAX_EXT_PER_DEFICIT = 3;   // cap ext shifts per role deficit
 
   // Mark existing ext shifts to prevent duplicates
@@ -1264,6 +1265,20 @@ function deployProactiveExtShifts(sourceEmps, cfg, empTimeOffDays, existingExtSh
   (existingExtShifts || []).forEach(ext => {
     if (ext.empAId) empExtCount[ext.empAId] = (empExtCount[ext.empAId] || 0) + 1;
     if (ext.empBId) empExtCount[ext.empBId] = (empExtCount[ext.empBId] || 0) + 1;
+  });
+
+  // Estimate baseline weekly hours per FT employee: regular shifts (maxShifts × 8h)
+  // plus hours already committed by existing ext shifts (12h each, minus 8h dedup
+  // for the regular shift the ext replaces = +4h net per ext shift).
+  // Used to gate new ext shift assignments so FTs don't exceed 48h.
+  const FT_MAX_TARGET = 48;
+  const NET_EXT_HOURS = EXT_SHIFT_HOURS - SHIFT_HOURS; // 12 - 8 = 4h net per ext
+  const empProjectedHours = {};
+  sourceEmps.forEach(e => {
+    if (e.employmentType !== "full-time") return;
+    const baseHours = maxShifts * SHIFT_HOURS; // typically 5 × 8 = 40
+    const extHours = (empExtCount[e.id] || 0) * NET_EXT_HOURS;
+    empProjectedHours[e.id] = baseHours + extHours;
   });
 
   // ── Classify employees definitively assigned to each shift ──────────────
@@ -1356,7 +1371,8 @@ function deployProactiveExtShifts(sourceEmps, cfg, empTimeOffDays, existingExtSh
             if (empTimeOffDays && empTimeOffDays.has(e.id + "__" + day)) return false;
             if (!canWorkExtHalf(e, pair.id, providerSlot)) return false;
             if (!(e.qualifications || []).includes(role)) return false;
-            if ((empExtCount[e.id] || 0) >= MAX_EXT_PER_EMP) return false;
+            const extCap = (e.employmentType === "full-time" && !e.willing16h) ? MAX_EXT_PER_EMP_STRICT : MAX_EXT_PER_EMP;
+            if ((empExtCount[e.id] || 0) >= extCap) return false;
             return true;
           }).sort((a, b) => {
             // Prefer employees from a DIFFERENT shift (they extend into target)
@@ -1377,7 +1393,8 @@ function deployProactiveExtShifts(sourceEmps, cfg, empTimeOffDays, existingExtSh
             if ((e.unavailableDays || []).includes(day)) return false;
             if (empTimeOffDays && empTimeOffDays.has(e.id + "__" + day)) return false;
             if (!canWorkExtHalf(e, pair.id, otherSlot)) return false;
-            if ((empExtCount[e.id] || 0) >= MAX_EXT_PER_EMP) return false;
+            const extCap = (e.employmentType === "full-time" && !e.willing16h) ? MAX_EXT_PER_EMP_STRICT : MAX_EXT_PER_EMP;
+            if ((empExtCount[e.id] || 0) >= extCap) return false;
             return true;
           }).sort((a, b) => {
             // Prefer employees who also bring a specialist role (bonus coverage)
@@ -1415,8 +1432,14 @@ function deployProactiveExtShifts(sourceEmps, cfg, empTimeOffDays, existingExtSh
           });
 
           usedKeys.add(extKey);
-          if (empAId) empExtCount[empAId] = (empExtCount[empAId] || 0) + 1;
-          if (empBId) empExtCount[empBId] = (empExtCount[empBId] || 0) + 1;
+          if (empAId) {
+            empExtCount[empAId] = (empExtCount[empAId] || 0) + 1;
+            if (empProjectedHours[empAId] != null) empProjectedHours[empAId] += NET_EXT_HOURS;
+          }
+          if (empBId) {
+            empExtCount[empBId] = (empExtCount[empBId] || 0) + 1;
+            if (empProjectedHours[empBId] != null) empProjectedHours[empBId] += NET_EXT_HOURS;
+          }
           deployed++;
           found = true;
 
