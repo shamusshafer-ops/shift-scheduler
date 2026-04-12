@@ -380,6 +380,111 @@ function runReactiveExtLoop(ns, source, proactiveExts, shiftsWorked) {
   return autoExtShifts;
 }
 
+// ── B2: Targeted gap repair (mirrors browser-side repairGaps) ─────────────
+function repairGaps(ns, autoExtShifts, source, empTimeOffDays) {
+  const issues = validateSchedule(ns, autoExtShifts, source);
+  const gaps = issues
+    .filter(i => i.level === 'error' && i.msg.startsWith('Coverage gap:'))
+    .map(i => {
+      const m = i.msg.match(/Coverage gap: (\w+) (\w+) (\d+)\/(\d+)/);
+      if (!m) return null;
+      return { day: m[1], shiftId: m[2], have: +m[3], need: +m[4] };
+    }).filter(Boolean);
+
+  if (!gaps.length) return false;
+
+  const empShiftCount = {};
+  for (const day of DAYS) for (const shift of SHIFTS) {
+    for (const a of (ns[cellKey(day, shift.id)] || [])) {
+      empShiftCount[a.employeeId] = (empShiftCount[a.employeeId] || 0) + 1;
+    }
+  }
+
+  let changed = false;
+  for (const gap of gaps) {
+    const gapKey = cellKey(gap.day, gap.shiftId);
+    const currentAsgn = ns[gapKey] || [];
+    const assignedIds = new Set(currentAsgn.map(a => a.employeeId));
+    const deficit = gap.need - gap.have;
+    let filled = 0;
+
+    // Strategy 1: Insert unassigned-that-day employee
+    for (const emp of source) {
+      if (filled >= deficit) break;
+      if (assignedIds.has(emp.id)) continue;
+      if (emp.inTraining) continue;
+      if ((emp.unavailableDays || []).includes(gap.day)) continue;
+      if (empTimeOffDays && empTimeOffDays.has(emp.id + '__' + gap.day)) continue;
+      if ((emp.blockedShifts || []).includes(gap.shiftId)) continue;
+      if (emp.requiredShift && emp.requiredShift !== gap.shiftId && !emp.crossShiftOT) continue;
+      const onThisDay = SHIFTS.some(s =>
+        s.id !== gap.shiftId && (ns[cellKey(gap.day, s.id)] || []).some(a => a.employeeId === emp.id)
+      );
+      if (onThisDay && !emp.willing16h) continue;
+      if (emp.maxShiftsPerWeek != null && (empShiftCount[emp.id] || 0) >= emp.maxShiftsPerWeek) continue;
+
+      const q = emp.qualifications || [];
+      const isSup = q.includes('Supervisor');
+      if (isSup && !(isWeekday(gap.day) && gap.shiftId === 'first')) continue;
+      const hasScale = slotHasRole(currentAsgn, source, 'Scale');
+      const hasMedical = slotHasRole(currentAsgn, source, 'Medical');
+      let pos = isSup ? 'Supervisor'
+        : (!hasScale && q.includes('Scale')) ? 'Scale'
+        : (!hasMedical && q.includes('Medical')) ? 'Medical'
+        : q.includes('Guard') ? 'Guard' : null;
+      if (!pos) continue;
+
+      ns[gapKey] = [...(ns[gapKey] || []), { employeeId: emp.id, position: pos }];
+      assignedIds.add(emp.id);
+      empShiftCount[emp.id] = (empShiftCount[emp.id] || 0) + 1;
+      filled++;
+      changed = true;
+    }
+
+    // Strategy 2: Steal from overstaffed adjacent slot
+    if (filled < deficit) {
+      for (const donor of SHIFTS) {
+        if (filled >= deficit) break;
+        if (donor.id === gap.shiftId) continue;
+        const donorKey = cellKey(gap.day, donor.id);
+        const donorAsgn = ns[donorKey] || [];
+        const donorNeed = REGULAR_SLOTS(gap.day, donor.id) + (SUP_SLOT_DAY(gap.day, donor.id) ? 1 : 0);
+        if (donorAsgn.length <= donorNeed) continue;
+
+        for (let di = donorAsgn.length - 1; di >= 0; di--) {
+          if (filled >= deficit) break;
+          const a = donorAsgn[di];
+          if (a.position === 'Supervisor') continue;
+          const emp = source.find(e => e.id === a.employeeId);
+          if (!emp) continue;
+          if ((emp.blockedShifts || []).includes(gap.shiftId)) continue;
+          if (emp.requiredShift && emp.requiredShift !== gap.shiftId && !emp.crossShiftOT) continue;
+          if (assignedIds.has(emp.id)) continue;
+
+          const q = emp.qualifications || [];
+          const hasScale = slotHasRole(ns[gapKey] || [], source, 'Scale');
+          const hasMedical = slotHasRole(ns[gapKey] || [], source, 'Medical');
+          let pos = (!hasScale && q.includes('Scale')) ? 'Scale'
+            : (!hasMedical && q.includes('Medical')) ? 'Medical'
+            : q.includes('Guard') ? 'Guard' : null;
+          if (!pos) continue;
+
+          const donorWithout = donorAsgn.filter((_, idx) => idx !== di);
+          if (slotHasRole(donorAsgn, source, 'Scale') && !slotHasRole(donorWithout, source, 'Scale')) continue;
+          if (slotHasRole(donorAsgn, source, 'Medical') && !slotHasRole(donorWithout, source, 'Medical')) continue;
+
+          ns[donorKey] = donorWithout;
+          ns[gapKey] = [...(ns[gapKey] || []), { employeeId: emp.id, position: pos }];
+          assignedIds.add(emp.id);
+          filled++;
+          changed = true;
+        }
+      }
+    }
+  }
+  return changed;
+}
+
 // ── Single non-jitter attempt ─────────────────────────────────────────────
 function runAttempt(source, cfg, empTimeOffDays, empPatterns) {
   const t0 = Date.now();
@@ -388,6 +493,8 @@ function runAttempt(source, cfg, empTimeOffDays, empPatterns) {
     source, cfg, empTimeOffDays, empPatterns || {}, [...proactiveExts], false
   );
   const autoExtShifts = runReactiveExtLoop(ns, source, proactiveExts, shiftsWorked);
+  // B2: targeted gap repair
+  repairGaps(ns, autoExtShifts, source, empTimeOffDays);
   return { ns, autoExtShifts, elapsed: Date.now() - t0 };
 }
 

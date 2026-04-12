@@ -10160,11 +10160,141 @@ function ScheduleGrid({ onOpenTestModal }) {
       setScheduleStale(false);
     };
 
-    // ── Iterative loop ───────────────────────────────────────────────────────
-    // Attempt 1 is deterministic (jitter=false) — gives the baseline result.
-    // Subsequent attempts use jitter=true to explore different tie-break orderings.
-    // We keep the best result (fewest errors, then fewest warnings) across all attempts.
-    // The loop yields via setTimeout so the browser stays responsive and STOP works.
+    // ── B2: Targeted gap repair ─────────────────────────────────────────────
+    // After each attempt, parse validation errors to find specific coverage gaps
+    // and try targeted strategies to fill them — much more effective than blind
+    // jittered retries for structurally-blocked gaps.
+    const repairGaps = (result) => {
+      const { ns, autoExtShifts, hourTracker } = result;
+      let changed = false;
+
+      // Parse coverage gap errors → list of {day, shiftId, have, need}
+      const gaps = result.issues
+        .filter(i => i.level === "error" && i.msg.startsWith("Coverage gap:"))
+        .map(i => {
+          const m = i.msg.match(/Coverage gap: (\w+) (\w+) — (\d+)\/(\d+)/);
+          if (!m) return null;
+          return { day: m[1], shiftId: m[2], have: +m[3], need: +m[4] };
+        }).filter(Boolean);
+
+      if (!gaps.length) return result;
+
+      // Build lookup of who's assigned where this week
+      const empDayShifts = {};  // empId → Set of "day__shiftId"
+      for (const day of DAYS) for (const shift of SHIFTS) {
+        for (const a of (ns[cellKey(day, shift.id)] || [])) {
+          if (!empDayShifts[a.employeeId]) empDayShifts[a.employeeId] = new Set();
+          empDayShifts[a.employeeId].add(day + "__" + shift.id);
+        }
+      }
+      const empShiftCount = {};
+      for (const [id, s] of Object.entries(empDayShifts)) empShiftCount[id] = s.size;
+
+      for (const gap of gaps) {
+        const gapKey = cellKey(gap.day, gap.shiftId);
+        const currentAsgn = ns[gapKey] || [];
+        const assignedIds = new Set(currentAsgn.map(a => a.employeeId));
+        const deficit = gap.need - gap.have;
+        let filled = 0;
+
+        // Strategy 1: Insert unassigned-that-day employee
+        // Find employees not working this day who can take the gap slot.
+        for (const emp of source) {
+          if (filled >= deficit) break;
+          if (assignedIds.has(emp.id)) continue;
+          if (emp.inTraining) continue;
+          if ((emp.unavailableDays || []).includes(gap.day)) continue;
+          if (empTimeOffDays && empTimeOffDays.has(emp.id + "__" + gap.day)) continue;
+          if ((emp.blockedShifts || []).includes(gap.shiftId)) continue;
+          if (emp.requiredShift && emp.requiredShift !== gap.shiftId && !emp.crossShiftOT) continue;
+          // Already working a different shift this day?
+          const onThisDay = SHIFTS.some(s =>
+            s.id !== gap.shiftId && (ns[cellKey(gap.day, s.id)] || []).some(a => a.employeeId === emp.id)
+          );
+          if (onThisDay && !emp.willing16h) continue;
+          // maxShiftsPerWeek check
+          if (emp.maxShiftsPerWeek != null && (empShiftCount[emp.id] || 0) >= emp.maxShiftsPerWeek) continue;
+
+          // Pick position
+          const q = emp.qualifications || [];
+          const isSup = q.includes("Supervisor");
+          if (isSup && !(isWeekday(gap.day) && gap.shiftId === "first")) continue;
+          const hasScale = slotHasRole(currentAsgn, source, "Scale");
+          const hasMedical = slotHasRole(currentAsgn, source, "Medical");
+          let pos = isSup ? "Supervisor"
+            : (!hasScale && q.includes("Scale")) ? "Scale"
+            : (!hasMedical && q.includes("Medical")) ? "Medical"
+            : q.includes("Guard") ? "Guard" : null;
+          if (!pos) continue;
+
+          ns[gapKey] = [...(ns[gapKey] || []), { employeeId: emp.id, position: pos }];
+          assignedIds.add(emp.id);
+          empShiftCount[emp.id] = (empShiftCount[emp.id] || 0) + 1;
+          if (hourTracker) hourTracker[emp.id] = (hourTracker[emp.id] || 0) + SHIFT_HOURS;
+          filled++;
+          changed = true;
+        }
+
+        // Strategy 2: Steal from overstaffed adjacent slot
+        // If an adjacent shift on the same day has more than its required headcount,
+        // move one qualified employee to the gap slot.
+        if (filled < deficit) {
+          for (const donor of SHIFTS) {
+            if (filled >= deficit) break;
+            if (donor.id === gap.shiftId) continue;
+            const donorKey = cellKey(gap.day, donor.id);
+            const donorAsgn = ns[donorKey] || [];
+            const donorNeed = REGULAR_SLOTS(gap.day, donor.id) + (SUP_SLOT_DAY(gap.day, donor.id) ? 1 : 0);
+            if (donorAsgn.length <= donorNeed) continue;  // not overstaffed
+
+            for (let di = donorAsgn.length - 1; di >= 0; di--) {
+              if (filled >= deficit) break;
+              const a = donorAsgn[di];
+              if (a.position === "Supervisor") continue;
+              const emp = source.find(e => e.id === a.employeeId);
+              if (!emp) continue;
+              if ((emp.blockedShifts || []).includes(gap.shiftId)) continue;
+              if (emp.requiredShift && emp.requiredShift !== gap.shiftId && !emp.crossShiftOT) continue;
+              if (assignedIds.has(emp.id)) continue;
+
+              const q = emp.qualifications || [];
+              const hasScale = slotHasRole(ns[gapKey] || [], source, "Scale");
+              const hasMedical = slotHasRole(ns[gapKey] || [], source, "Medical");
+              let pos = (!hasScale && q.includes("Scale")) ? "Scale"
+                : (!hasMedical && q.includes("Medical")) ? "Medical"
+                : q.includes("Guard") ? "Guard" : null;
+              if (!pos) continue;
+
+              // Verify removing from donor doesn't break its role coverage
+              const donorWithout = donorAsgn.filter((_, idx) => idx !== di);
+              if (slotHasRole(donorAsgn, source, "Scale") && !slotHasRole(donorWithout, source, "Scale")) continue;
+              if (slotHasRole(donorAsgn, source, "Medical") && !slotHasRole(donorWithout, source, "Medical")) continue;
+
+              ns[donorKey] = donorWithout;
+              ns[gapKey] = [...(ns[gapKey] || []), { employeeId: emp.id, position: pos }];
+              assignedIds.add(emp.id);
+              filled++;
+              changed = true;
+            }
+          }
+        }
+      }
+
+      if (!changed) return result;
+
+      // Re-validate after repairs
+      const issues = validateSchedule(ns, autoExtShifts, source);
+      const errors = issues.filter(i => i.level === "error").length;
+      const warns  = issues.filter(i => i.level === "warn").length;
+      return { ...result, ns, issues, errors, warns };
+    };
+
+    // ── Iterative loop (B2: targeted retry) ──────────────────────────────────
+    // Attempt 1 is deterministic — gives the baseline result. Gap repair runs
+    // after each attempt. Subsequent attempts use jitter=true but the cap is
+    // much lower (20 vs old 200) since targeted repair handles structurally-
+    // blocked gaps that jitter alone can't solve.
+    const MAX_ATTEMPTS = 20;
     autoFillCancelRef.current = false;
     setAutoFillRunning(true);
 
@@ -10173,7 +10303,6 @@ function ScheduleGrid({ onOpenTestModal }) {
 
     const tick = () => {
       if (autoFillCancelRef.current) {
-        // User pressed STOP — commit whatever best we found
         if (best) commit(best);
         setAutoFillRunning(false);
         setAutoFillProgress(null);
@@ -10181,7 +10310,9 @@ function ScheduleGrid({ onOpenTestModal }) {
       }
 
       attemptNum++;
-      const result = attempt(attemptNum > 1); // first pass deterministic
+      let result = attempt(attemptNum > 1);
+      if (result.errors > 0) result = repairGaps(result);
+
       if (!best || result.errors < best.errors || (result.errors === best.errors && result.warns < best.warns)) {
         best = result;
       }
@@ -10189,15 +10320,13 @@ function ScheduleGrid({ onOpenTestModal }) {
       setAutoFillProgress({ attempt: attemptNum, bestErrors: best.errors, bestWarns: best.warns });
 
       if (best.errors === 0) {
-        // Valid schedule found — commit and stop
         commit(best);
         setAutoFillRunning(false);
         setAutoFillProgress(null);
         return;
       }
 
-      // Cap at 200 attempts to avoid infinite loop on genuinely impossible rosters
-      if (attemptNum >= 200) {
+      if (attemptNum >= MAX_ATTEMPTS) {
         commit(best);
         setAutoFillRunning(false);
         setAutoFillProgress(null);
