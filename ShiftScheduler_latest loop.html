@@ -4798,7 +4798,8 @@ async function exportWeekending(employees, schedule, extShifts, handoffs, weekSt
   }
 
   // ── Sort and build data ──
-  const sortedEmps = [...employees].sort((a, b) => (a.name || "").localeCompare(b.name || ""));
+  const lastNameOf = n => { const p = (n||"").trim().split(/\s+/); return p.length > 1 ? p[p.length-1] : p[0]; };
+  const sortedEmps = [...employees].sort((a, b) => lastNameOf(a.name).localeCompare(lastNameOf(b.name)));
   const empDataList = sortedEmps.map(emp => ({ emp, days: getEmpScheduleData(emp) }));
   while (empDataList.length < TOTAL_SLOTS) empDataList.push(null);
 
@@ -12387,7 +12388,7 @@ function ScheduleGrid({ onOpenTestModal }) {
                       const req   = e.requiredShift;
                       return req===shift.id || prefs.includes(shift.id);
                     })
-                    .sort((a,b)=>a.name.localeCompare(b.name));
+                    .sort((a,b)=>{ const ln=n=>{const p=(n||"").trim().split(/\s+/);return p.length>1?p[p.length-1]:p[0];}; return ln(a.name).localeCompare(ln(b.name)); });
                   return [
                     <tr key={"hdr"+shift.id}>
                       <td colSpan={10} style={{background:["#fef3c7","#dbeafe","#ede9fe"][si],
