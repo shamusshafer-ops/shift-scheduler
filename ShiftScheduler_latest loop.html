@@ -4582,6 +4582,7 @@ const WEEKENDING_TEMPLATE_B64 = "UEsDBAoAAAAIANOxjVwQzKPXbQEAAJwFAAATAAAAW0NvbnR
 
 async function exportWeekending(employees, schedule, extShifts, handoffs, weekStart, trainingBlocks, timeOffReqs) {
   if (typeof ExcelJS === "undefined") { alert("ExcelJS not loaded — check internet connection."); return; }
+  try {
 
   // ── Decode and load template ──
   const raw = atob(WEEKENDING_TEMPLATE_B64);
@@ -4590,6 +4591,17 @@ async function exportWeekending(employees, schedule, extShifts, handoffs, weekSt
   const wb = new ExcelJS.Workbook();
   await wb.xlsx.load(buf.buffer);
   const ws = wb.worksheets[0];
+
+  // ── Strip shared formulas (ExcelJS bug: they break on write after cell edits) ──
+  // We compute all values in JS, so formulas aren't needed. Keep formatting intact.
+  ws.eachRow((row) => {
+    row.eachCell((cell) => {
+      if (cell.value && typeof cell.value === "object" && (cell.value.sharedFormula !== undefined || cell.value.formula !== undefined)) {
+        // Replace formula cell with its cached result value (or null)
+        cell.value = cell.value.result !== undefined ? cell.value.result : null;
+      }
+    });
+  });
 
   // ── Constants matching the original template layout ──
   const EMP_STARTS = [6,16,26, 41,51,61, 76,86,96, 111,121,131, 146,156,166, 181,191,201, 216,226];
@@ -4933,6 +4945,8 @@ async function exportWeekending(employees, schedule, extShifts, handoffs, weekSt
   document.body.appendChild(a); a.click();
   document.body.removeChild(a);
   URL.revokeObjectURL(url);
+
+  } catch (err) { console.error("Weekending export error:", err); alert("Export failed: " + err.message); }
 }
 
 function TestPopulationModal({ onGenerate, onCancel }) {
