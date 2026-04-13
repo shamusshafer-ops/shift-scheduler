@@ -4592,19 +4592,110 @@ async function exportWeekending(employees, schedule, extShifts, handoffs, weekSt
   await wb.xlsx.load(buf.buffer);
   const ws = wb.worksheets[0];
 
-  // ── Strip shared formulas (ExcelJS bug: they break on write after cell edits) ──
-  // We compute all values in JS, so formulas aren't needed. Keep formatting intact.
-  ws.eachRow((row) => {
-    row.eachCell((cell) => {
-      if (cell.value && typeof cell.value === "object" && (cell.value.sharedFormula !== undefined || cell.value.formula !== undefined)) {
-        // Replace formula cell with its cached result value (or null)
-        cell.value = cell.value.result !== undefined ? cell.value.result : null;
+  // ── Expand shared formulas into individual formulas ──
+  // ExcelJS crashes on write if shared formula chains break after cell edits.
+  // Solution: convert every shared-formula child into a standalone formula.
+  const sharedMasters = {};  // "A1" → { formula, row, col }
+  ws.eachRow((row, rowNum) => {
+    row.eachCell((cell, colNum) => {
+      const v = cell.value;
+      if (v && typeof v === "object" && v.formula && v.shareType === "shared" && v.ref) {
+        // This is a shared formula master — index it
+        const colLetter = String.fromCharCode(64 + colNum) + (colNum > 26 ? "" : "");
+        const addr = (colNum <= 26 ? String.fromCharCode(64 + colNum) : "A" + String.fromCharCode(64 + colNum - 26)) + rowNum;
+        sharedMasters[addr] = { formula: v.formula, row: rowNum, col: colNum };
+        // Convert master to plain formula (remove shareType/ref)
+        cell.value = { formula: v.formula, result: v.result };
+      }
+    });
+  });
+  // Helper: shift column/row references in a formula
+  function shiftFormula(formula, dCol, dRow) {
+    return formula.replace(/(\$?)([A-Z]{1,2})(\$?)(\d+)/g, (m, colAbs, col, rowAbs, row) => {
+      let colNum = 0;
+      for (let i = 0; i < col.length; i++) colNum = colNum * 26 + (col.charCodeAt(i) - 64);
+      const newCol = colAbs ? colNum : colNum + dCol;
+      const newRow = rowAbs ? parseInt(row) : parseInt(row) + dRow;
+      let colStr = "";
+      let c = newCol;
+      while (c > 0) { colStr = String.fromCharCode(((c - 1) % 26) + 65) + colStr; c = Math.floor((c - 1) / 26); }
+      return (colAbs || "") + colStr + (rowAbs || "") + newRow;
+    });
+  }
+  // Now expand children
+  ws.eachRow((row, rowNum) => {
+    row.eachCell((cell, colNum) => {
+      const v = cell.value;
+      if (v && typeof v === "object" && v.sharedFormula !== undefined) {
+        const master = sharedMasters[v.sharedFormula];
+        if (master) {
+          const dCol = colNum - master.col;
+          const dRow = rowNum - master.row;
+          cell.value = { formula: shiftFormula(master.formula, dCol, dRow), result: v.result };
+        } else {
+          // Orphaned child — keep cached result
+          cell.value = v.result !== undefined ? v.result : null;
+        }
       }
     });
   });
 
-  // ── Constants matching the original template layout ──
+  // ── Ensure all HRS rows have formulas (some were hand-entered in the original) ──
   const EMP_STARTS = [6,16,26, 41,51,61, 76,86,96, 111,121,131, 146,156,166, 181,191,201, 216,226];
+  const DAY_COL_LETTERS = ["D","F","H","J","L","N","P"]; // even columns for each day pair
+  for (const er of EMP_STARTS) {
+    // ST HRS row = er+2, referencing IN=er, OUT=er+1
+    // OT HRS row = er+5, referencing IN=er+3, OUT=er+4
+    // OTHER HRS row = er+8, referencing IN=er+6, OUT=er+7
+    const hrsRows = [
+      { hrs: er+2, inR: er, outR: er+1 },
+      { hrs: er+5, inR: er+3, outR: er+4 },
+      { hrs: er+8, inR: er+6, outR: er+7 },
+    ];
+    for (const { hrs, inR, outR } of hrsRows) {
+      for (let di = 0; di < 7; di++) {
+        const col = DAY_COL_LETTERS[di];
+        const c = 4 + di * 2; // column number
+        const cell = ws.getCell(hrs, c);
+        if (!cell.value || (typeof cell.value === "object" && !cell.value.formula)) {
+          // Missing formula — write it
+          const f = "IF((OR(" + col + outR + '="",' + col + inR + '="")),0,IF((' + col + outR + "<" + col + inR + "),((" + col + outR + "-" + col + inR + ")*24)+24,(" + col + outR + "-" + col + inR + ")*24))";
+          cell.value = { formula: f };
+        }
+        // Also ensure the merged partner column (c+1) has the same formula
+        const cell2 = ws.getCell(hrs, c + 1);
+        if (!cell2.value || (typeof cell2.value === "object" && !cell2.value.formula)) {
+          const f = "IF((OR(" + col + outR + '="",' + col + inR + '="")),0,IF((' + col + outR + "<" + col + inR + "),((" + col + outR + "-" + col + inR + ")*24)+24,(" + col + outR + "-" + col + inR + ")*24))";
+          cell2.value = { formula: f };
+        }
+      }
+      // Total formula in col R (18): SUM of day HRS
+      const totalCell = ws.getCell(hrs, 18);
+      if (!totalCell.value || (typeof totalCell.value === "object" && !totalCell.value.formula)) {
+        totalCell.value = { formula: "SUM(D" + hrs + ":P" + hrs + ")" };
+      }
+    }
+    // Employee Totals row (er+9): sum ST+OT+OTHER for each day
+    for (let di = 0; di < 7; di++) {
+      const col = DAY_COL_LETTERS[di];
+      const c = 4 + di * 2;
+      const cell = ws.getCell(er+9, c);
+      if (!cell.value || (typeof cell.value === "object" && !cell.value.formula)) {
+        cell.value = { formula: col + (er+8) + "+" + col + (er+5) + "+" + col + (er+2) };
+      }
+      const cell2 = ws.getCell(er+9, c + 1);
+      if (!cell2.value || (typeof cell2.value === "object" && !cell2.value.formula)) {
+        cell2.value = { formula: col + (er+8) + "+" + col + (er+5) + "+" + col + (er+2) };
+      }
+    }
+    // Employee Totals grand total (col R/18)
+    const etCell = ws.getCell(er+9, 18);
+    if (!etCell.value || (typeof etCell.value === "object" && !etCell.value.formula)) {
+      etCell.value = { formula: "R" + (er+6) + "+R" + (er+3) + "+R" + er };
+    }
+  }
+
+  // ── Constants matching the original template layout ──
   const TOTAL_SLOTS = 20;
   const DAY_COLS = [[4,5],[6,7],[8,9],[10,11],[12,13],[14,15],[16,17]];
   const SHIFT_TIMES = {
@@ -4802,48 +4893,32 @@ async function exportWeekending(employees, schedule, extShifts, handoffs, weekSt
     }
     const otherTotal = otherDayHours.reduce((s, h) => s + h, 0);
 
-    // Write day columns
+    // Write day columns — only IN/OUT times and Off labels; formulas calculate HRS/totals
     for (let di = 0; di < 7; di++) {
       const [c1, c2] = DAY_COLS[di];
       if (stDayShifts[di] && stDayShifts[di].length > 0) {
         const s = stDayShifts[di][0];
-        setValPair(r, c1, c2, excelTime(s.inH, s.inM));
-        setValPair(r + 1, c1, c2, excelTime(s.outH, s.outM));
-        setValPair(r + 2, c1, c2, stDayHours[di]);
+        setValPair(r, c1, c2, excelTime(s.inH, s.inM));       // ST IN
+        setValPair(r + 1, c1, c2, excelTime(s.outH, s.outM)); // ST OUT
       } else if (emp && days && days[di].totalHours === 0) {
         setValPair(r, c1, c2, days[di].timeOff?.type === "vacation" ? "PTO" : "Off");
-        setValPair(r + 2, c1, c2, 0);
-      } else if (emp) {
-        setValPair(r + 2, c1, c2, 0);
       }
 
       if (otDayShifts[di] && otDayShifts[di].length > 0) {
         const s = otDayShifts[di][0];
-        setValPair(r + 3, c1, c2, excelTime(s.inH, s.inM));
-        setValPair(r + 4, c1, c2, excelTime(s.outH, s.outM));
-        setValPair(r + 5, c1, c2, otDayHours[di]);
+        setValPair(r + 3, c1, c2, excelTime(s.inH, s.inM));   // OT IN
+        setValPair(r + 4, c1, c2, excelTime(s.outH, s.outM)); // OT OUT
       }
 
       if (otherDayHours[di] > 0) {
-        setValPair(r + 6, c1, c2, "PTO");
-        setValPair(r + 7, c1, c2, "Pay");
-        setValPair(r + 8, c1, c2, otherDayHours[di]);
+        setValPair(r + 6, c1, c2, "PTO");   // OTHER IN label
+        setValPair(r + 7, c1, c2, "Pay");   // OTHER OUT label
       }
     }
-
-    setVal(r, 18, stTotal);
-    setVal(r + 3, 18, otTotal);
-    setVal(r + 6, 18, otherTotal);
 
     const commentParts = [];
     if (otTotal > 0 && emp) commentParts.push(otTotal + " hours NB OT short guard");
     setValPair(r + 5, 1, 2, commentParts.join("; "));
-
-    for (let di = 0; di < 7; di++) {
-      const [c1, c2] = DAY_COLS[di];
-      setValPair(r + 9, c1, c2, stDayHours[di] + otDayHours[di] + otherDayHours[di]);
-    }
-    setVal(r + 9, 18, stTotal + otTotal + otherTotal);
 
     empResults.push({
       stTotal, otTotal, otherTotal, stDayHours, otDayHours, otherDayHours,
@@ -4852,20 +4927,8 @@ async function exportWeekending(employees, schedule, extShifts, handoffs, weekSt
     });
   }
 
-  // ── TOTALS section (R236-R240) ──
-  for (let di = 0; di < 7; di++) {
-    const [c1, c2] = DAY_COLS[di];
-    let stT = 0, otT = 0, othT = 0;
-    empResults.forEach(r => { stT += r.stDayHours[di]; otT += r.otDayHours[di]; othT += r.otherDayHours[di]; });
-    setValPair(236, c1, c2, stT);
-    setValPair(237, c1, c2, otT);
-    setValPair(238, c1, c2, othT);
-    setValPair(239, c1, c2, stT + otT + othT);
-  }
-  let stGT = 0, otGT = 0, othGT = 0;
-  empResults.forEach(r => { stGT += r.stTotal; otGT += r.otTotal; othGT += r.otherTotal; });
-  setVal(236, 18, stGT); setVal(237, 18, otGT); setVal(238, 18, othGT);
-  setVal(239, 18, stGT + otGT + othGT); setVal(239, 20, stGT + otGT + othGT);
+  // ── TOTALS section (R236-R240) — formulas calculate from employee blocks ──
+  // Only set "Normal Weekly Hours should be" (R240) — no formula for this
   setVal(240, 4, employees.filter(e => e.employmentType === "full-time").length * 40);
 
   // ── Recap (R244-R263) ──
