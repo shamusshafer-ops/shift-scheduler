@@ -10197,6 +10197,32 @@ function ScheduleGrid({ onOpenTestModal }) {
   const getAsgn       = (d,s) => displaySchedule[cellKey(d,s)]||[];
   const getName       = (id)  => employees.find(e=>e.id===id)?.name||"?";
   const getAssignable = (emp,d,s) => getAvailPos(d,s).filter(p=>canFillPos(emp,p,d));
+  const buildTooltip = (empId, day, shiftId, position) => {
+    const emp = employees.find(e => e.id === empId);
+    if (!emp) return undefined;
+    const hrs = calcHours(empId, displaySchedule, extShifts);
+    const lines = [];
+    lines.push(`${emp.name} — ${position}`);
+    lines.push(`${emp.employmentType === "full-time" ? "FT" : emp.employmentType === "part-time" ? "PT" : "OC"} · ${hrs}h this week`);
+    if ((emp.qualifications || []).length > 1) lines.push(`Quals: ${emp.qualifications.join(", ")}`);
+    const log = assignLog?.[day + "__" + shiftId + "__" + empId];
+    if (log) {
+      const phaseLabels = {
+        "CSP+SA": "Assigned by solver",
+        "fillPass": "Post-fill placement",
+        "Step4b": "16h double for hours makeup",
+        "Step4c": "Replaced on-call with FT",
+        "Step5c": "Added for role coverage",
+        "Step5d": "Moved to fill coverage gap",
+        "Step5e": "Ripple reassignment",
+        "Step6": "Violation minimizer swap",
+      };
+      const label = phaseLabels[log.phase] || log.phase;
+      lines.push(`Why: ${label}`);
+      if (log.reason && !log.reason.startsWith("position=")) lines.push(log.reason);
+    }
+    return lines.join("\n");
+  };
   const unassigned    = (d,s) => {
     const ids=getAsgn(d,s).map(a=>a.employeeId);
     return employees.filter(e=>{
@@ -11977,7 +12003,7 @@ function ScheduleGrid({ onOpenTestModal }) {
                             setDragChip(null);
                           }}
                           onClick={!isReadOnly ? (e=>handleChipClick(a.employeeId,day,shift.id,a.position,e)) : undefined}
-                          title={assignLog?.[day+"__"+shift.id+"__"+a.employeeId] ? `[${assignLog[day+"__"+shift.id+"__"+a.employeeId].phase}] ${assignLog[day+"__"+shift.id+"__"+a.employeeId].reason}` : undefined}
+                          title={buildTooltip(a.employeeId, day, shift.id, a.position)}
                           style={{display:"flex",alignItems:"center",gap:5,padding:"4px 6px",
                             background:swapBg,border:swapBorder,borderRadius:4,fontSize:11,
                             opacity:swapOpacity,overflow:"hidden",minWidth:0,
