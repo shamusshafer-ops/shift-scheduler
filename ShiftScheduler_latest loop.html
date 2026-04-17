@@ -1389,6 +1389,14 @@ function deployProactiveExtShifts(sourceEmps, cfg, empTimeOffDays, existingExtSh
             const aDed = shiftDedicated[targetShift.id].some(d => d.id === a.id) ? 1 : 0;
             const bDed = shiftDedicated[targetShift.id].some(d => d.id === b.id) ? 1 : 0;
             if (aDed !== bDed) return aDed - bDed;
+            // Prefer employees who want OT (lower projected hours cost)
+            const aWantsOT = (a.overtimePref === "preferred") ? 0 : 1;
+            const bWantsOT = (b.overtimePref === "preferred") ? 0 : 1;
+            if (aWantsOT !== bWantsOT) return aWantsOT - bWantsOT;
+            // Prefer employees with lower projected hours (spread load)
+            const aH = empProjectedHours[a.id] ?? 99;
+            const bH = empProjectedHours[b.id] ?? 99;
+            if (aH !== bH) return aH - bH;
             // Then prefer employees with more qualifications (more flexible for role assignment)
             return (b.qualifications || []).length - (a.qualifications || []).length;
           });
@@ -1407,6 +1415,14 @@ function deployProactiveExtShifts(sourceEmps, cfg, empTimeOffDays, existingExtSh
             if ((empExtCount[e.id] || 0) >= extCap) return false;
             return true;
           }).sort((a, b) => {
+            // Prefer employees who want OT
+            const aWantsOT = (a.overtimePref === "preferred") ? 0 : 1;
+            const bWantsOT = (b.overtimePref === "preferred") ? 0 : 1;
+            if (aWantsOT !== bWantsOT) return aWantsOT - bWantsOT;
+            // Prefer employees with lower projected hours (spread load)
+            const aH = empProjectedHours[a.id] ?? 99;
+            const bH = empProjectedHours[b.id] ?? 99;
+            if (aH !== bH) return aH - bH;
             // Prefer employees who also bring a specialist role (bonus coverage)
             const aSpec = ["Scale", "Medical"].filter(r => (a.qualifications || []).includes(r)).length;
             const bSpec = ["Scale", "Medical"].filter(r => (b.qualifications || []).includes(r)).length;
@@ -10555,8 +10571,8 @@ function ScheduleGrid({ onOpenTestModal }) {
           .map(h => rmap[h.employeeId]).filter(Boolean);
         const hoHasScale   = hoEmps.some(e => (e.qualifications||[]).includes("Scale"));
         const hoHasMedical = hoEmps.some(e => (e.qualifications||[]).includes("Medical"));
-        if (!hasScale && !extHasScale && !hoHasScale)     W(`No Scale on ${day} ${shift.id}`);
-        if (!hasMedical && !extHasMedical && !hoHasMedical) W(`No Medical on ${day} ${shift.id}`);
+        if (!hasScale && !extHasScale && !hoHasScale)     E(`No Scale on ${day} ${shift.id}`);
+        if (!hasMedical && !extHasMedical && !hoHasMedical) E(`No Medical on ${day} ${shift.id}`);
       });
     });
 
