@@ -2451,6 +2451,30 @@ function buildAutoFill(sourceEmps, cfg, empTimeOffDays, empPatterns, extShiftsAr
       // wall so the search doesn't back itself into a corner where only already-OT
       // employees remain. Mirrors empScore's overtimeRampPenalty at lower magnitude.
       if (isFT && hours > 32) score += (hours - 32) * 8;
+      // Role-stretch: penalize specialists when slot already has their role covered
+      const quals = emp.qualifications || [];
+      const hasSpec = quals.includes("Scale") || quals.includes("Medical");
+      const specCount = (quals.includes("Scale") ? 1 : 0) + (quals.includes("Medical") ? 1 : 0);
+      const wouldBeGuard = hasSpec &&
+        (!quals.includes("Scale") || hasScale || extR.hasScale) &&
+        (!quals.includes("Medical") || hasMedical || extR.hasMedical);
+      if (wouldBeGuard) {
+        score += specCount >= 2 ? 200 : 120;
+        // Scarcity reserve: protect rare-qualification employees from Guard duty
+        for (const q of ["Scale", "Medical"]) {
+          if (!quals.includes(q)) continue;
+          const poolSize = (qualGroups[q] || []).length;
+          if (poolSize > 0) score += Math.round(300 / poolSize);
+        }
+      }
+      // Fairness: penalize employees with more hours than their qual-group peers
+      const peerIds = new Set();
+      quals.forEach(q => (qualGroups[q] || []).forEach(id => peerIds.add(id)));
+      peerIds.delete(empId);
+      if (peerIds.size) {
+        const minPeer = Math.min(...[...peerIds].map(id => state.hourTracker[id] || 0));
+        score += Math.max(0, hours - minPeer) * 5;
+      }
       let appearances = 0;
       for (let j = 0; j < state.domains.length; j++) {
         if (j === slotIdx) continue;
@@ -2623,6 +2647,20 @@ function buildAutoFill(sourceEmps, cfg, empTimeOffDays, empPatterns, extShiftsAr
             const prefs = emp.preferredShifts || [];
             if (prefs.length > 0 && !prefs.includes(shift.id)) soft += 600 * ps(emp, "shift");
           }
+        }
+      }
+      // Fatigue: penalize short rest gaps and high consecutive hours
+      for (const day of DAYS) for (const shift of SHIFTS) {
+        for (const a of (sched[cellKey(day, shift.id)] || [])) {
+          const emp = empMap.get(a.employeeId);
+          if (!emp) continue;
+          const gap = calcRestGap(a.employeeId, sched, day, shift.id, extShiftsArg, empPatterns);
+          if (gap < minRest && gap > 0) {
+            // Short but legal rest — penalize proportionally
+            soft += (minRest - gap) * 100;
+          }
+          const consHrs = calcConsecutiveHours(a.employeeId, sched, day, shift.id, extShiftsArg);
+          if (consHrs > 16) soft += (consHrs - 16) * 150;
         }
       }
       for (const emp of sourceEmps) {
