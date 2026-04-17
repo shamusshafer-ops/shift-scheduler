@@ -10903,7 +10903,16 @@ function ScheduleGrid({ onOpenTestModal }) {
           return { day: m[1], shiftId: m[2], have: +m[3], need: +m[4] };
         }).filter(Boolean);
 
-      if (!gaps.length) return result;
+      // Parse role gap errors → list of {day, shiftId, role}
+      const roleGaps = result.issues
+        .filter(i => i.level === "error" && (i.msg.startsWith("No Scale") || i.msg.startsWith("No Medical")))
+        .map(i => {
+          const m = i.msg.match(/No (Scale|Medical) on (\w+) (\w+)/);
+          if (!m) return null;
+          return { role: m[1], day: m[2], shiftId: m[3] };
+        }).filter(Boolean);
+
+      if (!gaps.length && !roleGaps.length) return result;
 
       // Build lookup of who's assigned where this week
       const empDayShifts = {};  // empId → Set of "day__shiftId"
@@ -11097,6 +11106,88 @@ function ScheduleGrid({ onOpenTestModal }) {
         }
       }
 
+      // ── Role gap repair: swap in a qualified employee for a missing role ──
+      for (const rg of roleGaps) {
+        const rgKey = cellKey(rg.day, rg.shiftId);
+        const currentAsgn = ns[rgKey] || [];
+        const assignedIds = new Set(currentAsgn.map(a => a.employeeId));
+
+        // Strategy 1: insert — find unassigned employee with the needed role
+        const insertCands = source.filter(emp => {
+          if (assignedIds.has(emp.id)) return false;
+          if (emp.inTraining) return false;
+          if (!(emp.qualifications || []).includes(rg.role)) return false;
+          if ((emp.unavailableDays || []).includes(rg.day)) return false;
+          if (empTimeOffDays && empTimeOffDays.has(emp.id + "__" + rg.day)) return false;
+          if ((emp.blockedShifts || []).includes(rg.shiftId)) return false;
+          if (emp.requiredShift && emp.requiredShift !== rg.shiftId && !emp.crossShiftOT) return false;
+          const onThisDay = SHIFTS.some(s =>
+            s.id !== rg.shiftId && (ns[cellKey(rg.day, s.id)] || []).some(a => a.employeeId === emp.id)
+          );
+          if (onThisDay && !emp.willing16h) return false;
+          if (emp.maxShiftsPerWeek != null && (empShiftCount[emp.id] || 0) >= emp.maxShiftsPerWeek) return false;
+          return true;
+        }).sort((a, b) => candidateCost(a, rg.shiftId, "insert", SHIFT_HOURS, rg.role) - candidateCost(b, rg.shiftId, "insert", SHIFT_HOURS, rg.role));
+
+        if (insertCands.length) {
+          const emp = insertCands[0];
+          const cap = REGULAR_SLOTS(rg.day, rg.shiftId) + (SUP_SLOT_DAY(rg.day, rg.shiftId) ? 1 : 0);
+          if (currentAsgn.length < cap) {
+            // Room to add — just insert
+            ns[rgKey] = [...currentAsgn, { employeeId: emp.id, position: rg.role }];
+            if (hourTracker) hourTracker[emp.id] = (hourTracker[emp.id] || 0) + SHIFT_HOURS;
+            empShiftCount[emp.id] = (empShiftCount[emp.id] || 0) + 1;
+            changed = true;
+            continue;
+          }
+        }
+
+        // Strategy 2: swap — replace a non-role-holding guard with a qualified employee
+        const guardIdx = currentAsgn.findIndex(a => {
+          const e = source.find(x => x.id === a.employeeId);
+          return e && a.position === "Guard" && !(e.qualifications || []).includes(rg.role);
+        });
+        if (guardIdx >= 0 && insertCands.length) {
+          const emp = insertCands[0];
+          const evicted = currentAsgn[guardIdx];
+          const evictedEmp = source.find(e => e.id === evicted.employeeId);
+          ns[rgKey] = currentAsgn.filter((_, i) => i !== guardIdx);
+          ns[rgKey] = [...ns[rgKey], { employeeId: emp.id, position: rg.role }];
+          if (hourTracker) {
+            hourTracker[emp.id] = (hourTracker[emp.id] || 0) + SHIFT_HOURS;
+            if (evictedEmp) hourTracker[evictedEmp.id] = Math.max(0, (hourTracker[evictedEmp.id] || 0) - SHIFT_HOURS);
+          }
+          empShiftCount[emp.id] = (empShiftCount[emp.id] || 0) + 1;
+          if (evictedEmp) empShiftCount[evictedEmp.id] = Math.max(0, (empShiftCount[evictedEmp.id] || 0) - 1);
+          changed = true;
+          continue;
+        }
+
+        // Strategy 3: handoff — pull qualified employee from adjacent shift for 4h
+        const adjShiftsForRole = ADJACENT_HANDOFF[rg.shiftId] || [];
+        for (const adjSid of adjShiftsForRole) {
+          const adjAsgn = ns[cellKey(rg.day, adjSid)] || [];
+          const cand = adjAsgn.find(a => {
+            if (a.position === "Supervisor") return false;
+            const e = source.find(x => x.id === a.employeeId);
+            return e && (e.qualifications || []).includes(rg.role) &&
+              !handoffs.some(h => h.day === rg.day && h.employeeId === e.id && h.targetShiftId === rg.shiftId);
+          });
+          if (cand) {
+            const emp = source.find(e => e.id === cand.employeeId);
+            const hoType = shiftOrder[adjSid] < shiftOrder[rg.shiftId] ? "late-stay" : "early-arrival";
+            handoffs.push({
+              day: rg.day, employeeId: emp.id, type: hoType,
+              sourceShiftId: adjSid, targetShiftId: rg.shiftId,
+              position: rg.role, hours: HANDOFF_HOURS,
+            });
+            if (hourTracker) hourTracker[emp.id] = (hourTracker[emp.id] || 0) + HANDOFF_HOURS;
+            changed = true;
+            break;
+          }
+        }
+      }
+
       if (!changed) return result;
 
       // Re-validate after repairs (pass handoffs so they count as bodies)
@@ -11106,17 +11197,19 @@ function ScheduleGrid({ onOpenTestModal }) {
       return { ...result, ns, issues, errors, warns, handoffs };
     };
 
-    // ── Iterative loop (B2: targeted retry) ──────────────────────────────────
-    // Attempt 1 is deterministic — gives the baseline result. Gap repair runs
-    // after each attempt. Subsequent attempts use jitter=true but the cap is
-    // much lower (20 vs old 200) since targeted repair handles structurally-
-    // blocked gaps that jitter alone can't solve.
-    const MAX_ATTEMPTS = 20;
+    // ── Iterative loop with diagnostic escalation ─────────────────────────────
+    // Attempt 1 is deterministic baseline. Gap + role repair runs after each
+    // attempt. If errors plateau for 3 consecutive attempts, the loop stops
+    // early — jitter alone won't solve a structural block.
+    const MAX_ATTEMPTS = 10;
+    const PLATEAU_LIMIT = 3;
     autoFillCancelRef.current = false;
     setAutoFillRunning(true);
 
     let best = null;
     let attemptNum = 0;
+    let plateauCount = 0;
+    let prevBestErrors = Infinity;
 
     const tick = () => {
       if (autoFillCancelRef.current) {
@@ -11134,6 +11227,14 @@ function ScheduleGrid({ onOpenTestModal }) {
         best = result;
       }
 
+      // Detect plateau: if best error count hasn't improved, increment counter
+      if (best.errors >= prevBestErrors) {
+        plateauCount++;
+      } else {
+        plateauCount = 0;
+      }
+      prevBestErrors = best.errors;
+
       setAutoFillProgress({ attempt: attemptNum, bestErrors: best.errors, bestWarns: best.warns });
 
       if (best.errors === 0) {
@@ -11143,7 +11244,7 @@ function ScheduleGrid({ onOpenTestModal }) {
         return;
       }
 
-      if (attemptNum >= MAX_ATTEMPTS) {
+      if (attemptNum >= MAX_ATTEMPTS || plateauCount >= PLATEAU_LIMIT) {
         commit(best);
         setAutoFillRunning(false);
         setAutoFillProgress(null);
