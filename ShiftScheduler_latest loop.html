@@ -4042,8 +4042,18 @@ function ExcelPreviewModal({ onDownload, onClose }) {
       if (asgn) result.push({ sid: shift.id, pos: asgn.position });
     }
     const extDay = (extShifts || []).filter(e => e.day === day);
-    if (extDay.some(e => e.empAId === emp.id)) return { text:"6A-6P",  kind:"splitDay"   };
-    if (extDay.some(e => e.empBId === emp.id)) return { text:"6P-6A",  kind:"splitNight" };
+    const extAsA = extDay.find(e => e.empAId === emp.id);
+    const extAsB = extDay.find(e => e.empBId === emp.id);
+    if (extAsA) {
+      const pair = EXT_PAIRS.find(p => p.id === extAsA.pairId);
+      const label = pair ? pair.label : "Ext";
+      return { text: label, kind: pair && (pair.startHour ?? 6) < 12 ? "splitDay" : "splitNight" };
+    }
+    if (extAsB) {
+      const pair = EXT_PAIRS.find(p => p.id === extAsB.pairId);
+      const label = pair ? pair.label : "Ext";
+      return { text: label, kind: pair && (pair.startHourB ?? pair.startHour ?? 18) < 12 ? "splitDay" : "splitNight" };
+    }
     const trnDay = (trainingBlocks||[]).filter(t => t.empId === emp.id && t.day === day);
     const trnSuffix = trnDay.length > 0
       ? " +" + trnDay.map(t => { const fh=h=>`${h%12||12}${h<12?"A":"P"}`; return `TRN ${fh(t.startHour)}-${fh((t.startHour+t.durationHours)%24)}`; }).join(",")
@@ -4280,7 +4290,7 @@ function ExcelPreviewModal({ onDownload, onClose }) {
   );
 }
 
-async function exportToExcel(employees, schedule, extShifts, weekStart, trainingBlocks, timeOffReqs) {
+async function exportToExcel(employees, schedule, extShifts, weekStart, trainingBlocks, timeOffReqs, handoffs) {
   const getName = (id) => employees.find(e => e.id === id)?.name || "?";
 
   const CLR = {
@@ -4333,8 +4343,18 @@ async function exportToExcel(employees, schedule, extShifts, weekStart, training
       if (asgn) result.push({ sid: shift.id, pos: asgn.position });
     }
     const extDay = (extShifts || []).filter(e => e.day === day);
-    if (extDay.some(e => e.empAId === emp.id)) return { text:"6A-6P",  kind:"splitDay"   };
-    if (extDay.some(e => e.empBId === emp.id)) return { text:"6P-6A",  kind:"splitNight" };
+    const extAsA = extDay.find(e => e.empAId === emp.id);
+    const extAsB = extDay.find(e => e.empBId === emp.id);
+    if (extAsA) {
+      const pair = EXT_PAIRS.find(p => p.id === extAsA.pairId);
+      const label = pair ? pair.label : "Ext";
+      return { text: label, kind: pair && (pair.startHour ?? 6) < 12 ? "splitDay" : "splitNight" };
+    }
+    if (extAsB) {
+      const pair = EXT_PAIRS.find(p => p.id === extAsB.pairId);
+      const label = pair ? pair.label : "Ext";
+      return { text: label, kind: pair && (pair.startHourB ?? pair.startHour ?? 18) < 12 ? "splitDay" : "splitNight" };
+    }
     // Training block annotation: append TRN label to existing shift text
     const trnDay = (trainingBlocks||[]).filter(t => t.empId === emp.id && t.day === day);
     const trnSuffix = trnDay.length > 0
@@ -4366,7 +4386,10 @@ async function exportToExcel(employees, schedule, extShifts, weekStart, training
     }).length;
     const suffix = pos==="Scale" && scaleOnShift > 1 ? "-Scale"
                  : pos==="Medical" && medOnShift > 1 ? "-Med" : "";
-    return { text: num+suffix+trnSuffix, kind: sid };
+    // Handoff annotation: late-stay or early-arrival from this employee on this day
+    const ho = (handoffs||[]).find(h => h.day === day && h.employeeId === emp.id);
+    const hoSuffix = ho ? (ho.type === "late-stay" ? " +LS" : " +EA") : "";
+    return { text: num+suffix+hoSuffix+trnSuffix, kind: sid };
   };
 
   const kindBg   = (kind, rowBg) => ({ first:CLR.shift1, second:CLR.shift2, third:CLR.shift3,
@@ -10770,6 +10793,17 @@ function ScheduleGrid({ onOpenTestModal }) {
       // skip any day+pairId already covered via usedExtPairs.
       const autoExtShifts = [...proactiveExts];
       const usedExtPairs  = new Set(proactiveExts.map(e => e.day + "__" + e.pairId));
+      const reactiveExtCount = {};
+      // Seed from proactive + manual ext shifts
+      [...(extShifts||[]).filter(e => e.approvedAt !== "auto-fill"), ...proactiveExts].forEach(ext => {
+        if (ext.empAId) reactiveExtCount[ext.empAId] = (reactiveExtCount[ext.empAId] || 0) + 1;
+        if (ext.empBId) reactiveExtCount[ext.empBId] = (reactiveExtCount[ext.empBId] || 0) + 1;
+      });
+      const MAX_REACTIVE_EXT = 2;
+      const reactiveExtOk = (emp) => {
+        const cap = (emp.employmentType === "full-time" && !emp.willing16h) ? 1 : MAX_REACTIVE_EXT;
+        return (reactiveExtCount[emp.id] || 0) < cap;
+      };
       DAYS.forEach(day => {
         EXT_PAIRS.forEach(pair => {
           if (usedExtPairs.has(day + "__" + pair.id)) return;
@@ -10791,6 +10825,7 @@ function ScheduleGrid({ onOpenTestModal }) {
               if ((emp.unavailableDays || []).includes(day)) return false;
               if (emp.maxShiftsPerWeek !== null && (shiftsWorked[emp.id]||0) >= emp.maxShiftsPerWeek) return false;
               if (alreadyOnCoveredSlot(emp.id)) return false;
+              if (!reactiveExtOk(emp)) return false;
               return canWorkExtHalf(emp, pair.id, 0); // checks swingEligible[]
             });
             const swingDesigId = (swingDesig || {})[pair.id];
@@ -10800,6 +10835,7 @@ function ScheduleGrid({ onOpenTestModal }) {
             autoExtShifts.push({ pairId: pair.id, day, empAId: empA.id, empBId: null,
               roles: ["Scale","Medical"].filter(r => empA.qualifications.includes(r)),
               approvedAt: "auto-fill", auto: true });
+            reactiveExtCount[empA.id] = (reactiveExtCount[empA.id] || 0) + 1;
             usedExtPairs.add(day + "__" + pair.id);
             return;
           }
@@ -10834,6 +10870,7 @@ function ScheduleGrid({ onOpenTestModal }) {
           const candidates = source.filter(emp => {
             if ((emp.unavailableDays || []).includes(day)) return false;
             if (alreadyInBoth(emp.id)) return false;
+            if (!reactiveExtOk(emp)) return false;
             if (!uniqueNeeded.every(r => emp.qualifications.includes(r))) return false;
             if (emp.maxShiftsPerWeek !== null && (shiftsWorked[emp.id]||0) >= emp.maxShiftsPerWeek) return false;
             if (!emp.willing16h) return false;
@@ -10866,6 +10903,8 @@ function ScheduleGrid({ onOpenTestModal }) {
               ])];
               autoExtShifts.push({ pairId: pair.id, day, empAId: empA.id, empBId: empB.id,
                 roles: combinedExtRoles, approvedAt: "auto-fill", auto: true });
+              reactiveExtCount[empA.id] = (reactiveExtCount[empA.id] || 0) + 1;
+              reactiveExtCount[empB.id] = (reactiveExtCount[empB.id] || 0) + 1;
               usedExtPairs.add(day + "__" + pair.id);
               break;
             }
@@ -11453,7 +11492,7 @@ function ScheduleGrid({ onOpenTestModal }) {
 
       {showExcelPreview && (
         <ExcelPreviewModal
-          onDownload={()=>{ exportToExcel(employees, viewingHistory?viewingHistory.schedule:schedule, extShifts||[], weekStart, trainingBlocks||[], timeOffReqs||[]); setShowExcelPreview(false); }}
+          onDownload={()=>{ exportToExcel(employees, viewingHistory?viewingHistory.schedule:schedule, extShifts||[], weekStart, trainingBlocks||[], timeOffReqs||[], handoffs||[]); setShowExcelPreview(false); }}
           onClose={()=>setShowExcelPreview(false)}
         />
       )}
@@ -15478,7 +15517,7 @@ function ShiftSchedulerApp() {
         </div>
       {showExcelPreviewApp && (
         <ExcelPreviewModal
-          onDownload={()=>{ exportToExcel(employees, schedule, extShifts||[], weekStartApp, trainingBlocks||[], timeOffReqs||[]); setShowExcelPreviewApp(false); }}
+          onDownload={()=>{ exportToExcel(employees, schedule, extShifts||[], weekStartApp, trainingBlocks||[], timeOffReqs||[], []); setShowExcelPreviewApp(false); }}
           onClose={()=>setShowExcelPreviewApp(false)}
         />
       )}
