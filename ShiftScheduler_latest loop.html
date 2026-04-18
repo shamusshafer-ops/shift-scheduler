@@ -676,7 +676,10 @@ const getEffectiveSlotCount = (d, s, extShifts) => {
     if (!pair) return n;
     if (pair.covers.includes(s) && ext.day === d) {
       const idx = pair.covers.indexOf(s);
-      return n + ((idx === 0 ? !!ext.empAId : idx === 1 ? !!ext.empBId : false) ? 1 : 0);
+      const hasBody = pair.isSwing
+        ? !!ext.empAId
+        : (idx === 0 ? !!ext.empAId : idx === 1 ? !!ext.empBId : false);
+      return n + (hasBody ? 1 : 0);
     }
     // Split cross-day: empB covers next day's first shift
     if (pair.crossDayB === s && ext.empBId) {
@@ -760,7 +763,17 @@ function computeWeekStats(schedule, employees, extShiftsArg) {
       const cellExt   = extBySlot.get(key) || [];
       const extScale   = cellExt.some(e => (e.roles||[]).includes("Scale"));
       const extMedical = cellExt.some(e => (e.roles||[]).includes("Medical"));
-      const extFilled  = cellExt.reduce((n, e) => n + (e.empAId ? 1 : 0) + (e.empBId ? 1 : 0), 0);
+      const regIds = new Set(asgn.map(a => a.employeeId));
+      const extFilled  = cellExt.reduce((n, e) => {
+        const p = EXT_PAIRS.find(pp => pp.id === e.pairId);
+        const cf = p?.covers[0] === shift.id;
+        const aOn = p?.isSwing ? !!e.empAId : cf && !!e.empAId;
+        const bOn = !p?.isSwing && !cf && !!e.empBId;
+        let c = 0;
+        if (aOn && !regIds.has(e.empAId)) c++;
+        if (bOn && !regIds.has(e.empBId)) c++;
+        return n + c;
+      }, 0);
       const effectiveFilled  = Math.min(asgn.length + extFilled, max);
       const effectiveScale   = hasScale || extScale;
       const effectiveMedical = hasMed   || extMedical;
@@ -8450,7 +8463,17 @@ function CoverageDashboard({ navigateToWeek }) {
         const cellExt    = (extShifts||[]).filter(e => extCovers(e, day, shift.id));
         const extScale   = cellExt.some(e => (e.roles||[]).includes("Scale"));
         const extMedical = cellExt.some(e => (e.roles||[]).includes("Medical"));
-        const extFilled  = cellExt.reduce((n, e) => n + (e.empAId ? 1 : 0) + (e.empBId ? 1 : 0), 0);
+        const regIds = new Set(asgn.map(a => a.employeeId));
+        const extFilled  = cellExt.reduce((n, e) => {
+          const pair = EXT_PAIRS.find(p => p.id === e.pairId);
+          const cf = pair?.covers[0] === shift.id;
+          const aOnThis = pair?.isSwing ? !!e.empAId : cf && !!e.empAId;
+          const bOnThis = !pair?.isSwing && !cf && !!e.empBId;
+          let c = 0;
+          if (aOnThis && !regIds.has(e.empAId)) c++;
+          if (bOnThis && !regIds.has(e.empBId)) c++;
+          return n + c;
+        }, 0);
         const effFilled  = Math.min(filled + extFilled, max);
         const effHasScale = hasScale  || extScale;
         const effHasMed   = hasMed || extMedical;
@@ -9599,8 +9622,9 @@ function SchedulePopout({ onClose }) {
                       // for the empB cell if empB exists. Don't fall back to empA
                       // on the empB cell — that creates a phantom body at a slot
                       // no one is physically working.
-                      const empId=cf?ext.empAId:ext.empBId;
+                      const empId=pair?.isSwing?ext.empAId:cf?ext.empAId:ext.empBId;
                       if(!empId) return null;
+                      if(asgn.some(a=>a.employeeId===empId)) return null;
                       const extEmp=employees.find(e=>e.id===empId);
                       if(!extEmp) return null;
                       const ec=pair?.id==="day"?"#7c3aed":"#0e7490";
@@ -10804,6 +10828,26 @@ function ScheduleGrid({ onOpenTestModal }) {
         const cap = (emp.employmentType === "full-time" && !emp.willing16h) ? 1 : MAX_REACTIVE_EXT;
         return (reactiveExtCount[emp.id] || 0) < cap;
       };
+      // Track which slots each employee already has ext coverage on
+      const empExtSlots = {};
+      const markExtSlots = (empId, pair, day) => {
+        if (!empId) return;
+        (pair.covers || []).forEach(sid => {
+          const k = empId + "__" + day + "__" + sid;
+          empExtSlots[k] = true;
+        });
+      };
+      const hasExtOnSlot = (empId, pair, day) => {
+        return (pair.covers || []).some(sid => empExtSlots[empId + "__" + day + "__" + sid]);
+      };
+      // Seed from existing ext shifts
+      [...(extShifts||[]).filter(e => e.approvedAt !== "auto-fill"), ...proactiveExts].forEach(ext => {
+        const p = EXT_PAIRS.find(pp => pp.id === ext.pairId);
+        if (p) {
+          if (ext.empAId) markExtSlots(ext.empAId, p, ext.day);
+          if (ext.empBId) markExtSlots(ext.empBId, p, ext.day);
+        }
+      });
       DAYS.forEach(day => {
         EXT_PAIRS.forEach(pair => {
           if (usedExtPairs.has(day + "__" + pair.id)) return;
@@ -10826,6 +10870,7 @@ function ScheduleGrid({ onOpenTestModal }) {
               if (emp.maxShiftsPerWeek !== null && (shiftsWorked[emp.id]||0) >= emp.maxShiftsPerWeek) return false;
               if (alreadyOnCoveredSlot(emp.id)) return false;
               if (!reactiveExtOk(emp)) return false;
+              if (hasExtOnSlot(emp.id, pair, day)) return false;
               return canWorkExtHalf(emp, pair.id, 0); // checks swingEligible[]
             });
             const swingDesigId = (swingDesig || {})[pair.id];
@@ -10836,6 +10881,7 @@ function ScheduleGrid({ onOpenTestModal }) {
               roles: ["Scale","Medical"].filter(r => empA.qualifications.includes(r)),
               approvedAt: "auto-fill", auto: true });
             reactiveExtCount[empA.id] = (reactiveExtCount[empA.id] || 0) + 1;
+            markExtSlots(empA.id, pair, day);
             usedExtPairs.add(day + "__" + pair.id);
             return;
           }
@@ -10871,6 +10917,7 @@ function ScheduleGrid({ onOpenTestModal }) {
             if ((emp.unavailableDays || []).includes(day)) return false;
             if (alreadyInBoth(emp.id)) return false;
             if (!reactiveExtOk(emp)) return false;
+            if (hasExtOnSlot(emp.id, pair, day)) return false;
             if (!uniqueNeeded.every(r => emp.qualifications.includes(r))) return false;
             if (emp.maxShiftsPerWeek !== null && (shiftsWorked[emp.id]||0) >= emp.maxShiftsPerWeek) return false;
             if (!emp.willing16h) return false;
@@ -10905,6 +10952,8 @@ function ScheduleGrid({ onOpenTestModal }) {
                 roles: combinedExtRoles, approvedAt: "auto-fill", auto: true });
               reactiveExtCount[empA.id] = (reactiveExtCount[empA.id] || 0) + 1;
               reactiveExtCount[empB.id] = (reactiveExtCount[empB.id] || 0) + 1;
+              markExtSlots(empA.id, pair, day);
+              markExtSlots(empB.id, pair, day);
               usedExtPairs.add(day + "__" + pair.id);
               break;
             }
@@ -12134,12 +12183,15 @@ function ScheduleGrid({ onOpenTestModal }) {
                       const extPair=EXT_PAIRS.find(p=>p.id===ext.pairId);
                       const coversFirst=extPair?.covers[0]===shift.id;
                       const coversSecond=extPair?.covers[1]===shift.id;
-                      const empIdForCell=coversFirst?ext.empAId:coversSecond?(ext.empBId||ext.empAId):null;
+                      const empIdForCell=extPair?.isSwing
+                        ? ext.empAId
+                        : coversFirst?ext.empAId:coversSecond?ext.empBId:null;
                       if(!empIdForCell) return null;
+                      if(asgn.some(a=>a.employeeId===empIdForCell)) return null;
                       const extEmp=employees.find(e=>e.id===empIdForCell);
                       if(!extEmp) return null;
                       const extColor=extPair?.id==="day"?"#7c3aed":"#0e7490";
-                      const halfLabel=extPair?.id==="day"?(coversFirst?"6A–2P":"2P–6P"):(coversFirst?"6P–2A":"2A–6A");
+                      const halfLabel=extPair?.isSwing?(extPair.label):(extPair?.id==="day"?(coversFirst?"6A–2P":"2P–6P"):(coversFirst?"6P–2A":"2A–6A"));
                       return (
                         <div key={"ext-"+ei+"-"+empIdForCell} style={{display:"flex",alignItems:"center",gap:5,padding:"4px 6px",
                           background:extColor+"12",border:"1px dashed "+extColor+"60",borderRadius:4,fontSize:11}}>
@@ -14952,7 +15004,17 @@ function ShiftSchedulerApp() {
     const result=[];
     DAYS.forEach(d=>SHIFTS.forEach(s=>{
       const schedFilled=(schedule[cellKey(d,s.id)]||[]).length;
-      const extFilled=(extShifts||[]).filter(e=>extCovers(e,d,s.id)).reduce((n,e)=>n+(e.empAId?1:0)+(e.empBId?1:0),0);
+      const regIds=new Set((schedule[cellKey(d,s.id)]||[]).map(a=>a.employeeId));
+      const extFilled=(extShifts||[]).filter(e=>extCovers(e,d,s.id)).reduce((n,e)=>{
+        const p=EXT_PAIRS.find(pp=>pp.id===e.pairId);
+        const cf=p?.covers[0]===s.id;
+        const aOn=p?.isSwing?!!e.empAId:cf&&!!e.empAId;
+        const bOn=!p?.isSwing&&!cf&&!!e.empBId;
+        let c=0;
+        if(aOn&&!regIds.has(e.empAId))c++;
+        if(bOn&&!regIds.has(e.empBId))c++;
+        return n+c;
+      },0);
       const filled=Math.min(schedFilled+extFilled, getSlotCount(d,s.id));
       const max=getSlotCount(d,s.id);
       if(filled<max) result.push({day:d,shiftId:s.id,shiftLabel:s.label,filled,max,open:max-filled});
