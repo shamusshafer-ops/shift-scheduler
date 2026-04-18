@@ -10121,7 +10121,7 @@ function EmpPickerSearch({ day, shift, subSource, unassigned, getAssignable,
 
 function ScheduleGrid({ onOpenTestModal }) {
   const { employees, afExclude, setAfExclude, swingDesig, empPatterns, setEmpPatterns } = useRoster();
-  const { schedule, setSchedule, extShifts, setExtShifts, trainingBlocks, setTrainingBlocks, weekStart, setWeekStart, scheduleStale: scheduleStaleP, setScheduleStale: setScheduleStaleProp, empTimeOffDays } = useSchedule();
+  const { schedule, setSchedule, extShifts, setExtShifts, trainingBlocks, setTrainingBlocks, weekStart, setWeekStart, scheduleStale: scheduleStaleP, setScheduleStale: setScheduleStaleProp, empTimeOffDays, handoffs, setHandoffs } = useSchedule();
   const { history, setHistory, savedWeeks, setSavedWeeks } = useHistory();
   const { timeOffReqs } = useTimeOff();
   const { highlightSlot, clearHighlightSlot, pendingAutoFill, clearPendingAutoFill, mobileView, setMobileView } = useUI();
@@ -10147,7 +10147,6 @@ function ScheduleGrid({ onOpenTestModal }) {
   const [showHistSave,     setShowHistSave]    = useState(false);
   const [scheduleIssues,   setScheduleIssues]  = useState(null);
   const [assignLog,        setAssignLog]       = useState(null);
-  const [handoffs,         setHandoffs]        = useState([]);
   const [undoStack,        setUndoStack]        = useState([]);
   const [redoStack,        setRedoStack]        = useState([]);
   const [bannersExpanded,  setBannersExpanded]  = useState(false);
@@ -14871,6 +14870,7 @@ function ShiftSchedulerApp() {
   const [timeOffReqs, setTimeOffReqs,timeOffLoaded]= usePersistentState("shift_timeoff",[]);
   const [afExclude,   setAfExclude,  afExcLoaded]  = usePersistentState("shift_af_exclude",[]);
   const [swingDesig,  setSwingDesig, swingDesigLoaded] = usePersistentState("shift_swing_desig", {});
+  const [handoffs,    setHandoffs]   = useState([]);
   const [empPatterns, setEmpPatterns, patternsLoaded] = usePersistentState("shift_patterns",{});
   const [weekStart,   setWeekStart,  weekLoaded]  = usePersistentState("shift_week_start", (() => {
     const now = new Date();
@@ -15135,7 +15135,7 @@ function ShiftSchedulerApp() {
       weekStart, setWeekStart: (ws) => { setWeekStart(ws); setWeekStartApp(ws); },
       scheduleStale, setScheduleStale,
       empTimeOffDays,
-      handoffs,
+      handoffs, setHandoffs,
     }}>
     <HistoryCtx.Provider value={{
       history, setHistory,
