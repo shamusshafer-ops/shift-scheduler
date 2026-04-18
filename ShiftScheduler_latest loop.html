@@ -4017,7 +4017,7 @@ function ConfirmDialogProvider({ children }) {
 
 function ExcelPreviewModal({ onDownload, onClose }) {
   const { employees } = useRoster();
-  const { schedule, extShifts, trainingBlocks, weekStart } = useSchedule();
+  const { schedule, extShifts, trainingBlocks, weekStart, handoffs } = useSchedule();
   const { timeOffReqs } = useTimeOff();
   const t = useTheme();
 
@@ -4054,24 +4054,27 @@ function ExcelPreviewModal({ onDownload, onClose }) {
       const asgn = (schedule[cellKey(day, shift.id)] || []).find(a => a.employeeId === emp.id);
       if (asgn) result.push({ sid: shift.id, pos: asgn.position });
     }
+    const ho = (handoffs||[]).find(h => h.day === day && h.employeeId === emp.id);
+    const hoSuffix = ho ? (ho.type === "late-stay" ? " +LS" : " +EA") : "";
     const extDay = (extShifts || []).filter(e => e.day === day);
     const extAsA = extDay.find(e => e.empAId === emp.id);
     const extAsB = extDay.find(e => e.empBId === emp.id);
     if (extAsA) {
       const pair = EXT_PAIRS.find(p => p.id === extAsA.pairId);
       const label = pair ? pair.label : "Ext";
-      return { text: label, kind: pair && (pair.startHour ?? 6) < 12 ? "splitDay" : "splitNight" };
+      return { text: label + hoSuffix, kind: pair && (pair.startHour ?? 6) < 12 ? "splitDay" : "splitNight" };
     }
     if (extAsB) {
       const pair = EXT_PAIRS.find(p => p.id === extAsB.pairId);
       const label = pair ? pair.label : "Ext";
-      return { text: label, kind: pair && (pair.startHourB ?? pair.startHour ?? 18) < 12 ? "splitDay" : "splitNight" };
+      return { text: label + hoSuffix, kind: pair && (pair.startHourB ?? pair.startHour ?? 18) < 12 ? "splitDay" : "splitNight" };
     }
     const trnDay = (trainingBlocks||[]).filter(t => t.empId === emp.id && t.day === day);
     const trnSuffix = trnDay.length > 0
       ? " +" + trnDay.map(t => { const fh=h=>`${h%12||12}${h<12?"A":"P"}`; return `TRN ${fh(t.startHour)}-${fh((t.startHour+t.durationHours)%24)}`; }).join(",")
       : "";
     if (!result.length) {
+      if (hoSuffix) return { text: hoSuffix.trim(), kind: "splitNight" };
       if (trnSuffix) return { text: trnSuffix.trim().replace(/^\+/,""), kind:"training" };
       return { text:"X", kind:"absent" };
     }
@@ -4079,7 +4082,7 @@ function ExcelPreviewModal({ onDownload, onClose }) {
     if (result.length === 1 && result[0].pos === "Off") return { text:"Off"+trnSuffix, kind:"pto" };
     if (result.length === 2) {
       const nums = result.map(r=>({first:"1",second:"2",third:"3"}[r.sid])).join("+");
-      return { text:nums+trnSuffix, kind:"multi" };
+      return { text:nums+hoSuffix+trnSuffix, kind:"multi" };
     }
     const { sid, pos } = result[0];
     const num = {first:"1",second:"2",third:"3"}[sid];
@@ -4088,7 +4091,6 @@ function ExcelPreviewModal({ onDownload, onClose }) {
       const e = employees.find(x => x.id === a.employeeId);
       return a.position === "Scale" || (e && (e.qualifications||[]).includes("Scale"));
     }).length;
-    // Supervisor counts as Medical-qualified for the purposes of the "-Med" annotation only
     const medOnShift = shiftAsgn.filter(a => {
       const e = employees.find(x => x.id === a.employeeId);
       return a.position === "Medical" || a.position === "Supervisor"
@@ -4096,7 +4098,7 @@ function ExcelPreviewModal({ onDownload, onClose }) {
     }).length;
     const suffix = pos==="Scale" && scaleOnShift > 1 ? "-Scale"
                  : pos==="Medical" && medOnShift > 1 ? "-Med" : "";
-    return { text:num+suffix+trnSuffix, kind:sid };
+    return { text:num+suffix+hoSuffix+trnSuffix, kind:sid };
   };
 
   const primaryShift = (emp) => {
@@ -4355,18 +4357,21 @@ async function exportToExcel(employees, schedule, extShifts, weekStart, training
       const asgn = (schedule[cellKey(day, shift.id)] || []).find(a => a.employeeId === emp.id);
       if (asgn) result.push({ sid: shift.id, pos: asgn.position });
     }
+    // Handoff annotation — computed early so all return paths can include it
+    const ho = (handoffs||[]).find(h => h.day === day && h.employeeId === emp.id);
+    const hoSuffix = ho ? (ho.type === "late-stay" ? " +LS" : " +EA") : "";
     const extDay = (extShifts || []).filter(e => e.day === day);
     const extAsA = extDay.find(e => e.empAId === emp.id);
     const extAsB = extDay.find(e => e.empBId === emp.id);
     if (extAsA) {
       const pair = EXT_PAIRS.find(p => p.id === extAsA.pairId);
       const label = pair ? pair.label : "Ext";
-      return { text: label, kind: pair && (pair.startHour ?? 6) < 12 ? "splitDay" : "splitNight" };
+      return { text: label + hoSuffix, kind: pair && (pair.startHour ?? 6) < 12 ? "splitDay" : "splitNight" };
     }
     if (extAsB) {
       const pair = EXT_PAIRS.find(p => p.id === extAsB.pairId);
       const label = pair ? pair.label : "Ext";
-      return { text: label, kind: pair && (pair.startHourB ?? pair.startHour ?? 18) < 12 ? "splitDay" : "splitNight" };
+      return { text: label + hoSuffix, kind: pair && (pair.startHourB ?? pair.startHour ?? 18) < 12 ? "splitDay" : "splitNight" };
     }
     // Training block annotation: append TRN label to existing shift text
     const trnDay = (trainingBlocks||[]).filter(t => t.empId === emp.id && t.day === day);
@@ -4374,15 +4379,15 @@ async function exportToExcel(employees, schedule, extShifts, weekStart, training
       ? " +" + trnDay.map(t => { const fh=h=>`${h%12||12}${h<12?"A":"P"}`; return `TRN ${fh(t.startHour)}-${fh((t.startHour+t.durationHours)%24)}`; }).join(",")
       : "";
     if (!result.length) {
+      if (hoSuffix) return { text: hoSuffix.trim(), kind: "splitNight" };
       if (trnSuffix) return { text: trnSuffix.trim().replace(/^\+/,""), kind:"training" };
-      // Not scheduled (including hard unavailableDays blocks) → X
       return { text:"X", kind:"absent" };
     }
     if (result.length === 1 && result[0].pos === "PTO") return { text:"Vac"+trnSuffix, kind:"pto" };
     if (result.length === 1 && result[0].pos === "Off") return { text:"Off"+trnSuffix, kind:"pto" };
     if (result.length === 2) {
       const nums = result.map(r => ({ first:"1",second:"2",third:"3" }[r.sid])).join("+");
-      return { text:nums+trnSuffix, kind:"multi" };
+      return { text:nums+hoSuffix+trnSuffix, kind:"multi" };
     }
     const { sid, pos } = result[0];
     const num = { first:"1", second:"2", third:"3" }[sid];
@@ -4391,7 +4396,6 @@ async function exportToExcel(employees, schedule, extShifts, weekStart, training
       const e = employees.find(x => x.id === a.employeeId);
       return a.position === "Scale" || (e && (e.qualifications||[]).includes("Scale"));
     }).length;
-    // Supervisor counts as Medical-qualified for the purposes of the "-Med" annotation only
     const medOnShift = shiftAsgn.filter(a => {
       const e = employees.find(x => x.id === a.employeeId);
       return a.position === "Medical" || a.position === "Supervisor"
@@ -4399,9 +4403,6 @@ async function exportToExcel(employees, schedule, extShifts, weekStart, training
     }).length;
     const suffix = pos==="Scale" && scaleOnShift > 1 ? "-Scale"
                  : pos==="Medical" && medOnShift > 1 ? "-Med" : "";
-    // Handoff annotation: late-stay or early-arrival from this employee on this day
-    const ho = (handoffs||[]).find(h => h.day === day && h.employeeId === emp.id);
-    const hoSuffix = ho ? (ho.type === "late-stay" ? " +LS" : " +EA") : "";
     return { text: num+suffix+hoSuffix+trnSuffix, kind: sid };
   };
 
@@ -4506,7 +4507,7 @@ async function exportToExcel(employees, schedule, extShifts, weekStart, training
 
   let prevGroup = null;
   for (const emp of sortedEmps) {
-    const hours   = calcHours(emp.id, schedule, extShifts);
+    const hours   = calcHours(emp.id, schedule, extShifts, handoffs);
     const isFT    = emp.employmentType === "full-time";
     const rowBg   = rowBgFor(emp);
     const curGroup = primaryShift(emp);
@@ -4552,7 +4553,7 @@ async function exportToExcel(employees, schedule, extShifts, weekStart, training
   r2 += `</Row>`;
 
   sortedEmps.forEach((emp, ri) => {
-    const hrs   = calcHours(emp.id, schedule, extShifts);
+    const hrs   = calcHours(emp.id, schedule, extShifts, handoffs);
     const isFT  = emp.employmentType === "full-time";
     const bg    = ri % 2 === 0 ? "FFFFFF" : "DCE6F1";
     const status = hrs > 40 ? `OT +${hrs-40}h` : (isFT && hrs < 40) ? `! ${hrs}/40h` : `${hrs}h`;
@@ -4570,7 +4571,7 @@ async function exportToExcel(employees, schedule, extShifts, weekStart, training
     r2 += `</Row>`;
   });
 
-  const totalHrs = sortedEmps.reduce((s,e) => s + calcHours(e.id, schedule, extShifts), 0);
+  const totalHrs = sortedEmps.reduce((s,e) => s + calcHours(e.id, schedule, extShifts, handoffs), 0);
   r2 += `<Row ss:Height="18">`;
   ["TOTAL","","",totalHrs/SHIFT_HOURS,totalHrs,"",""].forEach((v,i) => {
     r2 += cell(v, S.s2Total(), i===3||i===4 ? { type:"Number" } : {});
@@ -9500,7 +9501,7 @@ function CoverageDashboard({ navigateToWeek }) {
 
 function SchedulePopout({ onClose }) {
   const { employees } = useRoster();
-  const { schedule, extShifts, weekStart } = useSchedule();
+  const { schedule, extShifts, weekStart, handoffs } = useSchedule();
   const t = useTheme();
   const [pos,  setPos]  = useState({ x: 40, y: 60 });
   const [size, setSize] = useState({ w: 960, h: 520 });
@@ -9635,6 +9636,20 @@ function SchedulePopout({ onClose }) {
                           <span style={{flex:1,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap",
                             fontWeight:600,fontSize:10,color:ec}}>{extEmp.name}</span>
                           <span style={{fontSize:8,color:ec,fontWeight:700,flexShrink:0}}>12H</span>
+                        </div>
+                      );
+                    })}
+                    {(handoffs||[]).filter(h=>h.day===day&&h.targetShiftId===shift.id).map((h,hi)=>{
+                      const hoEmp=employees.find(e=>e.id===h.employeeId);
+                      if(!hoEmp) return null;
+                      const lbl=h.type==="late-stay"?"LS":"EA";
+                      return (
+                        <div key={"ho"+hi} style={{display:"flex",alignItems:"center",gap:4,
+                          background:"#6366f112",border:"1px dashed #6366f160",borderRadius:3,padding:"3px 5px"}}>
+                          <span style={{fontSize:8,flexShrink:0,color:"#6366f1"}}>+{HANDOFF_HOURS}h</span>
+                          <span style={{flex:1,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap",
+                            fontWeight:600,fontSize:10,color:"#6366f1"}}>{hoEmp.name}</span>
+                          <span style={{fontSize:8,color:"#6366f1",fontWeight:700,flexShrink:0}}>{lbl}</span>
                         </div>
                       );
                     })}
@@ -10871,10 +10886,18 @@ function ScheduleGrid({ onOpenTestModal }) {
               if (alreadyOnCoveredSlot(emp.id)) return false;
               if (!reactiveExtOk(emp)) return false;
               if (hasExtOnSlot(emp.id, pair, day)) return false;
+              const curH = hourTracker[emp.id] || 0;
+              if (emp.employmentType === "full-time" && curH >= 48 && !emp.willing16h) return false;
               return canWorkExtHalf(emp, pair.id, 0); // checks swingEligible[]
             });
             const swingDesigId = (swingDesig || {})[pair.id];
             if (swingDesigId) swingCandidates.sort((a, b) => (b.id === swingDesigId ? 1 : 0) - (a.id === swingDesigId ? 1 : 0));
+            // Sort by hours ascending — prefer employees with fewer hours
+            swingCandidates.sort((a, b) => {
+              if (swingDesigId && a.id === swingDesigId) return -1;
+              if (swingDesigId && b.id === swingDesigId) return 1;
+              return (hourTracker[a.id] || 0) - (hourTracker[b.id] || 0);
+            });
             if (!swingCandidates.length) return;
             const empA = swingCandidates[0];
             autoExtShifts.push({ pairId: pair.id, day, empAId: empA.id, empBId: null,
@@ -15112,6 +15135,7 @@ function ShiftSchedulerApp() {
       weekStart, setWeekStart: (ws) => { setWeekStart(ws); setWeekStartApp(ws); },
       scheduleStale, setScheduleStale,
       empTimeOffDays,
+      handoffs,
     }}>
     <HistoryCtx.Provider value={{
       history, setHistory,
