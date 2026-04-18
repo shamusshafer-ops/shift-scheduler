@@ -10870,55 +10870,11 @@ function ScheduleGrid({ onOpenTestModal }) {
         EXT_PAIRS.forEach(pair => {
           if (usedExtPairs.has(day + "__" + pair.id)) return;
 
-          // ── Swing shifts: single-employee, trigger on headcount gap ──────────
-          // Only deploy if adding 1 body would bring a covered shift to within 1
-          // of its minimum — don't deploy if the deficit is too large for a single
-          // swing to meaningfully help.
-          if (pair.isSwing) {
-            const gapInfo = pair.covers.map(shiftId => {
-              const asgn = ns[cellKey(day, shiftId)] || [];
-              const bodies = asgn.filter(a => !(source.find(x => x.id === a.employeeId)?.inTraining)).length;
-              return { shiftId, bodies, need: REGULAR_SLOTS(day, shiftId), deficit: REGULAR_SLOTS(day, shiftId) - bodies };
-            });
-            const hasGap = gapInfo.some(g => g.deficit > 0);
-            if (!hasGap) return;
-            // Skip if ALL covered shifts have deficit >= 2 — one swing body can't
-            // bring any shift to minimum, so the gap needs a different strategy.
-            const wouldHelp = gapInfo.some(g => g.deficit === 1);
-            if (!wouldHelp) return;
-            // Exclude employees already scheduled on any slot this swing covers —
-            // otherwise we'd double-count them (regular body + phantom ext body).
-            const alreadyOnCoveredSlot = (empId) => pair.covers.some(shiftId =>
-              (ns[cellKey(day, shiftId)] || []).some(a => a.employeeId === empId)
-            );
-            const swingCandidates = source.filter(emp => {
-              if ((emp.unavailableDays || []).includes(day)) return false;
-              if (emp.maxShiftsPerWeek !== null && (shiftsWorked[emp.id]||0) >= emp.maxShiftsPerWeek) return false;
-              if (alreadyOnCoveredSlot(emp.id)) return false;
-              if (!reactiveExtOk(emp)) return false;
-              if (hasExtOnSlot(emp.id, pair, day)) return false;
-              const curH = hourTracker[emp.id] || 0;
-              if (emp.employmentType === "full-time" && curH >= 48 && !emp.willing16h) return false;
-              return canWorkExtHalf(emp, pair.id, 0); // checks swingEligible[]
-            });
-            const swingDesigId = (swingDesig || {})[pair.id];
-            if (swingDesigId) swingCandidates.sort((a, b) => (b.id === swingDesigId ? 1 : 0) - (a.id === swingDesigId ? 1 : 0));
-            // Sort by hours ascending — prefer employees with fewer hours
-            swingCandidates.sort((a, b) => {
-              if (swingDesigId && a.id === swingDesigId) return -1;
-              if (swingDesigId && b.id === swingDesigId) return 1;
-              return (hourTracker[a.id] || 0) - (hourTracker[b.id] || 0);
-            });
-            if (!swingCandidates.length) return;
-            const empA = swingCandidates[0];
-            autoExtShifts.push({ pairId: pair.id, day, empAId: empA.id, empBId: null,
-              roles: ["Scale","Medical"].filter(r => empA.qualifications.includes(r)),
-              approvedAt: "auto-fill", auto: true });
-            reactiveExtCount[empA.id] = (reactiveExtCount[empA.id] || 0) + 1;
-            markExtSlots(empA.id, pair, day);
-            usedExtPairs.add(day + "__" + pair.id);
-            return;
-          }
+          // Swing shifts are not auto-deployed. They're single-person by
+          // current data model, which creates uncovered half-windows. Deploy
+          // them manually via the ext shift UI when needed. Phase 2 will
+          // restructure swings into true 2-person pairs.
+          if (pair.isSwing) return;
 
           // ── Standard 12-hr pairs: two employees, trigger on Scale/Medical gap ─
           const neededRoles = [];
