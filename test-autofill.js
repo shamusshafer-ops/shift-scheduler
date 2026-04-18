@@ -313,31 +313,7 @@ function runReactiveExtLoop(ns, source, proactiveExts, shiftsWorked) {
     EXT_PAIRS.forEach(pair => {
       if (usedExtPairs.has(day + '__' + pair.id)) return;
 
-      if (pair.isSwing) {
-        const hasGap = pair.covers.some(shiftId => {
-          const asgn = ns[cellKey(day, shiftId)] || [];
-          const bodies = asgn.filter(a => !(source.find(x => x.id === a.employeeId)?.inTraining)).length;
-          return bodies < REGULAR_SLOTS(day, shiftId);
-        });
-        if (!hasGap) return;
-        const alreadyOnCoveredSlot = (empId) => pair.covers.some(shiftId =>
-          (ns[cellKey(day, shiftId)] || []).some(a => a.employeeId === empId));
-        const cands = source.filter(emp => {
-          if ((emp.unavailableDays || []).includes(day)) return false;
-          if (emp.maxShiftsPerWeek != null && (shiftsWorked[emp.id] || 0) >= emp.maxShiftsPerWeek) return false;
-          if (alreadyOnCoveredSlot(emp.id)) return false;
-          return canWorkExtHalf(emp, pair.id, 0);
-        });
-        if (!cands.length) return;
-        const empA = cands[0];
-        autoExtShifts.push({
-          pairId: pair.id, day, empAId: empA.id, empBId: null,
-          roles: ['Scale','Medical'].filter(r => empA.qualifications.includes(r)),
-          approvedAt: 'auto-fill', auto: true,
-        });
-        usedExtPairs.add(day + '__' + pair.id);
-        return;
-      }
+      if (pair.isSwing) return;
 
       // Standard 12-hr pair
       const neededRoles = [];

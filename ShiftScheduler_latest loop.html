@@ -501,6 +501,7 @@ const EXT_SHIFT_HOURS = 12;
 const EXT_PAIRS = [
   {
     id: "day",   label: "Day 12hr",   time: "0600 – 1800",
+    timeA: "0600–1800", timeB: "1800–0600",
     covers: ["first","second"],  // empA (0600–1800) overlaps 1st+2nd
     coversB: ["second","third"], // empB (1800–0600) overlaps 2nd+3rd
     color: "#7c3aed",            // purple
@@ -508,18 +509,25 @@ const EXT_PAIRS = [
   },
   {
     id: "night", label: "Night 12hr", time: "1800 – 0600",
+    timeA: "1800–0600", timeB: "0600–1800",
     covers: ["second","third"],  // empA (1800–0600) overlaps 2nd+3rd
     coversB: ["first","second"], // empB (0600–1800) overlaps 1st+2nd
     color: "#0e7490",            // teal
     startHour: 18,               // 1800
   },
-  // Swing shifts — single-person 12hr blocks used as coverage tools
+  // Swing shifts — swingEligible-gated 12hr blocks used as coverage tools
+  // swing-10a-10p is a 2-person pair: empA 1000–2200 (covers end of 1st + 2nd),
+  // empB 2200–1000+1d (covers 3rd of day D + start of 1st on day D+1).
   {
-    id: "swing-10a-10p", label: "10A–10P", time: "1000 – 2200",
-    covers: ["second"],          // primarily covers 2nd shift (Sat gap filler)
+    id: "swing-10a-10p", label: "10A–10P / 10P–10A", time: "1000 – 1000 (+1d)",
+    timeA: "1000–2200", timeB: "2200–1000 (+1d)",
+    covers: ["first","second"],  // empA (1000–2200) overlaps end of 1st + all of 2nd
+    coversB: ["third"],          // empB (2200–1000+1d) covers 3rd of day D
+    crossDayB: "first",          // empB crosses into 1st of day D+1
     color: "#b45309",            // amber
     isSwing: true,
-    startHour: 10,               // 1000
+    startHour: 10,               // empA starts 1000 on stored day
+    startHourB: 22,              // empB starts 2200 on stored day (crosses midnight)
   },
   {
     id: "swing-10p-10a", label: "10P–10A", time: "2200 – 1000",
@@ -545,6 +553,7 @@ const EXT_PAIRS = [
   // Split pair — TWO employees: empA works 1400–0200 (2nd+half 3rd), empB works 0200–1400 (half 3rd + next day's 1st)
   {
     id: "split", label: "Split 2pm\u20132am/2am\u20132pm", time: "1400 \u2013 1400 (+1d)",
+    timeA: "1400\u20130200", timeB: "0200\u20131400 (+1d)",
     covers: ["second","third"],  // empA (1400–0200) overlaps 2nd+3rd of day D
     coversB: ["third"],          // empB (0200–1400) overlaps 3rd of day D; crossDayB handles 1st of day D+1
     crossDayB: "first",          // empB also covers this shift on the NEXT day
@@ -565,7 +574,8 @@ const extCovers = (ext, day, shiftId) => {
   const pair = EXT_PAIRS.find(p => p.id === ext.pairId);
   if (!pair) return false;
   if (ext.day === day && pair.covers.includes(shiftId)) return true;
-  // Split pair: empB also covers the first shift of the next calendar day
+  if (ext.day === day && (pair.coversB || []).includes(shiftId)) return true;
+  // crossDayB: empB also covers this shift on the NEXT day (split / 2-person swings)
   if (pair.crossDayB && pair.crossDayB === shiftId) {
     const nextDay = DAYS[(DAYS.indexOf(ext.day) + 1) % 7];
     if (nextDay === day) return true;
@@ -676,12 +686,24 @@ const getEffectiveSlotCount = (d, s, extShifts) => {
     if (!pair) return n;
     if (pair.covers.includes(s) && ext.day === d) {
       const idx = pair.covers.indexOf(s);
-      const hasBody = pair.isSwing
-        ? !!ext.empAId
-        : (idx === 0 ? !!ext.empAId : idx === 1 ? !!ext.empBId : false);
+      const singleSwing = pair.isSwing && !pair.coversB;
+      let hasBody;
+      if (singleSwing) {
+        hasBody = !!ext.empAId;
+      } else if (pair.coversB && !pair.coversB.includes(s)) {
+        // empA-exclusive cell (empB covers elsewhere via coversB)
+        hasBody = !!ext.empAId;
+      } else {
+        // idx-based: empA on covers[0], empB on covers[1] (classic day/night/split)
+        hasBody = idx === 0 ? !!ext.empAId : idx === 1 ? !!ext.empBId : false;
+      }
       return n + (hasBody ? 1 : 0);
     }
-    // Split cross-day: empB covers next day's first shift
+    // empB-exclusive same-day cells (e.g., swing-10a-10p empB covers 3rd)
+    if ((pair.coversB || []).includes(s) && !pair.covers.includes(s) && ext.day === d && ext.empBId) {
+      return n + 1;
+    }
+    // crossDayB: empB covers next day's shift (split / 2-person swings)
     if (pair.crossDayB === s && ext.empBId) {
       const nextDay = DAYS[(DAYS.indexOf(ext.day) + 1) % 7];
       if (nextDay === d) return n + 1;
@@ -766,9 +788,11 @@ function computeWeekStats(schedule, employees, extShiftsArg) {
       const regIds = new Set(asgn.map(a => a.employeeId));
       const extFilled  = cellExt.reduce((n, e) => {
         const p = EXT_PAIRS.find(pp => pp.id === e.pairId);
-        const cf = p?.covers[0] === shift.id;
-        const aOn = p?.isSwing ? !!e.empAId : cf && !!e.empAId;
-        const bOn = !p?.isSwing && !cf && !!e.empBId;
+        const singleSwing = p?.isSwing && !p?.coversB;
+        const aCovers = p?.covers?.includes(shift.id);
+        const bCovers = p?.coversB?.includes(shift.id);
+        const aOn = singleSwing ? !!e.empAId : (aCovers && !bCovers && !!e.empAId);
+        const bOn = !singleSwing && bCovers && !!e.empBId;
         let c = 0;
         if (aOn && !regIds.has(e.empAId)) c++;
         if (bOn && !regIds.has(e.empBId)) c++;
@@ -892,10 +916,10 @@ function usePersistentState(key, fallback) {
 // ── Hours calculator ──────────────────────────────────────────────────────────
 // Returns the hours credited to empA (isEmpA=true) or empB (isEmpA=false) for a given pair.
 // Each participant works a full EXT_SHIFT_HOURS (12h) block independently.
-// Swing shifts are single-employee; empB is never set on a swing.
+// Single-person swings (isSwing && !coversB) only credit empA; 2-person pairs credit both.
 // Double-counting with the regular schedule is handled by the deduplication in calcHours.
 function extEmpHours(pair, isEmpA) {
-  if (pair.isSwing) return isEmpA ? EXT_SHIFT_HOURS : 0;
+  if (pair.isSwing && !pair.coversB) return isEmpA ? EXT_SHIFT_HOURS : 0;
   return EXT_SHIFT_HOURS;
 }
 
@@ -1370,7 +1394,7 @@ function deployProactiveExtShifts(sourceEmps, cfg, empTimeOffDays, existingExtSh
         let found = false;
         for (const pair of EXT_PAIRS) {
           if (found) break;
-          if (pair.isSwing) continue;      // swing shifts handled by existing reactive code
+          if (pair.isSwing) continue;      // all swings: manual deploy only (Phase 1+2 stability)
           if (pair.id === "split") continue; // split pairs have complex cross-day logic
 
           // Which side of this pair covers the target shift?
@@ -2194,17 +2218,29 @@ function buildAutoFill(sourceEmps, cfg, empTimeOffDays, empPatterns, extShiftsAr
       activeExts.forEach(ext => {
         const pair = EXT_PAIRS.find(p => p.id === ext.pairId);
         if (!pair) return;
-        const idx = pair.covers.indexOf(shiftId);
-        if (idx === 0 && ext.empAId) blocked.add(ext.empAId);
-        if (idx === 1 && ext.empBId) blocked.add(ext.empBId);
-        if (pair.crossDayB === shiftId && ext.empBId) {
-          const nextDay = DAYS[(DAYS.indexOf(ext.day) + 1) % 7];
-          if (nextDay === day) blocked.add(ext.empBId);
+        const onNextDay = ext.day !== day;
+        const aCoversThis = !onNextDay && (pair.covers||[]).includes(shiftId);
+        const bCoversThis = (!onNextDay && (pair.coversB||[]).includes(shiftId))
+          || (onNextDay && pair.crossDayB === shiftId);
+        const singleSwing = pair.isSwing && !pair.coversB;
+        // Block employees who are physically on this slot via the ext shift
+        // (prevents double-booking them as regular bodies on the same cell).
+        if (singleSwing) {
+          if (aCoversThis && ext.empAId) blocked.add(ext.empAId);
+        } else {
+          if (aCoversThis && ext.empAId) blocked.add(ext.empAId);
+          if (bCoversThis && ext.empBId) blocked.add(ext.empBId);
         }
-        const presentId = idx === 0 ? ext.empAId : idx === 1 ? ext.empBId : null;
-        const presentEmp = presentId ? empMap.get(presentId) : null;
-        const roles = presentEmp
-          ? ["Scale","Medical"].filter(r => presentEmp.qualifications.includes(r))
+        // Role coverage: collect from whichever employees are physically on this cell.
+        const presentEmps = [];
+        if (singleSwing) {
+          if (aCoversThis && ext.empAId) presentEmps.push(empMap.get(ext.empAId));
+        } else {
+          if (aCoversThis && ext.empAId) presentEmps.push(empMap.get(ext.empAId));
+          if (bCoversThis && ext.empBId) presentEmps.push(empMap.get(ext.empBId));
+        }
+        const roles = presentEmps.length
+          ? [...new Set(presentEmps.flatMap(e => e ? ["Scale","Medical"].filter(r => e.qualifications.includes(r)) : []))]
           : (ext.roles||[]);
         if (roles.includes("Scale")) hasScale = true;
         if (roles.includes("Medical")) hasMedical = true;
@@ -5722,7 +5758,11 @@ function ManualPairModal({ initialDay, onApprove, onCancel }) {
   const [mode,    setMode]    = useState("suggest");
 
   const pair = EXT_PAIRS.find(p => p.id === pairId);
-  const isSwing = pair?.isSwing || false;
+  // 2-person swings (with coversB) go through the regular pair-pick flow;
+  // only single-person swings use the swing-specific single-employee UI.
+  const isSwing = !!(pair?.isSwing && !pair?.coversB);
+  const slotA = pair?.timeA || (pairId==="day"?"0600–1800":pairId==="split"?"1400–0200":"1800–0600");
+  const slotB = pair?.timeB || (pairId==="day"?"1800–0600":pairId==="split"?"0200–1400 (+1d)":"0600–1800");
 
   const alreadyExists = (extShifts||[]).some(e => e.day === day && e.pairId === pairId);
 
@@ -5919,11 +5959,11 @@ function ManualPairModal({ initialDay, onApprove, onCancel }) {
                       {!isSwing&&<div style={{display:"flex",gap:8,fontSize:10,color:"var(--ss-text-dim)",flexWrap:"wrap"}}>
                         <span>
                           <span style={{fontWeight:600,color:"var(--ss-text)"}}>{a.name.split(" ")[0]}:</span>
-                          {" "}{pairId==="day"?"0600–1800":pairId==="split"?"1400–0200":"1800–0600"}
+                          {" "}{slotA}
                         </span>
                         <span>
                           <span style={{fontWeight:600,color:"var(--ss-text)"}}>{b?.name.split(" ")[0]}:</span>
-                          {" "}{pairId==="day"?"1800–0600":pairId==="split"?"0200–1400 (+1d)":"0600–1800"}
+                          {" "}{slotB}
                         </span>
                         <span style={{marginLeft:"auto",display:"flex",gap:4,alignItems:"center"}}>
                           Combined:{" "}
@@ -5944,7 +5984,7 @@ function ManualPairModal({ initialDay, onApprove, onCancel }) {
             <div>
               <label style={{display:"block",fontSize:10,color:"var(--ss-text-dim)",fontWeight:700,
                 letterSpacing:".06em",marginBottom:6}}>
-                {isSwing ? "EMPLOYEE" : `EMPLOYEE A — ${pairId==="day"?"0600–1800":pairId==="split"?"1400–0200":"1800–0600"}`}
+                {isSwing ? "EMPLOYEE" : `EMPLOYEE A — ${slotA}`}
               </label>
               <select value={empAId} onChange={e=>setEmpAId(e.target.value)} style={iS}>
                 <option value="">— select —</option>
@@ -5955,13 +5995,13 @@ function ManualPairModal({ initialDay, onApprove, onCancel }) {
                 ))}
               </select>
               {empAConflict&&<div style={{fontSize:10,color:"var(--ss-warning)",fontWeight:700,marginTop:4}}>⚠ {empAConflict}</div>}
-              <EmpRow emp={empA} slot={isSwing ? pair?.time : pairId==="day"?"0600–1800":pairId==="split"?"1400–0200":"1800–0600"}/>
+              <EmpRow emp={empA} slot={isSwing ? pair?.time : slotA}/>
             </div>
             {!isSwing && (
               <div>
                 <label style={{display:"block",fontSize:10,color:"var(--ss-text-dim)",fontWeight:700,
                   letterSpacing:".06em",marginBottom:6}}>
-                  EMPLOYEE B — {pairId==="day"?"1800–0600":pairId==="split"?"0200–1400 (+1d)":"0600–1800"}
+                  EMPLOYEE B — {slotB}
                 </label>
                 <select value={empBId} onChange={e=>setEmpBId(e.target.value)} style={iS}>
                   <option value="">— select —</option>
@@ -5972,7 +6012,7 @@ function ManualPairModal({ initialDay, onApprove, onCancel }) {
                   ))}
                 </select>
                 {empBConflict&&<div style={{fontSize:10,color:"var(--ss-warning)",fontWeight:700,marginTop:4}}>⚠ {empBConflict}</div>}
-                <EmpRow emp={empB} slot={pairId==="day"?"1800–0600":pairId==="split"?"0200–1400 (+1d)":"0600–1800"}/>
+                <EmpRow emp={empB} slot={slotB}/>
               </div>
             )}
           </div>
@@ -6000,12 +6040,12 @@ function ManualPairModal({ initialDay, onApprove, onCancel }) {
               <div style={{flex:1,background:"#7c3aed30",borderRight:"2px solid #7c3aed",
                 display:"flex",alignItems:"center",justifyContent:"center",fontSize:9,
                 fontWeight:700,color:"#7c3aed"}}>
-                {employees.find(e=>e.id===empAId)?.name.split(" ")[0]} · {pairId==="day"?"0600–1800":pairId==="split"?"1400–0200":"1800–0600"}
+                {employees.find(e=>e.id===empAId)?.name.split(" ")[0]} · {slotA}
               </div>
               <div style={{flex:1,background:"#0e749018",
                 display:"flex",alignItems:"center",justifyContent:"center",fontSize:9,
                 fontWeight:700,color:"#0e7490"}}>
-                {employees.find(e=>e.id===empBId)?.name.split(" ")[0]} · {pairId==="day"?"1800–0600":pairId==="split"?"0200–1400 (+1d)":"0600–1800"}
+                {employees.find(e=>e.id===empBId)?.name.split(" ")[0]} · {slotB}
               </div>
             </div>
           </div>
@@ -8468,9 +8508,11 @@ function CoverageDashboard({ navigateToWeek }) {
         const regIds = new Set(asgn.map(a => a.employeeId));
         const extFilled  = cellExt.reduce((n, e) => {
           const pair = EXT_PAIRS.find(p => p.id === e.pairId);
-          const cf = pair?.covers[0] === shift.id;
-          const aOnThis = pair?.isSwing ? !!e.empAId : cf && !!e.empAId;
-          const bOnThis = !pair?.isSwing && !cf && !!e.empBId;
+          const singleSwing = pair?.isSwing && !pair?.coversB;
+          const aCovers = pair?.covers?.includes(shift.id);
+          const bCovers = pair?.coversB?.includes(shift.id);
+          const aOnThis = singleSwing ? !!e.empAId : (aCovers && !bCovers && !!e.empAId);
+          const bOnThis = !singleSwing && bCovers && !!e.empBId;
           let c = 0;
           if (aOnThis && !regIds.has(e.empAId)) c++;
           if (bOnThis && !regIds.has(e.empBId)) c++;
@@ -9619,17 +9661,19 @@ function SchedulePopout({ onClose }) {
                     })}
                     {cellExt.map((ext,ei)=>{
                       const pair=EXT_PAIRS.find(p=>p.id===ext.pairId);
-                      const cf=pair?.covers[0]===shift.id;
-                      // Only show a pill for the empA cell if empA exists, and only
-                      // for the empB cell if empB exists. Don't fall back to empA
-                      // on the empB cell — that creates a phantom body at a slot
-                      // no one is physically working.
-                      const empId=pair?.isSwing?ext.empAId:cf?ext.empAId:ext.empBId;
+                      const singleSwing=pair?.isSwing&&!pair?.coversB;
+                      const onNextDay=ext.day!==day;
+                      const aCovers=!onNextDay&&(pair?.covers||[]).includes(shift.id);
+                      const bCovers=(!onNextDay&&(pair?.coversB||[]).includes(shift.id))
+                        || (onNextDay&&pair?.crossDayB===shift.id);
+                      const empId=singleSwing
+                        ? ext.empAId
+                        : (bCovers ? ext.empBId : (aCovers ? ext.empAId : null));
                       if(!empId) return null;
                       if(asgn.some(a=>a.employeeId===empId)) return null;
                       const extEmp=employees.find(e=>e.id===empId);
                       if(!extEmp) return null;
-                      const ec=pair?.id==="day"?"#7c3aed":"#0e7490";
+                      const ec=pair?.color||(pair?.id==="day"?"#7c3aed":"#0e7490");
                       return (
                         <div key={"x"+ei} style={{display:"flex",alignItems:"center",gap:4,
                           background:ec+"12",border:"1px dashed "+ec+"60",borderRadius:3,padding:"3px 5px"}}>
@@ -10651,7 +10695,7 @@ function ScheduleGrid({ onOpenTestModal }) {
         const pair = EXT_PAIRS.find(p => p.id === ext.pairId);
         if (!pair || !pair.covers.includes(shiftId)) return;
         const idx = pair.covers.indexOf(shiftId);
-        if (pair.isSwing) {
+        if (pair.isSwing && !pair.coversB) {
           if (ext.empAId && !regIds.has(ext.empAId)) n++;
         } else {
           if (idx === 0 && ext.empAId && !regIds.has(ext.empAId)) n++;
@@ -10870,10 +10914,13 @@ function ScheduleGrid({ onOpenTestModal }) {
         EXT_PAIRS.forEach(pair => {
           if (usedExtPairs.has(day + "__" + pair.id)) return;
 
-          // Swing shifts are not auto-deployed. They're single-person by
-          // current data model, which creates uncovered half-windows. Deploy
-          // them manually via the ext shift UI when needed. Phase 2 will
-          // restructure swings into true 2-person pairs.
+          // All swings deploy manually via the ext shift UI for now.
+          // Single-person swings: data model creates uncovered half-windows.
+          // 2-person swings: reactive pair logic assumes covers[0]=empA-cell,
+          //   covers[1]=empB-cell (true for day/night, false for swing-10a-10p
+          //   where both covers entries are empA's cells). Re-enabling 2p-swing
+          //   auto-deploy requires a separate code path that uses coversB/
+          //   crossDayB for empB's cells.
           if (pair.isSwing) return;
 
           // ── Standard 12-hr pairs: two employees, trigger on Scale/Medical gap ─
@@ -11775,18 +11822,18 @@ function ScheduleGrid({ onOpenTestModal }) {
                         border:"1px solid "+pair.color+"40",padding:"1px 6px",borderRadius:3,flexShrink:0}}>A</span>
                       <span style={{flex:1,fontSize:12,fontWeight:600}}>{getName(ext.empAId)}</span>
                       <span style={{fontSize:10,color:"var(--ss-text-dim)",flexShrink:0}}>
-                        {pair.id==="day"?"0600–1800":pair.id==="split"?"1400–0200":"1800–0600"}
+                        {pair.timeA||(pair.id==="day"?"0600–1800":pair.id==="split"?"1400–0200":"1800–0600")}
                       </span>
                     </div>
                   )}
-                  {!pair.isSwing&&ext.empBId&&(
+                  {(!pair.isSwing||pair.coversB)&&ext.empBId&&(
                     <div style={{display:"flex",alignItems:"center",gap:8,
                       background:"var(--ss-surface-alt)",borderRadius:5,padding:"8px 12px"}}>
                       <span style={{fontSize:9,fontWeight:700,color:"#0e7490",background:"#0e749018",
                         border:"1px solid #0e749040",padding:"1px 6px",borderRadius:3,flexShrink:0}}>B</span>
                       <span style={{flex:1,fontSize:12,fontWeight:600}}>{getName(ext.empBId)}</span>
                       <span style={{fontSize:10,color:"var(--ss-text-dim)",flexShrink:0}}>
-                        {pair.id==="day"?"1800–0600":pair.id==="split"?"0200–1400 (+1d)":"0600–1800"}
+                        {pair.timeB||(pair.id==="day"?"1800–0600":pair.id==="split"?"0200–1400 (+1d)":"0600–1800")}
                       </span>
                     </div>
                   )}
@@ -12171,17 +12218,27 @@ function ScheduleGrid({ onOpenTestModal }) {
 
                     {cellExt.map((ext,ei)=>{
                       const extPair=EXT_PAIRS.find(p=>p.id===ext.pairId);
-                      const coversFirst=extPair?.covers[0]===shift.id;
-                      const coversSecond=extPair?.covers[1]===shift.id;
-                      const empIdForCell=extPair?.isSwing
+                      const singleSwing=extPair?.isSwing&&!extPair?.coversB;
+                      const onNextDay=ext.day!==day;
+                      const aCovers=!onNextDay&&(extPair?.covers||[]).includes(shift.id);
+                      const bCovers=(!onNextDay&&(extPair?.coversB||[]).includes(shift.id))
+                        || (onNextDay&&extPair?.crossDayB===shift.id);
+                      // Pick empA on exclusive-empA cells; empB on any empB cell (overlap or exclusive)
+                      const empIdForCell=singleSwing
                         ? ext.empAId
-                        : coversFirst?ext.empAId:coversSecond?ext.empBId:null;
+                        : (bCovers ? ext.empBId : (aCovers ? ext.empAId : null));
                       if(!empIdForCell) return null;
                       if(asgn.some(a=>a.employeeId===empIdForCell)) return null;
                       const extEmp=employees.find(e=>e.id===empIdForCell);
                       if(!extEmp) return null;
-                      const extColor=extPair?.id==="day"?"#7c3aed":"#0e7490";
-                      const halfLabel=extPair?.isSwing?(extPair.label):(extPair?.id==="day"?(coversFirst?"6A–2P":"2P–6P"):(coversFirst?"6P–2A":"2A–6A"));
+                      const extColor=extPair?.id==="day"?"#7c3aed":extPair?.color||"#0e7490";
+                      const coversFirst=extPair?.covers[0]===shift.id;
+                      const isEmpA=empIdForCell===ext.empAId;
+                      const halfLabel=singleSwing
+                        ? extPair.label
+                        : (extPair?.timeA && extPair?.timeB)
+                          ? (isEmpA ? extPair.timeA : extPair.timeB)
+                          : (extPair?.id==="day"?(coversFirst?"6A–2P":"2P–6P"):(coversFirst?"6P–2A":"2A–6A"));
                       return (
                         <div key={"ext-"+ei+"-"+empIdForCell} style={{display:"flex",alignItems:"center",gap:5,padding:"4px 6px",
                           background:extColor+"12",border:"1px dashed "+extColor+"60",borderRadius:4,fontSize:11}}>
@@ -14998,9 +15055,11 @@ function ShiftSchedulerApp() {
       const regIds=new Set((schedule[cellKey(d,s.id)]||[]).map(a=>a.employeeId));
       const extFilled=(extShifts||[]).filter(e=>extCovers(e,d,s.id)).reduce((n,e)=>{
         const p=EXT_PAIRS.find(pp=>pp.id===e.pairId);
-        const cf=p?.covers[0]===s.id;
-        const aOn=p?.isSwing?!!e.empAId:cf&&!!e.empAId;
-        const bOn=!p?.isSwing&&!cf&&!!e.empBId;
+        const singleSwing=p?.isSwing&&!p?.coversB;
+        const aCovers=p?.covers?.includes(s.id);
+        const bCovers=p?.coversB?.includes(s.id);
+        const aOn=singleSwing?!!e.empAId:(aCovers&&!bCovers&&!!e.empAId);
+        const bOn=!singleSwing&&bCovers&&!!e.empBId;
         let c=0;
         if(aOn&&!regIds.has(e.empAId))c++;
         if(bOn&&!regIds.has(e.empBId))c++;
