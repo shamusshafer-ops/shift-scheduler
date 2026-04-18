@@ -1416,7 +1416,7 @@ function deployProactiveExtShifts(sourceEmps, cfg, empTimeOffDays, existingExtSh
 
           if (!providerCands.length) continue;
 
-          // ── Find candidates for the other half (optional — role not required) ──
+          // ── Find candidates for the other half (REQUIRED — avoid lone half-pair deploys) ──
           const chosenProvider = providerCands[0];
           const otherCands = sourceEmps.filter(e => {
             if (e.inTraining) return false;
@@ -1443,14 +1443,15 @@ function deployProactiveExtShifts(sourceEmps, cfg, empTimeOffDays, existingExtSh
           });
 
           const empOther = otherCands.length ? otherCands[0] : null;
+          // Require a partner — lone half-pair deploys create "early arrival"
+          // or "stay late" ext shifts with no one covering the opposite half.
+          // If no partner is available, skip; reactive deployment may still
+          // solve the role gap with a full pair after the CSP runs.
+          if (!empOther) continue;
 
           // Build empA/empB based on which slot is the provider
-          const empAId = providerSlot === 0 ? chosenProvider.id : (empOther ? empOther.id : null);
-          const empBId = providerSlot === 1 ? chosenProvider.id : (empOther ? empOther.id : null);
-
-          // Must have the provider half filled at minimum
-          if (providerSlot === 0 && !empAId) continue;
-          if (providerSlot === 1 && !empBId) continue;
+          const empAId = providerSlot === 0 ? chosenProvider.id : empOther.id;
+          const empBId = providerSlot === 1 ? chosenProvider.id : empOther.id;
 
           const empA = empAId ? sourceEmps.find(e => e.id === empAId) : null;
           const empB = empBId ? sourceEmps.find(e => e.id === empBId) : null;
@@ -9762,14 +9763,14 @@ function EmpPicker({emp,day,sid,st,assign,getPos,subSource,onSub,onHover}) {
     </button>
   );
   return (
-    <div style={{display:"flex",gap:4,alignItems:"center",background:"var(--ss-surface)",border:"1px solid var(--ss-accent)",borderRadius:3,padding:"3px 6px"}}>
-      <span style={{fontSize:10,fontWeight:600,flex:1}}>{emp.name}</span>
+    <div style={{display:"flex",gap:4,alignItems:"center",background:"var(--ss-surface)",border:"1px solid var(--ss-accent)",borderRadius:3,padding:"3px 6px",minWidth:0}}>
+      <span style={{fontSize:10,fontWeight:600,flex:1,minWidth:0,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{emp.name}</span>
       <select value={sel} onChange={e=>setSel(e.target.value)} style={{background:"var(--ss-surface-alt)",border:"1px solid var(--ss-border)",
-        color:"var(--ss-text)",fontSize:9,padding:"2px 4px",borderRadius:2,fontFamily:"inherit",cursor:"pointer"}}>
+        color:"var(--ss-text)",fontSize:9,padding:"2px 4px",borderRadius:2,fontFamily:"inherit",cursor:"pointer",flexShrink:0}}>
         {pos.map(p=>(<option key={p} value={p}>{p}</option>))}
       </select>
       <button onClick={()=>doAssign(sel)} style={{background:"var(--ss-accent)",border:"none",color:"#fff",
-        fontSize:9,padding:"3px 6px",borderRadius:2,cursor:"pointer",fontWeight:700,fontFamily:"inherit"}}>\u2713</button>
+        fontSize:11,padding:"4px 9px",borderRadius:3,cursor:"pointer",fontWeight:800,fontFamily:"inherit",flexShrink:0}}>\u2713</button>
     </div>
   );
 }
