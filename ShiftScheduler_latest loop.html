@@ -10644,13 +10644,19 @@ function ScheduleGrid({ onOpenTestModal }) {
       allHandoffs.filter(h => h.day === day && h.targetShiftId === shiftId).length;
 
     const extBodyCount = (day, shiftId) => {
+      const regIds = new Set((sched[cellKey(day, shiftId)] || []).map(a => a.employeeId));
       let n = 0;
       (allExts).forEach(ext => {
+        if (ext.day !== day) return;
         const pair = EXT_PAIRS.find(p => p.id === ext.pairId);
-        if (!pair) return;
+        if (!pair || !pair.covers.includes(shiftId)) return;
         const idx = pair.covers.indexOf(shiftId);
-        if (idx === 0 && ext.empAId && ext.day === day) n++;
-        if (idx === 1 && ext.empBId && ext.day === day) n++;
+        if (pair.isSwing) {
+          if (ext.empAId && !regIds.has(ext.empAId)) n++;
+        } else {
+          if (idx === 0 && ext.empAId && !regIds.has(ext.empAId)) n++;
+          if (idx === 1 && ext.empBId && !regIds.has(ext.empBId)) n++;
+        }
       });
       return n;
     };
@@ -10665,16 +10671,14 @@ function ScheduleGrid({ onOpenTestModal }) {
         const asgn = sched[key] || [];
         const extBodies = extBodyCount(day, shift.id);
         const hoHandoffs = handoffBodyCount(day, shift.id);
-        const regCount = asgn.length + extBodies + hoHandoffs;
-        const supCount = asgn.filter(a => a.position === "Supervisor").length;
-        const total = regCount + supCount;
+        const total = asgn.length + extBodies + hoHandoffs;
 
         if (total < totalNeed) {
           const names = asgn.map(a => (rmap[a.employeeId]?.name||"?").split(" ").pop()).join(", ");
           E(`Coverage gap: ${day} ${shift.id} — ${total}/${totalNeed} bodies${names ? " ["+names+"]" : ""}`);
         }
 
-        if (isWd1 && supNeed > 0 && supCount === 0) {
+        if (isWd1 && supNeed > 0 && !asgn.some(a => a.position === "Supervisor")) {
           E(`No supervisor on ${day} 1st shift`);
         }
 
@@ -10867,13 +10871,21 @@ function ScheduleGrid({ onOpenTestModal }) {
           if (usedExtPairs.has(day + "__" + pair.id)) return;
 
           // ── Swing shifts: single-employee, trigger on headcount gap ──────────
+          // Only deploy if adding 1 body would bring a covered shift to within 1
+          // of its minimum — don't deploy if the deficit is too large for a single
+          // swing to meaningfully help.
           if (pair.isSwing) {
-            const hasGap = pair.covers.some(shiftId => {
+            const gapInfo = pair.covers.map(shiftId => {
               const asgn = ns[cellKey(day, shiftId)] || [];
               const bodies = asgn.filter(a => !(source.find(x => x.id === a.employeeId)?.inTraining)).length;
-              return bodies < REGULAR_SLOTS(day, shiftId);
+              return { shiftId, bodies, need: REGULAR_SLOTS(day, shiftId), deficit: REGULAR_SLOTS(day, shiftId) - bodies };
             });
+            const hasGap = gapInfo.some(g => g.deficit > 0);
             if (!hasGap) return;
+            // Skip if ALL covered shifts have deficit >= 2 — one swing body can't
+            // bring any shift to minimum, so the gap needs a different strategy.
+            const wouldHelp = gapInfo.some(g => g.deficit === 1);
+            if (!wouldHelp) return;
             // Exclude employees already scheduled on any slot this swing covers —
             // otherwise we'd double-count them (regular body + phantom ext body).
             const alreadyOnCoveredSlot = (empId) => pair.covers.some(shiftId =>
