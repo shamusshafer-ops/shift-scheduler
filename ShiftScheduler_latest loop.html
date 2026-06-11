@@ -176,6 +176,19 @@ code,.ss-code{font-family:'JetBrains Mono','Fira Code','Courier New',monospace;f
 ::-webkit-scrollbar{width:6px;height:6px}
 ::-webkit-scrollbar-track{background:transparent}
 ::-webkit-scrollbar-thumb{background:var(--ss-border);border-radius:3px}
+::-webkit-scrollbar-thumb:hover{background:var(--ss-text-dim)}
+
+/* ── Quality floor ─────────────────────────────────────────────────────────
+   Tabular numerals: every hours column, time range, and stat lines up in
+   vertical scans of the grid — Inter supports this natively. */
+body{font-variant-numeric:tabular-nums}
+/* Keyboard navigation: visible focus ring on the accent color, mouse clicks
+   unaffected (:focus-visible only fires for keyboard/AT focus). */
+:focus-visible{outline:2px solid var(--ss-accent);outline-offset:1px;border-radius:3px}
+/* Respect OS-level reduced-motion preference. */
+@media (prefers-reduced-motion:reduce){
+  *,*::before,*::after{animation-duration:.01ms!important;animation-iteration-count:1!important;transition-duration:.01ms!important}
+}
 
 /* ── Layout utilities ──────────────────────────────────────────────────── */
 .ss-flex{display:flex}
@@ -472,6 +485,17 @@ async function runSchemaMigrations() {
 
 const DAYS = ["Sunday","Monday","Tuesday","Wednesday","Thursday","Friday","Saturday"];
 const WEEKDAYS = ["Monday","Tuesday","Wednesday","Thursday","Friday"];
+
+// Format a Date as YYYY-MM-DD using LOCAL calendar fields.
+// Never use date.toISOString().slice(0,10) for "what day is it" — toISOString
+// converts to UTC first, so any local time within UTC-offset hours of midnight
+// lands on the wrong calendar day (in Michigan, everything after ~7-8 PM rolls
+// to tomorrow). This formats from the local clock, so it is correct at any hour
+// and makes noon-anchoring unnecessary at the formatting site.
+const localISODate = (d) => {
+  const p = (n) => String(n).padStart(2, "0");
+  return d.getFullYear() + "-" + p(d.getMonth() + 1) + "-" + p(d.getDate());
+};
 const SHIFTS = [
   { id: "first",  label: "1st Shift", time: "0600 \u2013 1400" },
   { id: "second", label: "2nd Shift", time: "1400 \u2013 2200" },
@@ -564,6 +588,11 @@ const EXT_PAIRS = [
   },
 ];
 
+// O(1) pair lookup — replaces EXT_PAIRS.find(p => p.id === ...) in hot paths
+// (calcRestGap/calcConsecutiveHours run millions of times inside the optimizer).
+// Map.get and Array.find both return undefined on a miss, so behavior is identical.
+const EXT_PAIRS_BY_ID = new Map(EXT_PAIRS.map(p => [p.id, p]));
+
 const PSI_SEED_ROSTER = []; // Seed roster removed — users import their own via Roster Manager
 
 // cellKey for extended shift records
@@ -571,7 +600,7 @@ const extKey = (day, pairId) => "EXT__" + day + "__" + pairId;
 
 // Does an extendedShift record cover a given (day, shiftId)?
 const extCovers = (ext, day, shiftId) => {
-  const pair = EXT_PAIRS.find(p => p.id === ext.pairId);
+  const pair = EXT_PAIRS_BY_ID.get(ext.pairId);
   if (!pair) return false;
   if (ext.day === day && pair.covers.includes(shiftId)) return true;
   if (ext.day === day && (pair.coversB || []).includes(shiftId)) return true;
@@ -594,7 +623,7 @@ const extRoles = (emp) => ["Scale","Medical"].filter(r => emp.qualifications.inc
 // pairId: "day" | "night" | "swing-10a-10p" | "swing-10p-10a" | "swing-2p-2a" | "swing-2a-2p"
 // Checks requiredShift, blockedShifts, and shift availability against the 8hr shifts that half covers.
 const canWorkExtHalf = (emp, pairId, slotIndex) => {
-  const pair = EXT_PAIRS.find(p => p.id === pairId);
+  const pair = EXT_PAIRS_BY_ID.get(pairId);
   if (!pair) return true;
   const shiftId = pair.covers[slotIndex]; // primary 8hr shift for this half
   if (shiftId && (emp.blockedShifts || []).includes(shiftId)) return false;
@@ -629,7 +658,7 @@ const canWorkExtHalf = (emp, pairId, slotIndex) => {
 
 // Reason string if canWorkExtHalf returns false (for warnings)
 const extHalfConflictReason = (emp, pairId, slotIndex) => {
-  const pair = EXT_PAIRS.find(p => p.id === pairId);
+  const pair = EXT_PAIRS_BY_ID.get(pairId);
   if (!pair) return null;
   const shiftId = pair.covers[slotIndex];
   const label = { first:"1st", second:"2nd", third:"3rd" }[shiftId] || shiftId;
@@ -682,7 +711,7 @@ const getEffectiveSlotCount = (d, s, extShifts) => {
   const base = getSlotCount(d, s);
   if (!extShifts || !extShifts.length) return base;
   const extBodies = extShifts.reduce((n, ext) => {
-    const pair = EXT_PAIRS.find(p => p.id === ext.pairId);
+    const pair = EXT_PAIRS_BY_ID.get(ext.pairId);
     if (!pair) return n;
     if (pair.covers.includes(s) && ext.day === d) {
       const idx = pair.covers.indexOf(s);
@@ -751,7 +780,7 @@ function computeWeekStats(schedule, employees, extShiftsArg) {
   // Index 2: ext shifts grouped by "day__shiftId" key — O(1) vs O(extShifts) filter per slot
   const extBySlot = new Map();
   for (const ext of (extShiftsArg || [])) {
-    const pair = EXT_PAIRS.find(p => p.id === ext.pairId);
+    const pair = EXT_PAIRS_BY_ID.get(ext.pairId);
     if (!pair) continue;
     for (const shiftId of pair.covers) {
       const k = ext.day + "__" + shiftId;
@@ -787,7 +816,7 @@ function computeWeekStats(schedule, employees, extShiftsArg) {
       const extMedical = cellExt.some(e => (e.roles||[]).includes("Medical"));
       const regIds = new Set(asgn.map(a => a.employeeId));
       const extFilled  = cellExt.reduce((n, e) => {
-        const p = EXT_PAIRS.find(pp => pp.id === e.pairId);
+        const p = EXT_PAIRS_BY_ID.get(e.pairId);
         const singleSwing = p?.isSwing && !p?.coversB;
         const aCovers = p?.covers?.includes(shift.id);
         const bCovers = p?.coversB?.includes(shift.id);
@@ -930,7 +959,7 @@ function calcHoursDetail(empId, schedule, extShifts, handoffsArr) {
   if (extShifts) {
     extShifts.forEach(ext => {
       if (ext.empAId !== empId && ext.empBId !== empId) return;
-      const pair = EXT_PAIRS.find(p => p.id === ext.pairId);
+      const pair = EXT_PAIRS_BY_ID.get(ext.pairId);
       if (!pair) return;
       const isEmpA = ext.empAId === empId;
       const effectiveCovers = isEmpA ? pair.covers : (pair.coversB || pair.covers);
@@ -1016,7 +1045,7 @@ function calcRestGap(empId, schedule, day, shiftId, extShifts, prevWeekPatterns)
   // Also check ext shifts (12hr, swing, split) the employee is participating in
   for (const ext of (extShifts || [])) {
     if (ext.empAId !== empId && ext.empBId !== empId) continue;
-    const pair = EXT_PAIRS.find(p => p.id === ext.pairId);
+    const pair = EXT_PAIRS_BY_ID.get(ext.pairId);
     if (!pair) continue;
     const di = DAYS.indexOf(ext.day);
     let startH;
@@ -1077,7 +1106,7 @@ function calcConsecutiveHours(empId, schedule, day, shiftId, extShifts) {
   }
   for (const ext of (extShifts || [])) {
     if (ext.empAId !== empId && ext.empBId !== empId) continue;
-    const pair = EXT_PAIRS.find(p => p.id === ext.pairId);
+    const pair = EXT_PAIRS_BY_ID.get(ext.pairId);
     if (!pair) continue;
     const di = DAYS.indexOf(ext.day);
     let startH;
@@ -1564,7 +1593,7 @@ function timeOffCoversSlot(req, dayName, shiftId, weekStartISO) {
   const dayIdx   = ["Sunday","Monday","Tuesday","Wednesday","Thursday","Friday","Saturday"].indexOf(dayName);
   const slotDate = new Date(weekBase);
   slotDate.setDate(weekBase.getDate() + dayIdx);
-  const slotISO  = slotDate.toISOString().slice(0,10);
+  const slotISO  = localISODate(slotDate);
   if (slotISO < req.startDate || slotISO > req.endDate) return false;
   if (req.type === "partial" && req.shiftId !== shiftId) return false;
   return true;
@@ -1594,6 +1623,110 @@ const isGuardOnly = (e) => {
   const q = e.qualifications || [];
   return q.includes("Guard") && !q.includes("Scale") && !q.includes("Medical");
 };
+
+// ── Call-Off Replacement Finder ─────────────────────────────────────────────
+// When someone calls off, rank every other employee by who to call first.
+// Uses the SAME validation primitives as the auto-fill algorithm
+// (calcRestGap, calcConsecutiveHours, isRestViolation, canFillPos, etc.)
+// so the call list can never disagree with the scheduler about eligibility.
+//
+// Returns [{ emp, eligible, reasons[], flags[], hrs, projHrs, wouldOT, otPref, tier }]
+// sorted call-first → call-last. Ineligible employees sort to the bottom
+// with hard-block reasons, so the supervisor sees WHY each person is out.
+//
+// Call-priority tiers (lower = call first):
+//   0  FT under 40h after this shift  → they need the hours, zero OT cost
+//   1  PT / on-call                   → no OT exposure
+//   2  FT into OT, OT-willing
+//   3  FT into OT, OT-neutral
+//   4  FT into OT, OT-declined        → last resort, flagged red
+// Within a tier: not-on-preferred-day-off first, then fewest current hours.
+function buildCallOffList(day, shiftId, neededPos, excludeEmpId,
+                          employees, schedule, extShifts, timeOffReqs, weekStartISO, cfg) {
+  const minRest  = cfg?.minRestHours ?? MIN_REST_HOURS;
+  const maxN     = cfg?.maxConsecutiveNights ?? MAX_CONSECUTIVE_NIGHTS;
+  const key      = cellKey(day, shiftId);
+  const inSlot   = new Set((schedule[key] || []).map(a => a.employeeId));
+  const adjPairs = new Set(["first__second","second__first","second__third","third__second"]);
+  const out = [];
+
+  for (const emp of employees) {
+    if (emp.id === excludeEmpId) continue;
+    if (inSlot.has(emp.id)) continue;
+
+    const reasons = [];  // hard blocks — any entry means "do not call"
+    const flags   = [];  // soft cautions shown as chips — {label, level}
+
+    if ((emp.unavailableDays || []).includes(day))
+      reasons.push("Unavailable on " + day);
+    if (timeOffReqs && getTimeOffForDay(timeOffReqs, emp.id, day, weekStartISO, shiftId).length > 0)
+      reasons.push("Approved time off");
+    if (emp.requiredShift && emp.requiredShift !== shiftId)
+      reasons.push("Locked to " + emp.requiredShift + " shift");
+    if ((emp.blockedShifts || []).includes(shiftId))
+      reasons.push("Shift is blocked for this employee");
+    if (neededPos && neededPos !== "Guard" && !canFillPos(emp, neededPos, day))
+      reasons.push("Not qualified: " + neededPos);
+
+    // Already working another shift the same day?
+    let otherSameDay = null;
+    for (const s of SHIFTS) {
+      if (s.id === shiftId) continue;
+      if ((schedule[cellKey(day, s.id)] || []).some(a => a.employeeId === emp.id)) otherSameDay = s.id;
+    }
+    if (otherSameDay) {
+      if (!emp.willing16h) reasons.push("Already on " + otherSameDay + " shift (not 16h-willing)");
+      else if (!adjPairs.has(otherSameDay + "__" + shiftId)) reasons.push("Already on " + otherSameDay + " shift (non-adjacent)");
+    }
+
+    const gap = calcRestGap(emp.id, schedule, day, shiftId, extShifts);
+    if (isRestViolation(emp, gap, minRest))
+      reasons.push("Rest violation — only " + (Math.round(gap * 10) / 10) + "h since last shift");
+    const consec = calcConsecutiveHours(emp.id, schedule, day, shiftId, extShifts);
+    if (consec > empMaxConsec(emp))
+      reasons.push("Would exceed " + empMaxConsec(emp) + "h consecutive cap");
+    if (shiftId === "third" && calcConsecutiveNights(emp.id, schedule, day, shiftId) >= maxN)
+      reasons.push("At max consecutive nights");
+    if (emp.maxShiftsPerWeek != null && countShiftsInWeek(emp.id, schedule) >= emp.maxShiftsPerWeek)
+      reasons.push("Weekly shift cap reached (" + emp.maxShiftsPerWeek + ")");
+
+    const hrs      = calcHours(emp.id, schedule, extShifts || []);
+    const projHrs  = hrs + SHIFT_HOURS;
+    const isFT     = emp.employmentType === "full-time";
+    const otRaw    = emp.overtimePref && emp.overtimePref !== "neutral"
+                       ? emp.overtimePref : (cfg?.defaultOvertimePref || "neutral");
+    const otPref   = isFT ? otRaw : "neutral";
+    const wouldOT  = isFT && projHrs > FT_MIN_HOURS;
+    const prefOff  = (emp.preferredDaysOff || []).includes(day);
+
+    if (gap !== Infinity)
+      flags.push({ label: (Math.round(gap * 10) / 10) + "h rest", level: gap < minRest + 4 ? "warn" : "ok" });
+    if (prefOff)
+      flags.push({ label: "Prefers " + day.slice(0,3) + " off", level: "warn" });
+    if ((emp.preferredShifts || []).length && !(emp.preferredShifts || []).includes(shiftId))
+      flags.push({ label: "Off preferred shift", level: "info" });
+    if (wouldOT)
+      flags.push({ label: (otPref === "blocked" ? "OT declined " : "OT ") + hrs + "h → " + projHrs + "h",
+                   level: otPref === "blocked" ? "danger" : "warn" });
+    if (emp.inTraining)
+      flags.push({ label: "In training", level: "warn" });
+
+    const eligible = reasons.length === 0;
+    let tier;
+    if (!eligible)                      tier = 99;
+    else if (isFT && projHrs <= FT_MIN_HOURS) tier = 0;
+    else if (!isFT)                     tier = 1;
+    else if (otPref === "willing")      tier = 2;
+    else if (otPref === "neutral")      tier = 3;
+    else                                tier = 4;
+
+    out.push({ emp, eligible, reasons, flags, hrs, projHrs, wouldOT, otPref, tier,
+               _k: [tier + (prefOff ? 0.5 : 0), hrs] });
+  }
+
+  out.sort((a, b) => (a._k[0] - b._k[0]) || (a._k[1] - b._k[1]) || a.emp.name.localeCompare(b.emp.name));
+  return out;
+}
 
 // Extracts cross-week boundary data from a previous week's saved schedule.
 // Returns { trailingDays, prevWeekLastSlot } keyed by employeeId.
@@ -1643,6 +1776,74 @@ function buildAutoFill(sourceEmps, cfg, empTimeOffDays, empPatterns, extShiftsAr
   // Populated at each assignment point so the UI can show why each employee
   // landed in each slot.
   const assignLog = {};
+
+  // Bidirectional consecutive-days check. The old per-pass checks only looked
+  // BACKWARD from the candidate day, so filling an earlier day after later days
+  // were already assigned could silently create 6-10 day streaks (e.g. assign
+  // Monday when Tue-Sat are already worked). This looks both directions and
+  // joins the previous week's trailing run when the backward run reaches Sunday.
+  const exceedsConsecDays = (empId, day) => {
+    const wd = dayWorked[empId] || new Set();
+    const idx = dayIdx(day);
+    let run = 1;
+    let reachedSunday = (idx === 0);
+    for (let i = idx - 1; i >= 0; i--) {
+      if (wd.has(DAYS[i])) { run++; if (i === 0) reachedSunday = true; }
+      else break;
+    }
+    if (reachedSunday) run += (empPatterns && empPatterns[empId]?.trailingDays) || 0;
+    for (let i = idx + 1; i < 7; i++) {
+      if (wd.has(DAYS[i])) run++; else break;
+    }
+    return run > maxShifts;
+  };
+
+  // Same-day double-booking guard for post passes. calcRestGap only looks
+  // BACKWARD from a candidate shift, so passes that fill an EARLIER slot than
+  // an existing assignment (e.g. add Friday/1st when Friday/3rd already exists)
+  // bypassed the rest and double-shift rules entirely. Mirrors bt canAssign:
+  // doubles allowed only for willing16h on adjacent shifts.
+  const ADJ_SHIFTS = new Set(["first__second","second__first","second__third","third__second"]);
+  const sameDayConflict = (emp, day, shiftId) => {
+    for (const s of SHIFTS) {
+      if (s.id === shiftId) continue;
+      if ((ns[cellKey(day, s.id)] || []).some(a => a.employeeId === emp.id)) {
+        if (!emp.willing16h) return true;
+        if (!ADJ_SHIFTS.has(s.id + "__" + shiftId)) return true;
+      }
+    }
+    return false;
+  };
+
+  // Forward rest check: hypothetically place the candidate, then re-validate the
+  // employee's NEXT 2 days of assignments (rest gap + consecutive hours), since a
+  // newly added earlier shift can shrink the rest gap before an existing later one.
+  const violatesForwardRest = (emp, day, shiftId) => {
+    const key = cellKey(day, shiftId);
+    const prior = ns[key] || [];
+    ns[key] = [...prior, { employeeId: emp.id, position: "Guard" }]; // position irrelevant for timing
+    let bad = false;
+    const startIdx = dayIdx(day);
+    outer:
+    for (let i = startIdx; i < Math.min(7, startIdx + 3); i++) {
+      const d = DAYS[i];
+      for (const s of SHIFTS) {
+        if (d === day && s.id === shiftId) continue;
+        if (!(ns[cellKey(d, s.id)] || []).some(a => a.employeeId === emp.id)) continue;
+        if (isRestViolation(emp, rg(emp.id, ns, d, s.id), minRest)) { bad = true; break outer; }
+        if (calcConsecutiveHours(emp.id, ns, d, s.id, extShiftsArg) > empMaxConsec(emp)) { bad = true; break outer; }
+      }
+    }
+    ns[key] = prior;
+    return bad;
+  };
+
+  // dayWorked-safe removal: only clear the day flag when the employee has NO
+  // remaining assignment on that day (they may hold a second shift via willing16h).
+  const clearDayIfFree = (empId, day) => {
+    const still = SHIFTS.some(s => (ns[cellKey(day, s.id)] || []).some(a => a.employeeId === empId));
+    if (!still) dayWorked[empId]?.delete(day);
+  };
   const logAssign = (day, shiftId, empId, phase, reason) => {
     assignLog[day + "__" + shiftId + "__" + empId] = { phase, reason };
   };
@@ -1651,7 +1852,7 @@ function buildAutoFill(sourceEmps, cfg, empTimeOffDays, empPatterns, extShiftsAr
   // Uses extEmpHours() so empA and empB get their actual working hours, not the
   // full 12h window (e.g. Day pair: empA=8h, empB=4h; Night pair: empA=4h, empB=8h).
   (extShiftsArg || []).forEach(ext => {
-    const pair = EXT_PAIRS.find(p => p.id === ext.pairId);
+    const pair = EXT_PAIRS_BY_ID.get(ext.pairId);
     if (!pair) return;
     if (ext.empAId && hourTracker[ext.empAId] !== undefined) hourTracker[ext.empAId] += extEmpHours(pair, true);
     if (ext.empBId && hourTracker[ext.empBId] !== undefined) hourTracker[ext.empBId] += extEmpHours(pair, false);
@@ -1689,7 +1890,11 @@ function buildAutoFill(sourceEmps, cfg, empTimeOffDays, empPatterns, extShiftsAr
     count: shiftGroups[s.id].length,
   }));
   shiftGroups.any.forEach(e => {
-    const lightest = shiftNeeds.slice().sort((a, b) => a.count - b.count)[0];
+    // Multi-preferred employees only distribute among their preferred shifts;
+    // truly unconstrained employees balance across all three.
+    const prefs = (e.preferredShifts || []).filter(p => shiftNeeds.some(n => n.id === p));
+    const pool = prefs.length ? shiftNeeds.filter(n => prefs.includes(n.id)) : shiftNeeds;
+    const lightest = pool.slice().sort((a, b) => a.count - b.count)[0];
     shiftGroups[lightest.id].push(e);
     lightest.count++;
   });
@@ -1928,19 +2133,10 @@ function buildAutoFill(sourceEmps, cfg, empTimeOffDays, empPatterns, extShiftsAr
 
   // Bottleneck score: total (slot, position) pairs remaining in emp's domain.
   // Lower = more constrained = should be placed before flexible employees.
-  // Reads the live domain (updated by forwardCheck), so it's reactive as the week fills.
+  // Reads the live domain (pruned after the CSP phase commits), so it stays
+  // reactive through the post-processing fill passes.
   const empRemainingOptions = (emp) =>
     Object.values(domains[emp.id] || {}).reduce((n, s) => n + s.size, 0);
-
-  // Forward checking: after assigning emp to a day, remove them from all slots on
-  // that day (can't double-book) and from all slots if their weekly cap is now full.
-  const forwardCheck = (emp, assignedDay) => {
-    for (const s of SHIFTS) delete domains[emp.id][cellKey(assignedDay, s.id)];
-    const cap = emp.maxShiftsPerWeek;
-    if (cap !== null && cap !== undefined && (shiftsWorked[emp.id] || 0) >= cap) {
-      domains[emp.id] = {};
-    }
-  };
 
   // ── Score function used for tie-breaking within a slot ───────────────────
   // targetPos: position being scored for — drives role-stretch penalty.
@@ -2007,7 +2203,8 @@ function buildAutoFill(sourceEmps, cfg, empTimeOffDays, empPatterns, extShiftsAr
     // all the way back to Sunday (consec === todayIdx means no gap found).
     // todayIdx === 0 means we ARE on Sunday — that always starts fresh.
     if (todayIdx > 0 && consec === todayIdx && prevTail) consec += prevTail;
-    // Hard-block: cannot work if already at/over maxShifts consecutive days
+    // Hard-block: bidirectional consecutive-days check (incl. forward run + cross-week tail)
+    if (!dayWorked[emp.id]?.has(day) && exceedsConsecDays(emp.id, day)) return null;
     if (consec >= maxShifts) return null;
     const overworkPenalty = 0; // enforced by hard null above
 
@@ -2183,7 +2380,7 @@ function buildAutoFill(sourceEmps, cfg, empTimeOffDays, empPatterns, extShiftsAr
   const slotCap = (day, shiftId) =>
     Math.max(0, REGULAR_SLOTS(day, shiftId) -
       (extShiftsArg||[]).reduce((n, ext) => {
-        const pair = EXT_PAIRS.find(p => p.id === ext.pairId);
+        const pair = EXT_PAIRS_BY_ID.get(ext.pairId);
         if (!pair) return n;
         if (pair.covers.includes(shiftId) && ext.day === day) {
           const idx = pair.covers.indexOf(shiftId);
@@ -2216,7 +2413,7 @@ function buildAutoFill(sourceEmps, cfg, empTimeOffDays, empPatterns, extShiftsAr
       const blocked = new Set();
       let hasScale = false, hasMedical = false;
       activeExts.forEach(ext => {
-        const pair = EXT_PAIRS.find(p => p.id === ext.pairId);
+        const pair = EXT_PAIRS_BY_ID.get(ext.pairId);
         if (!pair) return;
         const onNextDay = ext.day !== day;
         const aCoversThis = !onNextDay && (pair.covers||[]).includes(shiftId);
@@ -2277,6 +2474,8 @@ function buildAutoFill(sourceEmps, cfg, empTimeOffDays, empPatterns, extShiftsAr
         for (const { day, shiftId } of btSlots) {
           this.domains.push(new Set(btStaticEligible(day, shiftId)));
         }
+        this.trail = [];
+        this.totalAssigned = 0;
       }
 
       canAssign(empId, slotIdx) {
@@ -2310,6 +2509,15 @@ function buildAutoFill(sourceEmps, cfg, empTimeOffDays, empPatterns, extShiftsAr
           for (let i = 6; i >= 0; i--) { if (workDays.has(DAYS[i])) tail++; else break; }
           maxConsecDays = Math.max(maxConsecDays, head + tail);
         }
+        // Cross-week: previous week's trailing run extends any streak that starts Sunday
+        if (workDays.has("Sunday")) {
+          const prevTail = (empPatterns && empPatterns[empId]?.trailingDays) || 0;
+          if (prevTail) {
+            let head = 0;
+            for (const d of DAYS) { if (workDays.has(d)) head++; else break; }
+            maxConsecDays = Math.max(maxConsecDays, head + prevTail);
+          }
+        }
         if (maxConsecDays > maxShifts) return false;
         // Weekend cap
         if (["Saturday","Sunday"].includes(day) && emp.maxWeekendDays != null) {
@@ -2320,6 +2528,29 @@ function buildAutoFill(sourceEmps, cfg, empTimeOffDays, empPatterns, extShiftsAr
         if (isRestViolation(emp, rg(empId, this.schedule, day, shiftId), minRest)) return false;
         if (calcConsecutiveHours(empId, this.schedule, day, shiftId, extShiftsArg) > empMaxConsec(emp)) return false;
         if (shiftId === "third" && calcConsecutiveNights(empId, this.schedule, day, shiftId) >= maxNights) return false;
+        // Forward rest/consec-hours: MRV slot order isn't chronological, so a
+        // LATER shift may already be assigned when this earlier one is tried.
+        // rg() looks backward only and would miss the shrunken gap before the
+        // existing later shift. Lazy hypothetical insert, re-validate next 2 days.
+        {
+          const di0 = dayIdx(day);
+          let fwSched = null;
+          for (let off = 0; off <= 2; off++) {
+            const i2 = di0 + off;
+            if (i2 >= 7) break;
+            const d2 = DAYS[i2];
+            for (const s2 of SHIFTS) {
+              if (off === 0 && s2.id === shiftId) continue;
+              if (!(this.schedule[cellKey(d2, s2.id)] || []).some(a => a.employeeId === empId)) continue;
+              if (!fwSched) {
+                const fwKey = cellKey(day, shiftId);
+                fwSched = { ...this.schedule, [fwKey]: [...(this.schedule[fwKey] || []), { employeeId: empId, position: "Guard" }] };
+              }
+              if (isRestViolation(emp, rg(empId, fwSched, d2, s2.id), minRest)) return false;
+              if (calcConsecutiveHours(empId, fwSched, d2, s2.id, extShiftsArg) > empMaxConsec(emp)) return false;
+            }
+          }
+        }
         return true;
       }
 
@@ -2328,10 +2559,40 @@ function buildAutoFill(sourceEmps, cfg, empTimeOffDays, empPatterns, extShiftsAr
         const key = cellKey(day, shiftId);
         if (!this.schedule[key]) this.schedule[key] = [];
         this.schedule[key].push({ employeeId: empId, position });
-        if (!this.schedule[key].slice(0, -1).some(a => a.employeeId === empId)) {
+        this.totalAssigned = (this.totalAssigned || 0) + 1;
+        const firstOfDay = !this.schedule[key].slice(0, -1).some(a => a.employeeId === empId);
+        if (firstOfDay) {
           this.hourTracker[empId] = (this.hourTracker[empId] || 0) + SHIFT_HOURS;
           this.shiftsWorked[empId] = (this.shiftsWorked[empId] || 0) + 1;
           this.dayWorked[empId].add(day);
+        }
+        if (this.trail) this.trail.push({ t: "asgn", key, empId, day, firstOfDay });
+      }
+
+      // Trail-based undo: pops trail entries back to `mark`, reversing assigns
+      // and domain prunes in place. Replaces the old per-candidate deep copy of
+      // the entire state (schedule + 4 trackers + 21 domain Sets), which was the
+      // dominant cost of the search (~29µs/node at 500k nodes).
+      undoTo(mark) {
+        while (this.trail.length > mark) {
+          const e = this.trail.pop();
+          if (e.t === "asgn") {
+            const arr = this.schedule[e.key];
+            // remove the LAST entry for this employee in the slot
+            for (let i = arr.length - 1; i >= 0; i--) {
+              if (arr[i].employeeId === e.empId) { arr.splice(i, 1); break; }
+            }
+            this.totalAssigned--;
+            if (e.firstOfDay) {
+              this.hourTracker[e.empId] -= SHIFT_HOURS;
+              this.shiftsWorked[e.empId] -= 1;
+              this.dayWorked[e.empId].delete(e.day);
+            }
+          } else if (e.t === "dom") {
+            this.domains[e.j].add(e.empId);
+          } else if (e.t === "domwipe") {
+            this.domains[e.j] = e.prev;
+          }
         }
       }
 
@@ -2346,7 +2607,11 @@ function buildAutoFill(sourceEmps, cfg, empTimeOffDays, empPatterns, extShiftsAr
           const jAsgn = this.schedule[jKey] || [];
           const needed = slotCap(btSlots[j].day, btSlots[j].shiftId) +
             (SUP_SLOT_DAY(btSlots[j].day, btSlots[j].shiftId) ? 1 : 0);
-          if (jAsgn.length >= needed) { this.domains[j] = new Set(); continue; }
+          if (jAsgn.length >= needed) {
+            if (this.trail && this.domains[j].size) this.trail.push({ t: "domwipe", j, prev: this.domains[j] });
+            this.domains[j] = new Set();
+            continue;
+          }
           const toRemove = [];
           for (const empId of this.domains[j]) {
             if (btSlots[j].day === day && btSlots[j].shiftId !== shiftId && assignedHere.has(empId)) {
@@ -2367,11 +2632,53 @@ function buildAutoFill(sourceEmps, cfg, empTimeOffDays, empPatterns, extShiftsAr
               if (ms > maxShifts) toRemove.push(empId);
             }
           }
-          for (const empId of toRemove) this.domains[j].delete(empId);
+          for (const empId of toRemove) {
+            this.domains[j].delete(empId);
+            if (this.trail) this.trail.push({ t: "dom", j, empId });
+          }
         }
       }
 
       isFeasible() {
+        if (this.partialMode) return this.isFeasiblePerSlot();
+        // Global capacity bound: total remaining employee shift-capacity must
+        // cover total remaining demand. Catches rosters that are short on raw
+        // bodies, which per-slot checks can never see (each slot looks fine in
+        // isolation while the week as a whole is over-subscribed).
+        let remainingDemand = 0;
+        const slotsNeeding = [];
+        for (let j = 0; j < btSlots.length; j++) {
+          const jKey = cellKey(btSlots[j].day, btSlots[j].shiftId);
+          const jAsgn = this.schedule[jKey] || [];
+          const regCount = jAsgn.filter(a => a.position !== "Supervisor").length;
+          const cap = slotCap(btSlots[j].day, btSlots[j].shiftId);
+          const supNeeded = SUP_SLOT_DAY(btSlots[j].day, btSlots[j].shiftId) ? 1 : 0;
+          const supFilled = jAsgn.some(a => a.position === "Supervisor") ? 1 : 0;
+          const need = Math.max(0, cap - regCount) + Math.max(0, supNeeded - supFilled);
+          remainingDemand += need;
+          if (need > 0) slotsNeeding.push(j);
+        }
+        if (remainingDemand > 0) {
+          let supply = 0;
+          for (const emp of sourceEmps) {
+            // distinct days this employee can still take among needing slots
+            const daysAvail = new Set();
+            for (const j of slotsNeeding) {
+              if (this.domains[j].has(emp.id)) daysAvail.add(btSlots[j].day);
+            }
+            if (!daysAvail.size) continue;
+            const capLeft = emp.maxShiftsPerWeek != null
+              ? Math.max(0, emp.maxShiftsPerWeek - (this.shiftsWorked[emp.id] || 0))
+              : (emp.willing16h ? 12 : 6); // 6 = max distinct work days under a 5-consecutive cap
+            supply += Math.min(daysAvail.size, capLeft);
+            if (supply >= remainingDemand) break;
+          }
+          if (supply < remainingDemand) return false;
+        }
+        return this.isFeasiblePerSlot();
+      }
+
+      isFeasiblePerSlot() {
         for (let j = 0; j < btSlots.length; j++) {
           const jKey = cellKey(btSlots[j].day, btSlots[j].shiftId);
           const jAsgn = this.schedule[jKey] || [];
@@ -2383,7 +2690,7 @@ function buildAutoFill(sourceEmps, cfg, empTimeOffDays, empPatterns, extShiftsAr
           if (totalNeeded <= 0) continue;
           const inSlot = new Set(jAsgn.map(a => a.employeeId));
           const avail = [...this.domains[j]].filter(id => !inSlot.has(id));
-          if (avail.length < totalNeeded) return false;
+          if (!this.partialMode && avail.length < totalNeeded) return false;
         }
         return true;
       }
@@ -2420,7 +2727,10 @@ function buildAutoFill(sourceEmps, cfg, empTimeOffDays, empPatterns, extShiftsAr
         const inSlot = new Set(asgn.map(a => a.employeeId));
         const avail = [...state.domains[i]].filter(id => !inSlot.has(id));
         let size = avail.length;
-        if (size === 0) return i;
+        if (size === 0) {
+          if (state.partialMode) continue; // unfillable slot — skip, keep covering the rest
+          return i;
+        }
         // Role-priority boost
         const extR = extRoleBySlot[key] || {};
         const hasScale = slotHasRole(asgn, sourceEmps, "Scale") || extR.hasScale;
@@ -2537,14 +2847,30 @@ function buildAutoFill(sourceEmps, cfg, empTimeOffDays, empPatterns, extShiftsAr
     // ── Backtracking search ────────────────────────────────────────────────
     let nodesExplored = 0;
     const MAX_NODES = 500000;
+    const MAX_SEARCH_MS = cfg?.maxSearchMs ?? 4000; // wall-clock budget — search must never hang the UI
     const btSearchStart = Date.now();
+    const budgetExceeded = () =>
+      nodesExplored > MAX_NODES || (nodesExplored % 256 === 0 && Date.now() - btSearchStart > MAX_SEARCH_MS);
+
+    // Best-partial tracking: when the full search fails (infeasible roster or
+    // budget hit), return the deepest state seen rather than null — Phase 2 SA
+    // and the greedy passes then start from the CSP's best effort instead of a
+    // nearly-empty schedule.
+    let bestPartial = null, bestPartialCount = -1;
+    const snapshotIfBest = (state) => {
+      if ((state.totalAssigned || 0) <= bestPartialCount) return;
+      bestPartialCount = state.totalAssigned || 0;
+      const sched = {};
+      for (const k of Object.keys(state.schedule)) sched[k] = state.schedule[k].map(a => ({ ...a }));
+      bestPartial = { schedule: sched };
+    };
 
     const btBacktrack = (state, depth) => {
       nodesExplored++;
-      if (nodesExplored > MAX_NODES) return null;
+      if (budgetExceeded()) return null;
 
       const slotIdx = btSelectNextSlot(state);
-      if (slotIdx === -1) return state;
+      if (slotIdx === -1) { snapshotIfBest(state); return state; }
 
       const { day, shiftId } = btSlots[slotIdx];
       const key = cellKey(day, shiftId);
@@ -2553,25 +2879,18 @@ function buildAutoFill(sourceEmps, cfg, empTimeOffDays, empPatterns, extShiftsAr
 
       const candidates = [...state.domains[slotIdx]]
         .filter(id => !inSlot.has(id) && state.canAssign(id, slotIdx));
-      if (candidates.length === 0) return null;
+      if (candidates.length === 0) { snapshotIfBest(state); return null; }
 
       candidates.sort((a, b) => btScore(state, a, slotIdx) - btScore(state, b, slotIdx));
 
       for (const empId of candidates) {
-        if (nodesExplored > MAX_NODES) return null;
+        if (budgetExceeded()) return null;
         const emp = empMap.get(empId);
         if (!emp) continue;
         const pos = btPickPosition(emp, currentAsgn, day, shiftId);
         if (!pos) continue;
 
-        // Save state for undo
-        const savedSchedule = {};
-        for (const k of Object.keys(state.schedule)) savedSchedule[k] = [...state.schedule[k]];
-        const savedHours = { ...state.hourTracker };
-        const savedShifts = { ...state.shiftsWorked };
-        const savedDays = {};
-        for (const id of Object.keys(state.dayWorked)) savedDays[id] = new Set(state.dayWorked[id]);
-        const savedDomains = state.domains.map(d => new Set(d));
+        const mark = state.trail.length; // O(1) undo point — replaces full deep copy
 
         state.assign(empId, pos, slotIdx);
         state.propagate(slotIdx);
@@ -2579,14 +2898,11 @@ function buildAutoFill(sourceEmps, cfg, empTimeOffDays, empPatterns, extShiftsAr
         if (state.isFeasible()) {
           const result = btBacktrack(state, depth + 1);
           if (result) return result;
+        } else {
+          snapshotIfBest(state);
         }
 
-        // Undo
-        state.schedule = savedSchedule;
-        state.hourTracker = savedHours;
-        state.shiftsWorked = savedShifts;
-        state.dayWorked = savedDays;
-        state.domains = savedDomains;
+        state.undoTo(mark);
       }
       return null;
     };
@@ -2660,9 +2976,32 @@ function buildAutoFill(sourceEmps, cfg, empTimeOffDays, empPatterns, extShiftsAr
     }
     if (reservations > 0) console.log(`[Backtrack] ${reservations} role reservations locked`);
 
+    {
+      // Root-level capacity audit: if raw supply can't meet demand, no complete
+      // fill exists. Switch to partial mode (maximize coverage) with a smaller
+      // budget rather than exhaustively proving the impossible.
+      let demand = 0;
+      for (const { day, shiftId } of btSlots)
+        demand += slotCap(day, shiftId) + (SUP_SLOT_DAY(day, shiftId) ? 1 : 0);
+      let supply = 0;
+      for (const emp of sourceEmps) {
+        const daysAvail = new Set();
+        for (let j = 0; j < btSlots.length; j++)
+          if (initialState.domains[j].has(emp.id)) daysAvail.add(btSlots[j].day);
+        const capLeft = emp.maxShiftsPerWeek != null ? emp.maxShiftsPerWeek : (emp.willing16h ? 12 : 6);
+        supply += Math.min(daysAvail.size, capLeft);
+      }
+      // include already pre-assigned bodies (supervisors/reservations)
+      supply += initialState.totalAssigned || 0;
+      if (supply < demand) {
+        initialState.partialMode = true;
+        console.log(`[Backtrack] Roster short: supply≈${supply} < demand=${demand} — partial-fill mode`);
+      }
+    }
     const btResult = btBacktrack(initialState, 0);
     const btElapsed = Date.now() - btSearchStart;
-    console.log(`[Backtrack] Completed in ${btElapsed}ms, ${nodesExplored} nodes explored`);
+    console.log(`[Backtrack] Completed in ${btElapsed}ms, ${nodesExplored} nodes explored` +
+      (btResult ? " (complete)" : ` (no complete fill — best partial: ${bestPartialCount} assignments)`));
 
     // ── Improvement 6: Phase 2 — Simulated Annealing preference optimisation ──
     // Replaces the previous 20-round greedy pairwise hill-climb. SA accepts
@@ -2671,7 +3010,8 @@ function buildAutoFill(sourceEmps, cfg, empTimeOffDays, empPatterns, extShiftsAr
     //   • Pairwise swap (70%) — swap two employees between slots
     //   • 3-chain rotation (30%) — A→B, B→C, C→A cycle, unreachable via pairs
     // After SA, a short greedy polish catches any obvious remaining wins.
-    const btSchedule = btResult ? btResult.schedule : initialState.schedule;
+    const btSchedule = btResult ? btResult.schedule
+      : (bestPartial ? bestPartial.schedule : initialState.schedule);
 
     // B1: Lexicographic SA objective — returns [hard, soft] tuple.
     // Tier 0 (hard): FT shift mismatch (non-crossShiftOT) + FT under-40h deviation.
@@ -2733,6 +3073,10 @@ function buildAutoFill(sourceEmps, cfg, empTimeOffDays, empPatterns, extShiftsAr
     const btCanWorkSlot = (empId, sched, day, shiftId) => {
       const emp = empMap.get(empId);
       if (!emp) return false;
+      // Already in the destination slot — moving them in again would duplicate
+      // the entry (the same-day loop below skips the destination shift, so this
+      // was invisible to it and surfaced as [Dedup] removals at the very end).
+      if ((sched[cellKey(day, shiftId)] || []).some(a => a.employeeId === empId)) return false;
       if (!domains[emp.id]?.[cellKey(day, shiftId)]?.size) return false;
       if (empTimeOffDays && empTimeOffDays.has(empId + "__" + day)) return false;
       for (const s of SHIFTS) {
@@ -2746,17 +3090,39 @@ function buildAutoFill(sourceEmps, cfg, empTimeOffDays, empPatterns, extShiftsAr
       if (isRestViolation(emp, rg(empId, sched, day, shiftId), minRest)) return false;
       if (calcConsecutiveHours(empId, sched, day, shiftId, extShiftsArg) > empMaxConsec(emp)) return false;
       if (shiftId === "third" && calcConsecutiveNights(empId, sched, day, shiftId) >= maxNights) return false;
-      if (emp.maxShiftsPerWeek != null) {
-        let cnt = 0;
-        for (const d of DAYS) for (const s of SHIFTS) {
-          if ((sched[cellKey(d, s.id)]||[]).some(a => a.employeeId === empId)) cnt++;
+      // Forward rest/consec-hours: rg() looks BACKWARD only, so placing the
+      // employee here can silently shrink the rest gap before an EXISTING later
+      // shift (e.g. add Sunday/second while Monday/first is already assigned →
+      // gap=8). Hypothetically insert, then re-validate their assignments over
+      // the next 2 days. Lazy: only build the hypothetical schedule if a
+      // forward assignment actually exists.
+      {
+        const di0 = dayIdx(day);
+        let fwSched = null;
+        for (let off = 0; off <= 2; off++) {
+          const i2 = di0 + off;
+          if (i2 >= 7) break;
+          const d2 = DAYS[i2];
+          for (const s2 of SHIFTS) {
+            if (off === 0 && s2.id === shiftId) continue;
+            if (!(sched[cellKey(d2, s2.id)] || []).some(a => a.employeeId === empId)) continue;
+            if (!fwSched) {
+              const fwKey = cellKey(day, shiftId);
+              fwSched = { ...sched, [fwKey]: [...(sched[fwKey] || []), { employeeId: empId, position: "Guard" }] };
+            }
+            if (isRestViolation(emp, rg(empId, fwSched, d2, s2.id), minRest)) return false;
+            if (calcConsecutiveHours(empId, fwSched, d2, s2.id, extShiftsArg) > empMaxConsec(emp)) return false;
+          }
         }
-        if (cnt >= emp.maxShiftsPerWeek) return false;
       }
+      // Single pass over all 21 slots: count this employee's shifts and
+      // collect their work days (previously two separate full scans).
       const wd = new Set();
+      let cnt = 0;
       for (const d of DAYS) for (const s of SHIFTS) {
-        if ((sched[cellKey(d, s.id)]||[]).some(a => a.employeeId === empId)) wd.add(d);
+        if ((sched[cellKey(d, s.id)]||[]).some(a => a.employeeId === empId)) { cnt++; wd.add(d); }
       }
+      if (emp.maxShiftsPerWeek != null && cnt >= emp.maxShiftsPerWeek) return false;
       wd.add(day);
       let strk = 0, ms = 0;
       for (const d of DAYS) { if (wd.has(d)) { strk++; ms = Math.max(ms, strk); } else strk = 0; }
@@ -2765,6 +3131,14 @@ function buildAutoFill(sourceEmps, cfg, empTimeOffDays, empPatterns, extShiftsAr
         for (const d of DAYS) { if (wd.has(d)) h++; else break; }
         for (let i = 6; i >= 0; i--) { if (wd.has(DAYS[i])) t++; else break; }
         ms = Math.max(ms, h + t);
+      }
+      if (wd.has("Sunday")) {
+        const prevTail = (empPatterns && empPatterns[empId]?.trailingDays) || 0;
+        if (prevTail) {
+          let h = 0;
+          for (const d of DAYS) { if (wd.has(d)) h++; else break; }
+          ms = Math.max(ms, h + prevTail);
+        }
       }
       if (ms > maxShifts) return false;
       if (["Saturday","Sunday"].includes(day) && emp.maxWeekendDays != null) {
@@ -2972,6 +3346,12 @@ function buildAutoFill(sourceEmps, cfg, empTimeOffDays, empPatterns, extShiftsAr
         let placed = 0;
         for (const c of slotCandidates) {
           if (placed >= slotsLeft) break;
+          // Re-check inside the loop: the same employee can appear twice in
+          // `displaced` (worked 2+ destroyed slots). placedEmps was only
+          // consulted at candidate-build time, so the second entry slipped
+          // through and duplicated them in this slot ([Dedup] at end-stage).
+          if (placedEmps.has(c.d.empId + "__" + sl.day)) continue;
+          if ((work[key] || []).some(a => a.employeeId === c.d.empId)) continue;
           // Re-check position with updated slot state
           const pos = btPickPosition(c.emp, work[key] || [], sl.day, sl.shiftId);
           if (!pos) continue;
@@ -3136,7 +3516,7 @@ function buildAutoFill(sourceEmps, cfg, empTimeOffDays, empPatterns, extShiftsAr
     });
     // Re-seed ext shift hours
     (extShiftsArg||[]).forEach(ext => {
-      const pair = EXT_PAIRS.find(p => p.id === ext.pairId);
+      const pair = EXT_PAIRS_BY_ID.get(ext.pairId);
       if (!pair) return;
       if (ext.empAId && hourTracker[ext.empAId] !== undefined) hourTracker[ext.empAId] += extEmpHours(pair, true);
       if (ext.empBId && hourTracker[ext.empBId] !== undefined) hourTracker[ext.empBId] += extEmpHours(pair, false);
@@ -3169,7 +3549,7 @@ function buildAutoFill(sourceEmps, cfg, empTimeOffDays, empPatterns, extShiftsAr
   const slotAssigned = (asgn, day, shiftId) => {
     const s = new Set(asgn.map(a => a.employeeId));
     (extShiftsArg||[]).forEach(ext => {
-      const pair = EXT_PAIRS.find(p => p.id === ext.pairId);
+      const pair = EXT_PAIRS_BY_ID.get(ext.pairId);
       if (!pair) return;
       const idx = pair.covers.indexOf(shiftId);
       if (idx === 0 && ext.empAId) s.add(ext.empAId);
@@ -3238,6 +3618,9 @@ function buildAutoFill(sourceEmps, cfg, empTimeOffDays, empPatterns, extShiftsAr
             if (shift.id === "third" && calcConsecutiveNights(e.id, ns, day, shift.id) >= maxNights) return false;
             if (!getAvailPos(day, shift.id).some(p => e.qualifications.includes(p))) return false;
             if (e.maxShiftsPerWeek !== null && (shiftsWorked[e.id]||0) >= e.maxShiftsPerWeek) return false;
+            if (!dayWorked[e.id]?.has(day) && exceedsConsecDays(e.id, day)) return false;
+            if (sameDayConflict(e, day, shift.id)) return false;
+            if (violatesForwardRest(e, day, shift.id)) return false;
             return true;
           })
           .sort((a, b) => {
@@ -3351,12 +3734,16 @@ function buildAutoFill(sourceEmps, cfg, empTimeOffDays, empPatterns, extShiftsAr
           if (isRestViolation(e, rg(e.id, ns, day, shift.id), minRest)) return false;
           if (calcConsecutiveHours(e.id, ns, day, shift.id, extShiftsArg) > empMaxConsec(e)) return false;
           if (shift.id === "third" && calcConsecutiveNights(e.id, ns, day, shift.id) >= maxNights) return false;
+          if (!dayWorked[e.id]?.has(day) && exceedsConsecDays(e.id, day)) return false;
+          if (sameDayConflict(e, day, shift.id)) return false;
+          if (violatesForwardRest(e, day, shift.id)) return false;
           return true;
         });
         if (!replacement) continue;
         asgn[ai] = { employeeId: replacement.id, position: "Guard" };
         hourTracker[ocEmp.id]        = Math.max(0, (hourTracker[ocEmp.id] || 0) - SHIFT_HOURS);
         shiftsWorked[ocEmp.id]       = Math.max(0, (shiftsWorked[ocEmp.id] || 0) - 1);
+        ns[key] = asgn; clearDayIfFree(ocEmp.id, day);
         hourTracker[replacement.id]  = (hourTracker[replacement.id] || 0) + SHIFT_HOURS;
         shiftsWorked[replacement.id] = (shiftsWorked[replacement.id] || 0) + 1;
         dayWorked[replacement.id].add(day);
@@ -3415,6 +3802,9 @@ function buildAutoFill(sourceEmps, cfg, empTimeOffDays, empPatterns, extShiftsAr
             if (shift.id === "third" && calcConsecutiveNights(ftEmp.id, ns, day, shift.id) >= maxNights) continue;
             const ftAp = getAvailPos(day, shift.id).filter(p => canFillPos(ftEmp, p, day));
             if (!ftAp.length) continue;
+            if (exceedsConsecDays(ftEmp.id, day)) continue;
+            if (sameDayConflict(ftEmp, day, shift.id)) continue;
+            if (violatesForwardRest(ftEmp, day, shift.id)) continue;
 
             // Find a PT or on-call employee in this slot to displace
             const displaceIdx = asgn.findIndex(a => {
@@ -3448,6 +3838,9 @@ function buildAutoFill(sourceEmps, cfg, empTimeOffDays, empPatterns, extShiftsAr
                 if (calcConsecutiveHours(displacedEmp.id, ns, rDay, rShift.id, extShiftsArg) > empMaxConsec(displacedEmp)) continue;
                 const rAp = getAvailPos(rDay, rShift.id).filter(p => canFillPos(displacedEmp, p, rDay));
                 if (!rAp.length) continue;
+                if ((rAsgn || []).some(a => a.employeeId === displacedEmp.id)) continue; // already in slot
+                if (sameDayConflict(displacedEmp, rDay, rShift.id)) continue;
+                if (violatesForwardRest(displacedEmp, rDay, rShift.id)) continue;
                 relocateKey   = rKey;
                 relocateDay   = rDay;
                 relocateShift = rShift;
@@ -3468,15 +3861,18 @@ function buildAutoFill(sourceEmps, cfg, empTimeOffDays, empPatterns, extShiftsAr
             else ftPos = ftAp[0];
 
             // ── Perform the ripple ──
-            // Remove displaced PT/OC from original slot, insert FT employee
+            // ALL validation must precede ANY mutation — a continue after a partial
+            // write corrupts hourTracker/dayWorked (previous version did exactly that).
             if (remainingAsgn.some(a => a.employeeId === ftEmp.id)) continue; // already in slot
+            if ((ns[relocateKey]||[]).some(a => a.employeeId === displacedEmp.id)) continue; // already in slot
+
+            // Remove displaced PT/OC from original slot, insert FT employee
             ns[key] = [...remainingAsgn, { employeeId: ftEmp.id, position: ftPos }];
             hourTracker[displacedEmp.id]  = Math.max(0, (hourTracker[displacedEmp.id]||0) - SHIFT_HOURS);
             shiftsWorked[displacedEmp.id] = Math.max(0, (shiftsWorked[displacedEmp.id]||0) - 1);
-            dayWorked[displacedEmp.id]?.delete(day);
+            clearDayIfFree(displacedEmp.id, day);
 
             // Place displaced PT/OC in their new slot
-            if ((ns[relocateKey]||[]).some(a => a.employeeId === displacedEmp.id)) continue; // already in slot
             ns[relocateKey] = [...(ns[relocateKey]||[]), { employeeId: displacedEmp.id, position: relocatePos }];
             hourTracker[displacedEmp.id]  = (hourTracker[displacedEmp.id]||0) + SHIFT_HOURS;
             shiftsWorked[displacedEmp.id] = (shiftsWorked[displacedEmp.id]||0) + 1;
@@ -3521,6 +3917,7 @@ function buildAutoFill(sourceEmps, cfg, empTimeOffDays, empPatterns, extShiftsAr
 
         // Find a Guard-only body in this slot we can swap out
         const swapOutIdx = currentAsgn.findIndex(a => {
+          if (a.position === "Supervisor") return false; // never evict the Sup slot (Sup quals read as Guard-only)
           const e = sourceEmps.find(x => x.id === a.employeeId);
           return e && isGuardOnly(e);
         });
@@ -3537,6 +3934,9 @@ function buildAutoFill(sourceEmps, cfg, empTimeOffDays, empPatterns, extShiftsAr
           if (e.maxShiftsPerWeek != null && (shiftsWorked[e.id] || 0) >= e.maxShiftsPerWeek) return false;
           if (isRestViolation(e, rg(e.id, ns, day, shift.id), minRest)) return false;
           if (calcConsecutiveHours(e.id, ns, day, shift.id, extShiftsArg) > empMaxConsec(e)) return false;
+          if (!dayWorked[e.id]?.has(day) && exceedsConsecDays(e.id, day)) return false;
+          if (sameDayConflict(e, day, shift.id)) return false;
+          if (violatesForwardRest(e, day, shift.id)) return false;
           return true;
         });
 
@@ -3554,6 +3954,7 @@ function buildAutoFill(sourceEmps, cfg, empTimeOffDays, empPatterns, extShiftsAr
           if (removedEmp) {
             hourTracker[removedEmp.id] = Math.max(0, (hourTracker[removedEmp.id]||0) - SHIFT_HOURS);
             shiftsWorked[removedEmp.id] = Math.max(0, (shiftsWorked[removedEmp.id]||0) - 1);
+            clearDayIfFree(removedEmp.id, day);
           }
         } else if (currentAsgn.length < cap) {
           // Slot not full — just add the replacement
@@ -3619,6 +4020,9 @@ function buildAutoFill(sourceEmps, cfg, empTimeOffDays, empPatterns, extShiftsAr
           if (donor.requiredShift && donor.requiredShift !== gapShift.id) continue;
           if (isRestViolation(donor, rg(donor.id, ns, gapDay, gapShift.id), minRest)) continue;
           if (calcConsecutiveHours(donor.id, ns, gapDay, gapShift.id, extShiftsArg) > empMaxConsec(donor)) continue;
+          if (!dayWorked[donor.id]?.has(gapDay) && exceedsConsecDays(donor.id, gapDay)) continue;
+          if (sameDayConflict(donor, gapDay, gapShift.id)) continue;
+          if (violatesForwardRest(donor, gapDay, gapShift.id)) continue;
 
           // Already filling the gap slot? Skip.
           if (gapAsgn.some(a => a.employeeId === donor.id)) continue;
@@ -3664,6 +4068,9 @@ function buildAutoFill(sourceEmps, cfg, empTimeOffDays, empPatterns, extShiftsAr
             // Respect weekly shift cap
             const subCap = sub.maxShiftsPerWeek;
             if (subCap !== null && subCap !== undefined && (shiftsWorked[sub.id]||0) >= subCap) return false;
+            if (!dayWorked[sub.id]?.has(donorSourceDay) && exceedsConsecDays(sub.id, donorSourceDay)) return false;
+            if (sameDayConflict(sub, donorSourceDay, donorSourceShift.id)) return false;
+            if (violatesForwardRest(sub, donorSourceDay, donorSourceShift.id)) return false;
             return true;
           });
 
@@ -3684,6 +4091,7 @@ function buildAutoFill(sourceEmps, cfg, empTimeOffDays, empPatterns, extShiftsAr
           } else {
             // Slot is full — swap out a Guard-only body to make room
             const evictIdx = gapAsgn.findIndex(a => {
+              if (a.position === "Supervisor") return false; // never evict the Sup slot
               const e = sourceEmps.find(x => x.id === a.employeeId);
               return e && isGuardOnly(e);
             });
@@ -3703,14 +4111,14 @@ function buildAutoFill(sourceEmps, cfg, empTimeOffDays, empPatterns, extShiftsAr
             if (evictedEmp) {
               hourTracker[evictedEmp.id]   = Math.max(0, (hourTracker[evictedEmp.id]||0)   - SHIFT_HOURS);
               shiftsWorked[evictedEmp.id]  = Math.max(0, (shiftsWorked[evictedEmp.id]||0)  - 1);
-              dayWorked[evictedEmp.id]?.delete(gapDay);
+              clearDayIfFree(evictedEmp.id, gapDay);
             }
           }
 
           // Update hour/shift tracking for donor (source → gap, same total hours)
           hourTracker[donor.id]  = (hourTracker[donor.id]||0); // net change = 0
           shiftsWorked[donor.id] = (shiftsWorked[donor.id]||0); // net = 0 (removed from one, added to another)
-          dayWorked[donor.id]?.delete(donorSourceDay);
+          clearDayIfFree(donor.id, donorSourceDay);
           dayWorked[donor.id]?.add(gapDay);
 
           // Update hour/shift tracking for sub (new assignment)
@@ -3746,7 +4154,7 @@ function buildAutoFill(sourceEmps, cfg, empTimeOffDays, empPatterns, extShiftsAr
   });
   // ── Step 6: Violation minimizer pass ────────────────────────────────────
   const { fixCount } = violationMinimizerPass(
-    ns, sourceEmps, cfg, empTimeOffDays, extShiftsArg, plan, hourTracker, shiftsWorked
+    ns, sourceEmps, cfg, empTimeOffDays, extShiftsArg, plan, hourTracker, shiftsWorked, empPatterns
   );
   if (fixCount > 0) {
     console.log("[AutoFill] Violation minimizer fixed " + fixCount + " slot(s)");
@@ -3792,7 +4200,7 @@ function buildAutoFill(sourceEmps, cfg, empTimeOffDays, empPatterns, extShiftsAr
 // Violations by severity: unavailable day (100), time-off day (95),
 // blocked shift (90), required-shift mismatch (80), FT shift-lock (70).
 // Runs up to 3 sweeps or until no more swappable violations remain.
-function violationMinimizerPass(ns, sourceEmps, cfg, empTimeOffDays, extShiftsArg, plan, hourTracker, shiftsWorked) {
+function violationMinimizerPass(ns, sourceEmps, cfg, empTimeOffDays, extShiftsArg, plan, hourTracker, shiftsWorked, empPatterns) {
   const maxNights = cfg?.maxConsecutiveNights ?? MAX_CONSECUTIVE_NIGHTS;
   const minRest   = cfg?.minRestHours ?? MIN_REST_HOURS;
   const MAX_SWEEPS = 3;
@@ -3805,7 +4213,7 @@ function violationMinimizerPass(ns, sourceEmps, cfg, empTimeOffDays, extShiftsAr
   // Index: ext-shift bodies per slot for O(1) conflict check
   const extBodiesBySlot = new Map(); // "day__shiftId" → Set of empIds
   for (const ext of (extShiftsArg || [])) {
-    const pair = EXT_PAIRS.find(p => p.id === ext.pairId);
+    const pair = EXT_PAIRS_BY_ID.get(ext.pairId);
     if (!pair) continue;
     for (const shiftId of pair.covers) {
       const k = ext.day + "__" + shiftId;
@@ -3833,6 +4241,27 @@ function violationMinimizerPass(ns, sourceEmps, cfg, empTimeOffDays, extShiftsAr
       const p = plan[emp.id];
       if (p && p.shiftId !== shiftId) return false;
     }
+    // Same-day double-shift guard (mirrors sameDayConflict in buildAutoFill):
+    // candidate may already hold another shift this day — only willing16h on
+    // adjacent shifts is permitted.
+    const VM_ADJ = new Set(["first__second","second__first","second__third","third__second"]);
+    for (const s of SHIFTS) {
+      if (s.id === shiftId) continue;
+      if ((sched[cellKey(day, s.id)] || []).some(x => x.employeeId === emp.id)) {
+        if (!emp.willing16h) return false;
+        if (!VM_ADJ.has(s.id + "__" + shiftId)) return false;
+      }
+    }
+    // Consecutive-days guard, schedule-derived (this pass doesn't maintain the
+    // dayWorked tracker, so compute from sched directly), incl. prev-week tail.
+    // isClean previously checked rest/consec-hours/consec-nights but NOT
+    // consecutive days — the swap-in winner could be handed a 6th straight day.
+    const maxDays = cfg?.maxConsecutiveShifts ?? 5;
+    const tail = (empPatterns && empPatterns[emp.id]?.trailingDays) || 0;
+    const worksOn = (d) => (d === day) || SHIFTS.some(s => (sched[cellKey(d, s.id)]||[]).some(x => x.employeeId === emp.id));
+    let streak = worksOn(DAYS[0]) ? tail + 1 : 0, mxStreak = streak;
+    for (let i = 1; i < 7; i++) { streak = worksOn(DAYS[i]) ? streak + 1 : 0; mxStreak = Math.max(mxStreak, streak); }
+    if (mxStreak > maxDays) return false;
     if (isRestViolation(emp, calcRestGap(emp.id, sched, day, shiftId, extShiftsArg), minRest)) return false;
     if (calcConsecutiveHours(emp.id, sched, day, shiftId, extShiftsArg) > empMaxConsec(emp)) return false;
     if (shiftId === "third" && calcConsecutiveNights(emp.id, sched, day, shiftId) >= maxNights) return false;
@@ -3885,7 +4314,17 @@ function violationMinimizerPass(ns, sourceEmps, cfg, empTimeOffDays, extShiftsAr
             if (au && !bu) return -1; if (!au && bu) return 1;
             return ha - hb;
           });
-          const winner = candidates[0];
+          // Role-coverage preservation: the outgoing employee may be supplying
+          // Scale/Medical via qualification even while labeled Guard. Reject
+          // winners whose swap would strip a role the slot currently has
+          // (canFillPos only matches the position LABEL, not slot coverage).
+          const winner = candidates.find(w => {
+            const newAsgn = [...asgn.slice(0,ai), { employeeId: w.id, position: a.position }, ...asgn.slice(ai+1)];
+            if (slotHasRole(asgn, sourceEmps, "Scale")   && !slotHasRole(newAsgn, sourceEmps, "Scale"))   return false;
+            if (slotHasRole(asgn, sourceEmps, "Medical") && !slotHasRole(newAsgn, sourceEmps, "Medical")) return false;
+            return true;
+          });
+          if (!winner) continue;
           ns[key] = [...asgn.slice(0,ai), { employeeId: winner.id, position: a.position }, ...asgn.slice(ai+1)];
           hourTracker[emp.id]      = Math.max(0, (hourTracker[emp.id]||0) - SHIFT_HOURS);
           shiftsWorked[emp.id]     = Math.max(0, (shiftsWorked[emp.id]||0) - 1);
@@ -4097,12 +4536,12 @@ function ExcelPreviewModal({ onDownload, onClose }) {
     const extAsA = extDay.find(e => e.empAId === emp.id);
     const extAsB = extDay.find(e => e.empBId === emp.id);
     if (extAsA) {
-      const pair = EXT_PAIRS.find(p => p.id === extAsA.pairId);
+      const pair = EXT_PAIRS_BY_ID.get(extAsA.pairId);
       const label = pair ? pair.label : "Ext";
       return { text: label + hoSuffix, kind: pair && (pair.startHour ?? 6) < 12 ? "splitDay" : "splitNight" };
     }
     if (extAsB) {
-      const pair = EXT_PAIRS.find(p => p.id === extAsB.pairId);
+      const pair = EXT_PAIRS_BY_ID.get(extAsB.pairId);
       const label = pair ? pair.label : "Ext";
       return { text: label + hoSuffix, kind: pair && (pair.startHourB ?? pair.startHour ?? 18) < 12 ? "splitDay" : "splitNight" };
     }
@@ -4401,12 +4840,12 @@ async function exportToExcel(employees, schedule, extShifts, weekStart, training
     const extAsA = extDay.find(e => e.empAId === emp.id);
     const extAsB = extDay.find(e => e.empBId === emp.id);
     if (extAsA) {
-      const pair = EXT_PAIRS.find(p => p.id === extAsA.pairId);
+      const pair = EXT_PAIRS_BY_ID.get(extAsA.pairId);
       const label = pair ? pair.label : "Ext";
       return { text: label + hoSuffix, kind: pair && (pair.startHour ?? 6) < 12 ? "splitDay" : "splitNight" };
     }
     if (extAsB) {
-      const pair = EXT_PAIRS.find(p => p.id === extAsB.pairId);
+      const pair = EXT_PAIRS_BY_ID.get(extAsB.pairId);
       const label = pair ? pair.label : "Ext";
       return { text: label + hoSuffix, kind: pair && (pair.startHourB ?? pair.startHour ?? 18) < 12 ? "splitDay" : "splitNight" };
     }
@@ -4473,7 +4912,9 @@ async function exportToExcel(employees, schedule, extShifts, weekStart, training
   };
 
   const weekStartDate = weekStart ? new Date(weekStart + "T12:00:00") : (() => {
-    const d = new Date(); d.setDate(d.getDate() - d.getDay()); return d;
+    const d = new Date(); d.setDate(d.getDate() - d.getDay());
+    d.setHours(12,0,0,0); // noon anchor — keeps downstream date math on the right day
+    return d;
   })();
   const dayDates = DAYS.map((_, i) => {
     const d = new Date(weekStartDate); d.setDate(weekStartDate.getDate() + i); return d;
@@ -4676,7 +5117,7 @@ async function exportToExcel(employees, schedule, extShifts, weekStart, training
 </Workbook>`;
 
   const blob     = new Blob([xml], { type: "application/vnd.ms-excel;charset=utf-8" });
-  const fileName = `ShiftSchedule_${today.toISOString().slice(0,10)}.xls`;
+  const fileName = `ShiftSchedule_${localISODate(today)}.xls`;
 
   if (window.showSaveFilePicker) {
     try {
@@ -4834,7 +5275,10 @@ async function exportWeekending(employees, schedule, extShifts, handoffs, weekSt
 
   // ── Compute week dates ──
   const weekStartDate = weekStart ? new Date(weekStart + "T12:00:00") : new Date();
-  if (!weekStart) weekStartDate.setDate(weekStartDate.getDate() - weekStartDate.getDay());
+  if (!weekStart) {
+    weekStartDate.setDate(weekStartDate.getDate() - weekStartDate.getDay());
+    weekStartDate.setHours(12,0,0,0); // noon anchor — keeps downstream date math on the right day
+  }
   const weekEndDate = new Date(weekStartDate);
   weekEndDate.setDate(weekStartDate.getDate() + 6);
 
@@ -5116,7 +5560,7 @@ async function exportWeekending(employees, schedule, extShifts, handoffs, weekSt
   // ── Download ──
   const outBuf = await wb.xlsx.writeBuffer();
   const blob = new Blob([outBuf], { type: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" });
-  const weDateParts = weekEndDate.toISOString().slice(0, 10).split("-");
+  const weDateParts = localISODate(weekEndDate).split("-");
   const fileName = "Weekending " + parseInt(weDateParts[1]) + "-" + parseInt(weDateParts[2]) + "-" + weDateParts[0] + ".xlsx";
 
   if (window.showSaveFilePicker) {
@@ -5747,6 +6191,184 @@ function TrainingBlockModal({ initialDay, onApprove, onCancel }) {
   );
 }
 
+// ── Call-Off Replacement Finder modal ───────────────────────────────────────
+// Supervisor workflow: someone calls off → pick the slot → get a ranked
+// "who to call first" list with eligibility built from the same rules the
+// auto-fill uses. One click assigns the replacement (and removes the call-off).
+function CallOffModal({ initialDay, initialShiftId, onAssign, onClose }) {
+  const { employees } = useRoster();
+  const { schedule, extShifts, weekStart } = useSchedule();
+  const { timeOffReqs } = useTimeOff();
+  const cfg = useSettings();
+  const [day,        setDay]        = useState(initialDay || DAYS[new Date().getDay()]);
+  const [shiftId,    setShiftId]    = useState(initialShiftId || "first");
+  const [callOffId,  setCallOffId]  = useState("");   // "" = open slot, no removal
+  const [showAll,    setShowAll]    = useState(false);
+
+  const slotAsgn   = schedule[cellKey(day, shiftId)] || [];
+  const callOffA   = slotAsgn.find(a => a.employeeId === callOffId);
+  const callOffEmp = callOffId ? employees.find(e => e.id === callOffId) : null;
+  // The position we're trying to backfill: the call-off's position if it's a
+  // specialist role, otherwise unconstrained (Guard).
+  const neededPos  = callOffA && callOffA.position !== "Guard" ? callOffA.position : null;
+
+  const list = useMemo(() =>
+    buildCallOffList(day, shiftId, neededPos, callOffId || null,
+      employees, schedule, extShifts || [], timeOffReqs || [], weekStart, cfg),
+    [day, shiftId, neededPos, callOffId, employees, schedule, extShifts, timeOffReqs, weekStart, cfg]);
+
+  const eligible   = list.filter(c => c.eligible);
+  const ineligible = list.filter(c => !c.eligible);
+  const shiftMeta  = SHIFTS.find(s => s.id === shiftId);
+
+  const TIER_LABELS = {
+    0: "No overtime cost — needs the hours",
+    1: "Part-time / on-call",
+    2: "Into overtime — OT willing",
+    3: "Into overtime — no OT preference",
+    4: "Into overtime — OT declined (last resort)",
+  };
+
+  const chipColor = (lvl) =>
+    lvl === "danger" ? "var(--ss-danger)" :
+    lvl === "warn"   ? "var(--ss-warning)" :
+    lvl === "ok"     ? "var(--ss-scale)"   : "var(--ss-text-dim)";
+
+  const selStyle = {fontSize:12,padding:"5px 8px",borderRadius:5,fontFamily:"inherit",
+    border:"1px solid var(--ss-border)",background:"var(--ss-surface-alt)",color:"var(--ss-text)"};
+
+  let lastTier = null;
+  return (
+    <div style={{position:"fixed",inset:0,background:"rgba(0,0,0,0.75)",display:"flex",
+      alignItems:"center",justifyContent:"center",zIndex:1100,padding:20}}
+      onClick={e=>{ if(e.target===e.currentTarget) onClose(); }}>
+      <div style={{background:"var(--ss-surface)",border:"1px solid var(--ss-border)",borderRadius:10,
+        width:"min(560px, 96vw)",maxHeight:"88vh",display:"flex",flexDirection:"column",
+        animation:"ss-dialog-in .18s ease-out"}}>
+
+        {/* header */}
+        <div style={{padding:"14px 18px 12px",borderBottom:"1px solid var(--ss-border)"}}>
+          <div style={{display:"flex",alignItems:"center",gap:10}}>
+            {Icon("phone-call",{size:17,color:"var(--ss-accent)"})}
+            <span style={{fontSize:14,fontWeight:800,color:"var(--ss-text)",letterSpacing:".02em"}}>
+              Call-Off Replacement
+            </span>
+            <button onClick={onClose} title="Close"
+              style={{marginLeft:"auto",background:"transparent",border:"none",cursor:"pointer",
+                color:"var(--ss-text-dim)",fontSize:18,lineHeight:1,padding:2}}>×</button>
+          </div>
+          <div style={{fontSize:11,color:"var(--ss-text-muted)",marginTop:4}}>
+            Ranked by who to call first — same eligibility rules the auto-fill uses.
+          </div>
+
+          {/* slot pickers */}
+          <div style={{display:"flex",gap:8,flexWrap:"wrap",marginTop:12}}>
+            <select value={day} onChange={e=>{setDay(e.target.value); setCallOffId("");}} style={selStyle}>
+              {DAYS.map(d=><option key={d} value={d}>{d}</option>)}
+            </select>
+            <select value={shiftId} onChange={e=>{setShiftId(e.target.value); setCallOffId("");}} style={selStyle}>
+              {SHIFTS.map(s=><option key={s.id} value={s.id}>{s.label} ({s.time})</option>)}
+            </select>
+            <select value={callOffId} onChange={e=>setCallOffId(e.target.value)} style={{...selStyle,flex:"1 1 150px"}}>
+              <option value="">Open slot — nobody to remove</option>
+              {slotAsgn.map(a=>{
+                const e = employees.find(x=>x.id===a.employeeId);
+                return e ? <option key={a.employeeId} value={a.employeeId}>{e.name} called off ({a.position})</option> : null;
+              })}
+            </select>
+          </div>
+          {neededPos&&(
+            <div style={{fontSize:11,color:"var(--ss-warning-readable)",marginTop:8,display:"flex",alignItems:"center",gap:6}}>
+              {Icon("alert-triangle",{size:12,color:"var(--ss-warning)"})}
+              Backfilling a <b style={{margin:"0 3px"}}>{neededPos}</b> position — only {neededPos}-qualified staff are eligible.
+            </div>
+          )}
+        </div>
+
+        {/* ranked list */}
+        <div style={{overflowY:"auto",padding:"10px 14px",flex:1}}>
+          {eligible.length===0&&(
+            <div style={{textAlign:"center",padding:"28px 12px",fontSize:12,color:"var(--ss-text-muted)"}}>
+              Nobody is eligible for {shiftMeta?.label} on {day} under current rules.<br/>
+              Check the list below for who's blocked and why.
+            </div>
+          )}
+          {eligible.map((c,i)=>{
+            const tierHdr = c.tier !== lastTier
+              ? <div key={"t"+c.tier} style={{fontSize:9.5,fontWeight:800,letterSpacing:".08em",
+                  textTransform:"uppercase",color:"var(--ss-text-dim)",
+                  margin:(lastTier===null?"2px":"12px")+" 2px 5px"}}>{TIER_LABELS[c.tier]}</div>
+              : null;
+            lastTier = c.tier;
+            return (
+              <Fragment key={c.emp.id}>
+                {tierHdr}
+                <div style={{display:"flex",alignItems:"center",gap:10,padding:"8px 10px",
+                  background:"var(--ss-surface-alt)",border:"1px solid var(--ss-border)",
+                  borderRadius:6,marginBottom:5}}>
+                  <span style={{fontSize:16,fontWeight:800,color:"var(--ss-accent)",
+                    minWidth:26,textAlign:"center"}}>{i+1}</span>
+                  <div style={{flex:1,minWidth:0}}>
+                    <div style={{display:"flex",alignItems:"baseline",gap:7,flexWrap:"wrap"}}>
+                      <span style={{fontSize:13,fontWeight:700,color:"var(--ss-text)"}}>{c.emp.name}</span>
+                      <span style={{fontSize:9.5,fontWeight:700,color:"var(--ss-text-dim)",
+                        textTransform:"uppercase",letterSpacing:".05em"}}>
+                        {c.emp.employmentType==="full-time"?"FT":c.emp.employmentType==="part-time"?"PT":"OC"}
+                      </span>
+                      {c.emp.phone&&<span style={{fontSize:11,color:"var(--ss-text-muted)"}}>{c.emp.phone}</span>}
+                      <span style={{fontSize:11,color:c.wouldOT?"var(--ss-warning-readable)":"var(--ss-text-muted)",
+                        marginLeft:"auto"}}>{c.hrs}h → {c.projHrs}h</span>
+                    </div>
+                    {c.flags.length>0&&(
+                      <div style={{display:"flex",gap:5,flexWrap:"wrap",marginTop:3}}>
+                        {c.flags.map((f,fi)=>(
+                          <span key={fi} style={{fontSize:9.5,fontWeight:600,color:chipColor(f.level),
+                            border:"1px solid "+chipColor(f.level),borderRadius:3,
+                            padding:"0px 5px",lineHeight:"15px",opacity:.92}}>{f.label}</span>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+                  <button onClick={()=>{
+                      const pos = neededPos && canFillPos(c.emp, neededPos, day) ? neededPos
+                                : (callOffA ? "Guard" : null) || "Guard";
+                      onAssign(day, shiftId, callOffId || null, c.emp.id, pos);
+                      onClose();
+                    }}
+                    style={{fontSize:11,fontWeight:700,padding:"5px 12px",borderRadius:5,cursor:"pointer",
+                      background:"var(--ss-accent-22)",color:"var(--ss-accent)",
+                      border:"1px solid var(--ss-accent)",whiteSpace:"nowrap"}}>
+                    Assign
+                  </button>
+                </div>
+              </Fragment>
+            );
+          })}
+
+          {/* ineligible — collapsed by default */}
+          {ineligible.length>0&&(
+            <div style={{marginTop:12}}>
+              <button onClick={()=>setShowAll(o=>!o)}
+                style={{background:"transparent",border:"none",cursor:"pointer",fontFamily:"inherit",
+                  fontSize:10.5,fontWeight:800,letterSpacing:".08em",textTransform:"uppercase",
+                  color:"var(--ss-text-dim)",padding:"2px 2px 6px"}}>
+                {showAll?"▾":"▸"} Not eligible ({ineligible.length})
+              </button>
+              {showAll&&ineligible.map(c=>(
+                <div key={c.emp.id} style={{display:"flex",alignItems:"center",gap:10,padding:"6px 10px",
+                  borderRadius:6,marginBottom:4,opacity:.65}}>
+                  <span style={{fontSize:12,fontWeight:700,color:"var(--ss-text-muted)",minWidth:0}}>{c.emp.name}</span>
+                  <span style={{fontSize:10.5,color:"var(--ss-danger-readable)"}}>{c.reasons.join(" · ")}</span>
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}
+
 function ManualPairModal({ initialDay, onApprove, onCancel }) {
   const { employees } = useRoster();
   const { schedule, extShifts } = useSchedule();
@@ -5757,7 +6379,7 @@ function ManualPairModal({ initialDay, onApprove, onCancel }) {
   const [empBId,  setEmpBId]  = useState("");
   const [mode,    setMode]    = useState("suggest");
 
-  const pair = EXT_PAIRS.find(p => p.id === pairId);
+  const pair = EXT_PAIRS_BY_ID.get(pairId);
   // 2-person swings (with coversB) go through the regular pair-pick flow;
   // only single-person swings use the swing-specific single-employee UI.
   const isSwing = !!(pair?.isSwing && !pair?.coversB);
@@ -6115,7 +6737,7 @@ function ExtShiftBanner({ onRemove }) {
       </div>
       <div style={{display:"flex",flexDirection:"column",gap:5}}>
         {extShifts.map((ext,i) => {
-          const pair = EXT_PAIRS.find(p=>p.id===ext.pairId);
+          const pair = EXT_PAIRS_BY_ID.get(ext.pairId);
           return (
             <div key={i} style={{display:"flex",alignItems:"center",gap:12,flexWrap:"wrap",
               padding:"6px 10px",background:"var(--ss-surface)",borderRadius:5,
@@ -6969,7 +7591,7 @@ function RosterManager() {
     const url  = URL.createObjectURL(blob);
     const a    = document.createElement("a");
     a.href     = url;
-    a.download = `shift-rosters-backup-${new Date().toISOString().slice(0,10)}.json`;
+    a.download = `shift-rosters-backup-${localISODate(new Date())}.json`;
     a.click();
     URL.revokeObjectURL(url);
     showFlash("exported");
@@ -8472,6 +9094,18 @@ function CoverageDashboard({ navigateToWeek }) {
   const t = useTheme();
   const cfg = useSettings();
   const [quickFilling, setQuickFilling] = useState(null);
+  // Hooks for the conditional history-trends and per-employee sections below.
+  // They MUST live here unconditionally: calling useState inside
+  // `{cond && (() => { useState(...) })()}` changes the hook count between
+  // renders when the condition flips, corrupting every later hook's state.
+  const [trendTab, setTrendTab] = useState("chart");
+  const [sortCol,  setSortCol]  = useState("weekStart");
+  const [sortAsc,  setSortAsc]  = useState(false);
+  // "__auto__" resolves to the first employee at render time (employees may
+  // load async after mount); explicit clicks store a real id or null.
+  const [selectedEmpIdRaw, setSelectedEmpId] = useState("__auto__");
+  const [sortEmpCol, setSortEmpCol] = useState("totalHrs");
+  const [sortEmpAsc, setSortEmpAsc] = useState(false);
 
   const analysis = useMemo(() => {
     const gaps = [];
@@ -8507,7 +9141,7 @@ function CoverageDashboard({ navigateToWeek }) {
         const extMedical = cellExt.some(e => (e.roles||[]).includes("Medical"));
         const regIds = new Set(asgn.map(a => a.employeeId));
         const extFilled  = cellExt.reduce((n, e) => {
-          const pair = EXT_PAIRS.find(p => p.id === e.pairId);
+          const pair = EXT_PAIRS_BY_ID.get(e.pairId);
           const singleSwing = pair?.isSwing && !pair?.coversB;
           const aCovers = pair?.covers?.includes(shift.id);
           const bCovers = pair?.coversB?.includes(shift.id);
@@ -8735,9 +9369,7 @@ function CoverageDashboard({ navigateToWeek }) {
 
       {}
       {historyStats.length > 0 && (() => {
-        const [trendTab, setTrendTab] = useState("chart");
-        const [sortCol,  setSortCol]  = useState("weekStart");
-        const [sortAsc,  setSortAsc]  = useState(false);
+        // trendTab/sortCol/sortAsc state hoisted to component top (hook-order safety)
 
         const METRICS = [
           { key:"coveragePct",     label:"Coverage",    unit:"%",  good:"high", color: "var(--ss-scale)" },
@@ -9362,9 +9994,8 @@ function CoverageDashboard({ navigateToWeek }) {
           };
         });
 
-        const [selectedEmpId, setSelectedEmpId] = useState(employees[0]?.id||null);
-        const [sortEmpCol, setSortEmpCol] = useState("totalHrs");
-        const [sortEmpAsc, setSortEmpAsc] = useState(false);
+        // selectedEmpId/sortEmpCol/sortEmpAsc state hoisted to component top (hook-order safety)
+        const selectedEmpId = selectedEmpIdRaw === "__auto__" ? (employees[0]?.id||null) : selectedEmpIdRaw;
 
         const selectedEmp = employees.find(e=>e.id===selectedEmpId);
         const selectedRows = selectedEmpId ? empWeekData[selectedEmpId] : [];
@@ -9660,7 +10291,7 @@ function SchedulePopout({ onClose }) {
                       );
                     })}
                     {cellExt.map((ext,ei)=>{
-                      const pair=EXT_PAIRS.find(p=>p.id===ext.pairId);
+                      const pair=EXT_PAIRS_BY_ID.get(ext.pairId);
                       const singleSwing=pair?.isSwing&&!pair?.coversB;
                       const onNextDay=ext.day!==day;
                       const aCovers=!onNextDay&&(pair?.covers||[]).includes(shift.id);
@@ -9863,7 +10494,7 @@ function printWeekSchedule(schedule, employees, extShifts, weekStart) {
       const key = day + "__" + shift.id;
       const asgn = schedule[key] || [];
       const cellExts = (extShifts || []).filter(e => {
-        const pair = EXT_PAIRS.find(p => p.id === e.pairId);
+        const pair = EXT_PAIRS_BY_ID.get(e.pairId);
         return pair && e.day === day && pair.covers.includes(shift.id);
       });
       let cell = "";
@@ -9886,7 +10517,7 @@ function printWeekSchedule(schedule, employees, extShifts, weekStart) {
         </div>`;
       });
       cellExts.forEach(ext => {
-        const pair = EXT_PAIRS.find(p => p.id === ext.pairId);
+        const pair = EXT_PAIRS_BY_ID.get(ext.pairId);
         const idx = pair.covers.indexOf(shift.id);
         const empId = idx === 0 ? ext.empAId : ext.empBId;
         if (!empId) return;
@@ -10120,7 +10751,7 @@ function WeekPickerBar({ weekStart, setWeekStart, stepWeek, t }) {
           const dt = new Date(v+"T12:00:00");
           const day = dt.getDay();
           dt.setDate(dt.getDate() - day);
-          setWeekStart(dt.toISOString().slice(0,10));
+          setWeekStart(localISODate(dt));
         }}
         style={{fontSize:11,padding:"3px 6px",borderRadius:4,border:"1px solid var(--ss-border)",
           background:"var(--ss-surface-alt)",color:"var(--ss-text)"}}
@@ -10129,7 +10760,7 @@ function WeekPickerBar({ weekStart, setWeekStart, stepWeek, t }) {
   );
 }
 
-function EmpPickerSearch({ day, shift, subSource, unassigned, getAssignable,
+function EmpPickerSearch({ day, shift, subSource, employees, unassigned, getAssignable,
   assignEmp, schedule, extShifts, timeOffReqs, weekStart, executeSub, st,
   setEditingCell, setSubSource, t, onHoverEmp }) {
   const [pickSearch, setPickSearch] = useState("");
@@ -10165,6 +10796,10 @@ function EmpPickerSearch({ day, shift, subSource, unassigned, getAssignable,
 
 function ScheduleGrid({ onOpenTestModal }) {
   const { employees, afExclude, setAfExclude, swingDesig, empPatterns, setEmpPatterns } = useRoster();
+  // Which day header is hovered in the desktop grid (index into DAYS, or null).
+  const [hoverDayIdx, setHoverDayIdx] = useState(null);
+  // Call-Off Replacement Finder modal: null or {day, shiftId} prefill.
+  const [callOffOpen, setCallOffOpen] = useState(null);
   const { schedule, setSchedule, extShifts, setExtShifts, trainingBlocks, setTrainingBlocks, weekStart, setWeekStart, scheduleStale: scheduleStaleP, setScheduleStale: setScheduleStaleProp, empTimeOffDays, handoffs, setHandoffs } = useSchedule();
   const { history, setHistory, savedWeeks, setSavedWeeks } = useHistory();
   const { timeOffReqs } = useTimeOff();
@@ -10296,7 +10931,7 @@ function ScheduleGrid({ onOpenTestModal }) {
     const [y,m,d] = (weekStart||"2024-01-07").split("-").map(Number);
     const dt = new Date(y, m-1, d, 12);
     dt.setDate(dt.getDate() + dir * 7);
-    const ns = dt.toISOString().slice(0,10);
+    const ns = localISODate(dt);
     setWeekStart(ns);
   };
   const getAsgn       = (d,s) => displaySchedule[cellKey(d,s)]||[];
@@ -10428,6 +11063,20 @@ function ScheduleGrid({ onOpenTestModal }) {
     pushUndo();
     const key=cellKey(d,s);
     setSchedule(p=>({...p,[key]:(p[key]||[]).filter(a=>a.employeeId!==eid)}));
+  };
+  // Call-off replacement: remove the call-off and assign the replacement in ONE
+  // schedule update (one undo step). Doing removeAsgn + assignEmp separately
+  // would let assignEmp's slot-full check read the pre-removal schedule.
+  const executeCallOffReplacement = (d, s, removeId, addId, pos) => {
+    if (isReadOnly) return;
+    pushUndo();
+    const key = cellKey(d, s);
+    setSchedule(p => {
+      let asgn = (p[key] || []);
+      if (removeId) asgn = asgn.filter(a => a.employeeId !== removeId);
+      if (asgn.some(a => a.employeeId === addId)) return p; // already there
+      return { ...p, [key]: [...asgn, { employeeId: addId, position: pos }] };
+    });
   };
   const getSwapViolations = (srcEmp, srcDay, srcShiftId, srcPos, tgtEmp, tgtDay, tgtShiftId, tgtPos) => {
     const viols = [];
@@ -10659,7 +11308,7 @@ function ScheduleGrid({ onOpenTestModal }) {
     const tooManyNights = nights >= (cfg?.maxConsecutiveNights??MAX_CONSECUTIVE_NIGHTS);
     const currentHours = calcHours(dragEmp.id, schedule, extShifts||[]);
     const wouldBeOver = dragEmp.employmentType==="full-time" && currentHours>=40;
-    if (consecHDrag > empMaxConsec(dragEmp)) { setDragOver(null); return; }
+    if (consecHDrag > empMaxConsec(dragEmp)) { setDragEmp(null); return; }
     if (isUnavailable) warns.push(`${dragEmp.name} is marked unavailable on ${d}.`);
     if (shortRest) warns.push(`Only ${Math.round(rest*10)/10}h rest since last shift.`);
     if (tooManyNights) warns.push(`${nights} consecutive night shifts.`);
@@ -10692,7 +11341,7 @@ function ScheduleGrid({ onOpenTestModal }) {
       let n = 0;
       (allExts).forEach(ext => {
         if (ext.day !== day) return;
-        const pair = EXT_PAIRS.find(p => p.id === ext.pairId);
+        const pair = EXT_PAIRS_BY_ID.get(ext.pairId);
         if (!pair || !pair.covers.includes(shiftId)) return;
         const idx = pair.covers.indexOf(shiftId);
         if (pair.isSwing && !pair.coversB) {
@@ -10733,7 +11382,7 @@ function ScheduleGrid({ onOpenTestModal }) {
           .flatMap(ext => [ext.empAId, ext.empBId].filter(Boolean)
             .map(id => rmap[id]).filter(Boolean)
             .filter(e => {
-              const pair = EXT_PAIRS.find(p => p.id === ext.pairId);
+              const pair = EXT_PAIRS_BY_ID.get(ext.pairId);
               if (!pair) return false;
               const idx = pair.covers.indexOf(shift.id);
               return idx >= 0;
@@ -10768,8 +11417,10 @@ function ScheduleGrid({ onOpenTestModal }) {
           if ((emp.blockedShifts||[]).includes(shift.id))
             E(`${emp.name} assigned to blocked shift ${shift.id} on ${day}`);
 
-          if (emp.requiredShift && emp.requiredShift !== shift.id)
+          if (emp.requiredShift && emp.requiredShift !== shift.id && !emp.crossShiftOT)
             E(`${emp.name} on ${shift.id} but required on ${emp.requiredShift} (${day})`);
+          else if (emp.requiredShift && emp.requiredShift !== shift.id && emp.crossShiftOT)
+            W(`${emp.name} on ${shift.id} outside required ${emp.requiredShift} (cross-shift OT) (${day})`);
 
           shiftCount[id] = (shiftCount[id]||0) + 1;
           if (["Saturday","Sunday"].includes(day))
@@ -10904,7 +11555,7 @@ function ScheduleGrid({ onOpenTestModal }) {
       };
       // Seed from existing ext shifts
       [...(extShifts||[]).filter(e => e.approvedAt !== "auto-fill"), ...proactiveExts].forEach(ext => {
-        const p = EXT_PAIRS.find(pp => pp.id === ext.pairId);
+        const p = EXT_PAIRS_BY_ID.get(ext.pairId);
         if (p) {
           if (ext.empAId) markExtSlots(ext.empAId, p, ext.day);
           if (ext.empBId) markExtSlots(ext.empBId, p, ext.day);
@@ -11008,7 +11659,7 @@ function ScheduleGrid({ onOpenTestModal }) {
         return true;
       });
       dedupedExts.forEach(ext => {
-        const pair = EXT_PAIRS.find(p => p.id === ext.pairId);
+        const pair = EXT_PAIRS_BY_ID.get(ext.pairId);
         if (!pair) return;
         pair.covers.forEach(shiftId => {
           const key = cellKey(ext.day, shiftId);
@@ -11533,7 +12184,7 @@ function ScheduleGrid({ onOpenTestModal }) {
 
   const approveManualPair = useCallback((pairing) => {
     setExtShifts(p => [...(p||[]), pairing]);
-    setShowManualPair(false);
+    setManualPairDay(null);
   }, [setExtShifts]);
 
   const removeExtShift = useCallback((idx) => {
@@ -11587,6 +12238,11 @@ function ScheduleGrid({ onOpenTestModal }) {
       )}
       {showMinimize&&<MinimizeViolationsPanel onClose={()=>setShowMinimize(false)}/>}
       {showCopyModal&&<CopyWeekModal onSave={handleSaveWeek} onLoad={handleLoadWeek} onDelete={handleDeleteWeek} onClose={()=>setShowCopyModal(false)}/>}
+      {callOffOpen&&<CallOffModal
+        initialDay={callOffOpen.day}
+        initialShiftId={callOffOpen.shiftId}
+        onAssign={executeCallOffReplacement}
+        onClose={()=>setCallOffOpen(null)}/>}
       {manualPairDay&&<ManualPairModal
         initialDay={manualPairDay}
         onApprove={approveManualPair}
@@ -11780,7 +12436,7 @@ function ScheduleGrid({ onOpenTestModal }) {
                     <div style={{marginTop:4,border:"1px solid var(--ss-accent-40)",borderRadius:6,
                       background:"var(--ss-surface)",padding:8}}>
                       <EmpPickerSearch
-                        day={mobileDay} shift={shift} subSource={null}
+                        day={mobileDay} shift={shift} subSource={null} employees={employees}
                         unassigned={unassigned} getAssignable={getAssignable} assignEmp={assignEmp}
                         schedule={schedule} extShifts={extShifts} timeOffReqs={timeOffReqs}
                         weekStart={weekStart} executeSub={executeSub} st={st}
@@ -11795,7 +12451,7 @@ function ScheduleGrid({ onOpenTestModal }) {
 
           {}
           {(extShifts||[]).filter(e=>e.day===mobileDay).map((ext,i)=>{
-            const pair=EXT_PAIRS.find(p=>p.id===ext.pairId);
+            const pair=EXT_PAIRS_BY_ID.get(ext.pairId);
             if(!pair) return null;
             return (
               <div key={i} style={{marginBottom:10,border:"1px solid "+pair.color+"60",
@@ -11861,15 +12517,18 @@ function ScheduleGrid({ onOpenTestModal }) {
             <div/>
             {DAYS.map((d,di)=>{
               const dateStr = (window.__schedWeekDates||[])[di]||"";
-              const [hoveringDay, setHoveringDay] = useState(false);
+              // hover state hoisted to component top as hoverDayIdx —
+              // useState inside .map behind the mobileView toggle shifts hook
+              // order by 7 on every view switch, corrupting later hooks.
+              const hoveringDay = hoverDayIdx === di;
               return (
                 <div key={d}
                   style={{background:hoveringDay&&!isReadOnly?"var(--ss-accent-0d)":"var(--ss-surface-alt)",
                     padding:"7px 8px",textAlign:"center",borderRadius:"4px 4px 0 0",
                     color:isWeekday(d)?"var(--ss-text)":"var(--ss-text-muted)",position:"relative",
                     transition:"background .15s"}}
-                  onMouseEnter={()=>!isReadOnly&&setHoveringDay(true)}
-                  onMouseLeave={()=>setHoveringDay(false)}>
+                  onMouseEnter={()=>!isReadOnly&&setHoverDayIdx(di)}
+                  onMouseLeave={()=>setHoverDayIdx(p=>p===di?null:p)}>
                   <div style={{fontSize:11,fontWeight:700,letterSpacing:".04em"}}>{d.substring(0,3).toUpperCase()}</div>
                   {dateStr&&<div style={{fontSize:10,color:"var(--ss-text-dim)",marginTop:1,fontWeight:600}}>{dateStr}</div>}
                   {hoveringDay&&!isReadOnly&&(
@@ -12025,7 +12684,7 @@ function ScheduleGrid({ onOpenTestModal }) {
                             background:"var(--ss-warning-18)",border:"1px solid var(--ss-warning-30)",padding:"1px 5px",borderRadius:3}}>
                             ⚠ NEED {r.toUpperCase()}</span>))}
                         {cellExt.map((ext,ei)=>{
-                          const extPairDef=EXT_PAIRS.find(p=>p.id===ext.pairId);
+                          const extPairDef=EXT_PAIRS_BY_ID.get(ext.pairId);
                           const empAName=employees.find(e=>e.id===ext.empAId)?.name?.split(" ")[0]||"?";
                           const empBName=ext.empBId?employees.find(e=>e.id===ext.empBId)?.name?.split(" ")[0]||"?":null;
                           return (<span key={ei} style={{display:"inline-flex",alignItems:"center",gap:3,
@@ -12217,7 +12876,7 @@ function ScheduleGrid({ onOpenTestModal }) {
                     })}
 
                     {cellExt.map((ext,ei)=>{
-                      const extPair=EXT_PAIRS.find(p=>p.id===ext.pairId);
+                      const extPair=EXT_PAIRS_BY_ID.get(ext.pairId);
                       const singleSwing=extPair?.isSwing&&!extPair?.coversB;
                       const onNextDay=ext.day!==day;
                       const aCovers=!onNextDay&&(extPair?.covers||[]).includes(shift.id);
@@ -12320,7 +12979,7 @@ function ScheduleGrid({ onOpenTestModal }) {
                           <button onClick={()=>{setEditingCell(null);setSubSource(null);}} style={{background:"transparent",border:"none",color:"var(--ss-text-dim)",cursor:"pointer",fontSize:12}}>✕</button>
                         </div>
                         <EmpPickerSearch
-                          day={day} shift={shift} subSource={subSource}
+                          day={day} shift={shift} subSource={subSource} employees={employees}
                           unassigned={unassigned}
                           getAssignable={getAssignable} assignEmp={assignEmp}
                           schedule={schedule} extShifts={extShifts} timeOffReqs={timeOffReqs}
@@ -12596,6 +13255,12 @@ function ScheduleGrid({ onOpenTestModal }) {
             style={{color:"#7c3aed",borderColor:"#7c3aed55"}}>
             {Icon("timer", {size:13, color:"#7c3aed"})} Pair Shifts
           </button>
+          <button onClick={()=>setCallOffOpen({})}
+            title="Someone called off — get a ranked list of who to call for a replacement"
+            className="ss-btn ss-btn-md ss-btn-secondary"
+            style={{color:"var(--ss-accent)",borderColor:"var(--ss-accent-55)"}}>
+            {Icon("phone-call", {size:13, color:"var(--ss-accent)"})} Call-Off
+          </button>
           <ViolationMinimizeButton onClick={()=>setShowMinimize(true)}/>
           <button onClick={()=>setMobileView&&setMobileView(v=>!v)}
             title={mobileView?"Switch to desktop grid view":"Switch to mobile view"}
@@ -12773,7 +13438,7 @@ function TimeOffCalendar() {
     const start = new Date(req.startDate + "T00:00:00");
     const end   = new Date((req.endDate || req.startDate) + "T00:00:00");
     for (let d = new Date(start); d <= end; d.setDate(d.getDate()+1)) {
-      const key = d.toISOString().slice(0,10);
+      const key = localISODate(d);
       if (!dateMap[key]) dateMap[key] = [];
       dateMap[key].push({ emp, req });
     }
@@ -12807,7 +13472,7 @@ function TimeOffCalendar() {
             if (!day) return <div key={"e"+i}/>;
             const dateStr = `${year}-${String(month+1).padStart(2,"0")}-${String(day).padStart(2,"0")}`;
             const entries = dateMap[dateStr] || [];
-            const isToday = dateStr === today.toISOString().slice(0,10);
+            const isToday = dateStr === localISODate(today);
             const isFocus = focusDate?.dateStr === dateStr;
 
             const dots = entries.slice(0,4);
@@ -13551,7 +14216,7 @@ function RosterBackup() {
       const url  = URL.createObjectURL(blob);
       const a    = document.createElement("a");
       a.href     = url;
-      a.download = `shift-backup-${new Date().toISOString().slice(0,10)}.json`;
+      a.download = `shift-backup-${localISODate(new Date())}.json`;
       a.click();
       URL.revokeObjectURL(url);
       flash("✓ Backup downloaded to your computer.");
@@ -14902,7 +15567,7 @@ function ShiftSchedulerApp() {
     const day = now.getDay();
     const sun = new Date(now);
     sun.setDate(now.getDate() - day);
-    return sun.toISOString().slice(0,10);
+    return localISODate(sun);
   })());
   const cfg = useMemo(() => ({ ...DEFAULT_SETTINGS, ...settings }), [settings]);
 
@@ -15033,13 +15698,13 @@ function ShiftSchedulerApp() {
   const filledSlots = useMemo(()=>{
     let count = Object.values(schedule).reduce((s,a)=>s+a.length,0);
     (extShifts||[]).forEach(ext=>{
-      EXT_PAIRS.find(p=>p.id===ext.pairId)?.covers.forEach(shiftId=>{
+      EXT_PAIRS_BY_ID.get(ext.pairId)?.covers.forEach(shiftId=>{
         const key=cellKey(ext.day,shiftId);
         const already=(schedule[key]||[]).length;
         const max=getSlotCount(ext.day,shiftId);
         if(already<max) count+=1;
       });
-      EXT_PAIRS.find(p=>p.id===ext.pairId)?.covers.forEach(shiftId=>{
+      EXT_PAIRS_BY_ID.get(ext.pairId)?.covers.forEach(shiftId=>{
         const key=cellKey(ext.day,shiftId);
         const already=(schedule[key]||[]).length;
         const max=getSlotCount(ext.day,shiftId);
@@ -15054,7 +15719,7 @@ function ShiftSchedulerApp() {
       const schedFilled=(schedule[cellKey(d,s.id)]||[]).length;
       const regIds=new Set((schedule[cellKey(d,s.id)]||[]).map(a=>a.employeeId));
       const extFilled=(extShifts||[]).filter(e=>extCovers(e,d,s.id)).reduce((n,e)=>{
-        const p=EXT_PAIRS.find(pp=>pp.id===e.pairId);
+        const p=EXT_PAIRS_BY_ID.get(e.pairId);
         const singleSwing=p?.isSwing&&!p?.coversB;
         const aCovers=p?.covers?.includes(s.id);
         const bCovers=p?.coversB?.includes(s.id);

@@ -224,8 +224,10 @@ function validateSchedule(sched, exts, emps, handoffsArg) {
           E(`${emp.name} on unavailable day ${day} (${shift.id})`);
         if ((emp.blockedShifts || []).includes(shift.id))
           E(`${emp.name} on blocked shift ${shift.id} (${day})`);
-        if (emp.requiredShift && emp.requiredShift !== shift.id)
+        if (emp.requiredShift && emp.requiredShift !== shift.id && !emp.crossShiftOT)
           E(`${emp.name} on ${shift.id} but required ${emp.requiredShift} (${day})`);
+        else if (emp.requiredShift && emp.requiredShift !== shift.id && emp.crossShiftOT)
+          W(`${emp.name} on ${shift.id} outside required ${emp.requiredShift} (cross-shift OT) (${day})`);
       }
     });
   });
