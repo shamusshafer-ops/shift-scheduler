@@ -43,7 +43,7 @@ const scriptBody = extractPlainScriptBlock(HTML);
 const EXPORTS = [
   'buildAutoFill', 'deployProactiveExtShifts', 'canWorkExtHalf', 'slotHasRole',
   'DAYS', 'SHIFTS', 'EXT_PAIRS', 'REGULAR_SLOTS', 'SUP_SLOT_DAY', 'cellKey',
-  'SHIFT_HOURS', 'HANDOFF_HOURS', 'isWeekday', 'getSlotCount',
+  'SHIFT_HOURS', 'HANDOFF_HOURS', 'isWeekday', 'getSlotCount', 'validateCoverage',
 ];
 const scriptWithExports = scriptBody + '\n;(function(){\n' +
   EXPORTS.map(n => `  try { globalThis.${n} = ${n}; } catch(_) {}`).join('\n') +
@@ -140,7 +140,7 @@ try {
 const {
   buildAutoFill, deployProactiveExtShifts, canWorkExtHalf, slotHasRole,
   DAYS, SHIFTS, EXT_PAIRS, REGULAR_SLOTS, SUP_SLOT_DAY, cellKey,
-  SHIFT_HOURS, HANDOFF_HOURS, isWeekday,
+  SHIFT_HOURS, HANDOFF_HOURS, isWeekday, validateCoverage,
 } = ctx;
 
 if (typeof buildAutoFill !== 'function') {
@@ -161,61 +161,10 @@ function validateSchedule(sched, exts, emps, handoffsArg) {
   const allExts = exts || [];
   const allHandoffs = handoffsArg || [];
 
-  const handoffBodyCount = (day, shiftId) =>
-    allHandoffs.filter(h => h.day === day && h.targetShiftId === shiftId).length;
-
-  const extBodyCount = (day, shiftId) => {
-    let n = 0;
-    for (const ext of allExts) {
-      const pair = EXT_PAIRS.find(p => p.id === ext.pairId);
-      if (!pair) continue;
-      const idx = pair.covers.indexOf(shiftId);
-      if (idx === 0 && ext.empAId && ext.day === day) n++;
-      if (idx === 1 && ext.empBId && ext.day === day) n++;
-    }
-    return n;
-  };
-
+  issues.push(...validateCoverage(sched, emps, allExts, allHandoffs));
   DAYS.forEach(day => {
     SHIFTS.forEach(shift => {
-      const regNeed   = REGULAR_SLOTS(day, shift.id);
-      const supNeed   = SUP_SLOT_DAY(day, shift.id) ? 1 : 0;
-      const totalNeed = regNeed + supNeed;
-      const key  = cellKey(day, shift.id);
-      const asgn = sched[key] || [];
-      const extBodies = extBodyCount(day, shift.id);
-      const hoHandoffs = handoffBodyCount(day, shift.id);
-      const regCount  = asgn.length + extBodies + hoHandoffs;
-      const supCount  = asgn.filter(a => a.position === 'Supervisor').length;
-      const total     = regCount + supCount;
-
-      if (total < totalNeed) {
-        E(`Coverage gap: ${day} ${shift.id} ${total}/${totalNeed}`);
-      }
-      if (isWeekday(day) && shift.id === 'first' && supNeed > 0 && supCount === 0) {
-        E(`No supervisor on ${day} 1st shift`);
-      }
-
-      // Role coverage (Scale/Medical) — warning only, matches app semantics.
-      const regs = asgn.filter(a => a.position !== 'Supervisor');
-      const hasScale   = regs.some(a => (rmap[a.employeeId]?.qualifications || []).includes('Scale'));
-      const hasMedical = regs.some(a => (rmap[a.employeeId]?.qualifications || []).includes('Medical'));
-      const extEmpsHere = allExts
-        .filter(ext => ext.day === day)
-        .flatMap(ext => {
-          const pair = EXT_PAIRS.find(p => p.id === ext.pairId);
-          if (!pair || pair.covers.indexOf(shift.id) < 0) return [];
-          return [ext.empAId, ext.empBId].filter(Boolean).map(id => rmap[id]).filter(Boolean);
-        });
-      const extHasScale   = extEmpsHere.some(e => (e.qualifications || []).includes('Scale'));
-      const extHasMedical = extEmpsHere.some(e => (e.qualifications || []).includes('Medical'));
-      const hoEmps = allHandoffs.filter(h => h.day === day && h.targetShiftId === shift.id)
-        .map(h => rmap[h.employeeId]).filter(Boolean);
-      const hoHasScale   = hoEmps.some(e => (e.qualifications || []).includes('Scale'));
-      const hoHasMedical = hoEmps.some(e => (e.qualifications || []).includes('Medical'));
-      if (!hasScale   && !extHasScale   && !hoHasScale)   W(`No Scale on ${day} ${shift.id}`);
-      if (!hasMedical && !extHasMedical && !hoHasMedical) W(`No Medical on ${day} ${shift.id}`);
-
+      const asgn = sched[cellKey(day, shift.id)] || [];
       // Hard-constraint violations on this cell.
       for (const a of asgn) {
         const emp = rmap[a.employeeId];
@@ -263,8 +212,8 @@ function scoreRun(sched, exts, emps, elapsedMs, handoffsArg) {
   const hardViolations = errors.length - coverageErrors;
   const ftUnder40 = warns.filter(w => /under 40h/.test(w.msg)).length;
   const ftOver48  = warns.filter(w => /over 48h/.test(w.msg)).length;
-  const noScale   = warns.filter(w => /^No Scale/.test(w.msg)).length;
-  const noMedical = warns.filter(w => /^No Medical/.test(w.msg)).length;
+  const noScale   = errors.filter(w => /^No Scale/.test(w.msg)).length;
+  const noMedical = errors.filter(w => /^No Medical/.test(w.msg)).length;
 
   const empMap = Object.fromEntries(emps.map(e => [e.id, e]));
   let prefShiftMisses = 0;
@@ -667,8 +616,8 @@ for (const sc of scenarios) {
   console.log(`\n── ${sc.name} (${sc.describe}, n=${sc.emps.length}, ${SEEDS.length} seeds) ──`);
   console.log(`   avg elapsed       ${results[sc.name].elapsedAvgMs}ms`);
   console.log(`   Σ errors          ${totals.errors}  (${totals.coverageErrors} coverage, ${totals.hardViolations} hard-violation)`);
-  console.log(`   Σ warns           ${totals.warns}  (${totals.ftUnder40} FT<40h, ${totals.ftOver48} FT>48h, ${totals.noScale} noScale, ${totals.noMedical} noMedical)`);
-  console.log(`   Σ prefShiftMisses ${totals.prefShiftMisses}`);
+  console.log(`   Σ warns           ${totals.warns}  (${totals.ftUnder40} FT<40h, ${totals.ftOver48} FT>48h)`);
+  console.log(`   Σ missing roles   ${totals.noScale} Scale, ${totals.noMedical} Medical (errors)`);
   console.log(`   Σ prefDayOffHits  ${totals.prefDayOffHits}`);
   console.log(`   Σ assignments     ${totals.assignmentsTotal}`);
   console.log(`   Σ ext-shifts      ${totals.extShifts}`);
