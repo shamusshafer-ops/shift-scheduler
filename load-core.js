@@ -43,6 +43,23 @@ const exportsList = [
   "EXT_PAIRS", "EXT_PAIRS_BY_ID", "extCovers", "slotHasRole", "isGuardOnly",
   "isRestViolation", "empMaxConsec", "isWeekday", "violationMinimizerPass",
   "MAX_CONSECUTIVE_HOURS", "extEmpHours", "dayIdx",
+  "shiftInterval", "extendedWorkIntervals", "collectCoverageIntervals",
+  "analyzeShiftCoverage", "validateCoverage", "coverageIssuesForSlot",
+  "extendedCoverageFloor", "getEffectiveSlotCount", "getSlotCount",
+  "HANDOFF_HOURS", "computeWeekStats",
+  "employeePolicyIssues", "validateAssignmentPolicy", "scheduleChangeIssues", "assignmentIssues",
+  "proposedSwap", "canWorkExtHalf", "calcHours", "buildPrevWeekData", "boundaryPatterns",
+  "filterPolicyAssignments", "getFatigueIssues", "deployProactiveExtShifts", "getPreferredShiftId", "ps",
+  "buildPtoCredits", "weeklyEmployeeHours", "normalizedWorkedHours", "buildWeeklyAccounting",
+  "validISODate", "dateRangeISO", "weekDatesISO", "isPaidTimeOff", "validPtoHours", "ptoRequestErrors",
+  "clockHour", "civilDayOffset", "hasExactTimeOff", "timeOffRequestErrors", "timeOffIntervals", "timeOffRangeLabel", "timeOffCalendarDates",
+  "buildTimeOffAvailability", "unavailableWindowErrors", "employeeUnavailableIntervals", "availabilityConflicts", "timeOffCoversSlot", "getTimeOffForDay",
+  "canWorkOtherShifts", "overtimeReviewItems", "overtimeInputStamp", "makeOvertimeProposal",
+  "canonicalJSON", "publicationSnapshot", "publicationStamp", "publicationOvertimeItems", "createOvertimeDecisions", "currentOvertimeDecision",
+  "validatePublication", "createPublicationRecord", "publicationRecordValid", "createPublicationRepository", "publicationRows", "publicationPrintHtml",
+  "hasDutyLocks", "lockedDutyIssues", "preferenceBurden", "buildPreferenceHistory", "preferenceFairnessCost", "improveSchedulePreferences", "buildLockedAutoFill",
+  "remainingSlotCapacity", "compareScheduleQuality", "scheduleQuality", "repairScheduleCompletion", "buildCompletionDiagnostics",
+  "overtimeCreditLimits", "trimOvertimeProposal", "resolveOvertimeProposal", "repairScheduleGaps",
 ];
 const wrapped = src + "\n;module.exports = {" +
   exportsList.map(n => `${n}: (typeof ${n} !== "undefined" ? ${n} : undefined)`).join(",") + "};";
