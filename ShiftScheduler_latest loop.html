@@ -2240,6 +2240,283 @@ function repairScheduleCompletion(input, context) {
   return result;
 }
 
+// Complete feasibility search for the application's finite duty menu. Slice limits
+// yield control; they NEVER discard branches or mean that a week is infeasible.
+function completeSearchSeed(input) {
+  const excluded=new Set(input.excludedIds || []),ns={},autoExtShifts=[],handoffs=[];
+  for(const [key,rows] of Object.entries(input.schedule || {})) {
+    const kept=rows.filter(a=>a.locked || excluded.has(a.employeeId));
+    if(kept.length)ns[key]=kept;
+  }
+  for(const ext of input.extShifts || []) {
+    if(ext.locked)autoExtShifts.push(ext);
+    else {
+      const keepA=excluded.has(ext.empAId),keepB=excluded.has(ext.empBId);
+      // A locked regular mirror keeps the underlying extended half's actual hours.
+      const spans=extendedWorkIntervals(ext),lockedHalf=id=>spans.some(i=>i.employeeId===id &&
+        Object.entries(ns).some(([key,rows])=>rows.some(a=>a.employeeId===id)&&intervalsOverlap(i,shiftInterval(...key.split('__')))));
+      const a=keepA || lockedHalf(ext.empAId),b=keepB || lockedHalf(ext.empBId);
+      if(a || b)autoExtShifts.push({...ext,empAId:a?ext.empAId:null,empBId:b?ext.empBId:null});
+    }
+  }
+  for(const h of input.handoffs || [])if(h.locked || excluded.has(h.employeeId))handoffs.push(h);
+  return {ns,autoExtShifts,handoffs};
+}
+
+// Adding work cannot repair most hard errors. A short rest CAN disappear when
+// an extension bridges it, but only if the entire joined block fits the cap.
+function completeSearchHardIssues(emp,state,cfg,options) {
+  const issues=employeePolicyIssues(emp,state.ns,cfg,{...options,extShifts:state.autoExtShifts,handoffs:state.handoffs});
+  const hard=issues.filter(i=>i.type!=='short_rest' && i.type!=='invalid_handoff');
+  if(!issues.some(i=>i.type==='short_rest'))return hard;
+  const pattern=options.empPatterns?.[emp.id] || {};
+  const prior=pattern.prevWorkIntervals || (pattern.prevWeekLastSlot?(()=>{const i=shiftInterval(pattern.prevWeekLastSlot.day,pattern.prevWeekLastSlot.shiftId);return i?[{start:i.start-168,end:i.end-168}]:[];})():[]);
+  const spans=[...collectCoverageIntervals(state.ns,state.autoExtShifts,state.handoffs).filter(i=>i.employeeId===emp.id).map(i=>({...i,current:true})),...prior].sort((a,b)=>a.start-b.start),blocks=[];
+  for(const i of spans){const last=blocks.at(-1);if(last && i.start<=last.end){last.end=Math.max(last.end,i.end);last.current ||= i.current;}else blocks.push({...i});}
+  for(let i=1;i<blocks.length;i++)if(blocks[i].current && blocks[i].start-blocks[i-1].end<(cfg.minRestHours ?? MIN_REST_HOURS) && blocks[i].end-blocks[i-1].start>empMaxConsec(emp)) {
+    hard.push(issues.find(v=>v.type==='short_rest'));break;
+  }
+  return hard;
+}
+
+function completeSearchApply(state,candidate) {
+  const id=candidate.employeeId,base=candidate.base;
+  const old=collectCoverageIntervals(state.ns,state.autoExtShifts,state.handoffs).filter(i=>i.employeeId===id);
+  const same=old.find(i=>i.source===base.source && i.start===base.start && i.end===base.end);
+  // Never let an added extended record suppress/shorten an existing regular duty.
+  if(!same && old.some(i=>intervalsOverlap(i,base)))return null;
+  let ns=state.ns,exts=state.autoExtShifts;
+  if(!same) {
+    if(candidate.assignment){const {key,row}=candidate.assignment;ns={...ns,[key]:[...(ns[key] || []),row]};}
+    else exts=[...exts,candidate.ext];
+  }
+  const handoffs=[...state.handoffs];
+  for(const h of candidate.handoffs) {
+    const target=shiftInterval(h.day,h.targetShiftId),span=h.type==='late-stay'?{start:target.start,end:target.start+h.hours}:{start:target.end-h.hours,end:target.end};
+    if(old.some(i=>i.source==='handoff' && i.start===span.start && i.end===span.end))continue;
+    if(handoffs.some(v=>canonicalJSON(v)===canonicalJSON(h)))continue;
+    handoffs.push(h);
+  }
+  if(ns===state.ns && exts===state.autoExtShifts && handoffs.length===state.handoffs.length)return null;
+  return {ns,autoExtShifts:exts,handoffs};
+}
+
+// Relaxed maximum work inside each available interval window. Ignoring rest
+// BETWEEN windows and allowing fractional blocks can only overestimate supply.
+function completeSearchWorkUpperBound(spans,emp,cfg) {
+  const windows=[];
+  for(const i of [...spans].sort((a,b)=>a.start-b.start)) {
+    const last=windows.at(-1);if(last && i.start<=last.end)last.end=Math.max(last.end,i.end);else windows.push({start:i.start,end:i.end});
+  }
+  const cap=empMaxConsec(emp),rest=cfg.minRestHours ?? MIN_REST_HOURS,period=cap+rest;
+  const bound=windows.reduce((sum,w)=>{const length=w.end-w.start;return sum+Math.floor(length/period)*cap+Math.min(cap,length%period);},0);
+  return Math.min(bound,emp.maxShiftsPerWeek==null?Infinity:emp.maxShiftsPerWeek*cap);
+}
+
+function createCompleteScheduleSearch(rawInput) {
+  const input=JSON.parse(canonicalJSON(rawInput));
+  let status='searching',phase='regular-hours',solution=null,reasons=[],nodes=0,steps=0,candidateCount=0;
+  const scope={dutyMenu:'8-hour regular duties, eligible 12-hour halves and 4-hour adjoining handoffs; existing fixed duties retained',
+    targetSlots:input.targetSlots || ALL_SLOTS.map(s=>cellKey(s.day,s.shiftId)),excludedIds:input.excludedIds || [],preferenceOptimal:false};
+  const roster=input.employees || [],cfg=input.cfg || {},excluded=new Set(scope.excludedIds);
+  const pto=buildPtoCredits(roster,input.timeOffReqs || [],input.weekStart),availability=buildTimeOffAvailability(input.timeOffReqs || [],input.weekStart);
+  const patterns=boundaryPatterns(input.history || [],input.weekStart,input.empPatterns || {});
+  const basicOptions={empTimeOffDays:availability,ptoHoursByEmployee:pto.hoursByEmployee,empPatterns:patterns};
+  const slots=scope.targetSlots.map(key=>{const [day,shiftId]=key.split('__');return {day,shiftId};});
+  const owns=value=>JSON.parse(canonicalJSON(value));
+  const hours=(emp,state)=>weeklyEmployeeHours(emp,state.ns,state.autoExtShifts,state.handoffs,pto.hoursByEmployee);
+  const fixed=completeSearchSeed(input);
+  function* run() {
+    if(!validISODate(input.weekStart) || new Date(input.weekStart+'T12:00:00Z').getUTCDay()!==0 || !roster.length ||
+       new Set(roster.map(e=>e.id)).size!==roster.length || roster.some(e=>!e.id || !e.name || !['full-time','part-time','on-call'].includes(e.employmentType)) ||
+       slots.some(s=>!shiftInterval(s.day,s.shiftId))) {status='invalid';reasons=['Correct the week, roster and requested shifts before searching.'];return;}
+    const dataIssues=[...pto.issues,...(availability.issues || [])];
+    for(const e of roster)for(const msg of unavailableWindowErrors(e.unavailableWindows))dataIssues.push({level:'error',msg:e.name+': '+msg});
+    for(const [key,fallback,max] of [['minRestHours',MIN_REST_HOURS,48],['maxConsecutiveShifts',5,7],['maxConsecutiveNights',MAX_CONSECUTIVE_NIGHTS,7]]) {
+      const v=cfg[key] ?? fallback;if(!Number.isFinite(v)||v<0||v>max)dataIssues.push({level:'error',msg:'Invalid '+key});
+    }
+    const known=new Set(roster.map(e=>e.id));
+    if(collectCoverageIntervals(fixed.ns,fixed.autoExtShifts,fixed.handoffs).some(i=>!known.has(i.employeeId)))dataIssues.push({level:'error',msg:'A fixed duty references an unknown employee.'});
+    for(const e of roster)dataIssues.push(...completeSearchHardIssues(e,fixed,cfg,basicOptions));
+    if(dataIssues.some(i=>i.level==='error')){status='invalid';reasons=dataIssues.filter(i=>i.level==='error').map(i=>i.msg);return;}
+    const candidates=[],seen=new Set();
+    for(const emp of roster) {
+      if(excluded.has(emp.id) || emp.inTraining)continue;
+      const bases=[];
+      for(const {day,shiftId} of ALL_SLOTS) {
+        const position=SUP_SLOT_DAY(day,shiftId) && emp.qualifications?.includes('Supervisor')?'Supervisor':POSITIONS.find(p=>emp.qualifications?.includes(p));
+        if(position)bases.push({employeeId:emp.id,base:{...shiftInterval(day,shiftId),source:'regular'},assignment:{key:cellKey(day,shiftId),row:{employeeId:emp.id,position}},position});
+      }
+      for(const day of DAYS)for(const pair of EXT_PAIRS)for(const half of [0,1]) {
+        if(!canWorkExtHalf(emp,pair.id,half))continue;
+        const ext={day,pairId:pair.id,empAId:half?null:emp.id,empBId:half?emp.id:null,roles:extRoles(emp)};
+        const base=extendedWorkIntervals(ext)[0];if(base)bases.push({employeeId:emp.id,base,ext,position:POSITIONS.find(p=>emp.qualifications?.includes(p))});
+      }
+      for(const base of bases) {
+        const adjoining=[];
+        for(const {day,shiftId} of ALL_SLOTS) {
+          const span=shiftInterval(day,shiftId),si=SHIFTS.findIndex(s=>s.id===shiftId);
+          const handoffPosition=SUP_SLOT_DAY(day,shiftId) && emp.qualifications?.includes('Supervisor')?'Supervisor':base.position;
+          if(base.base.end===span.start)adjoining.push({day,employeeId:emp.id,type:'late-stay',sourceShiftId:SHIFTS[(si+2)%3].id,targetShiftId:shiftId,position:handoffPosition,hours:HANDOFF_HOURS});
+          if(base.base.start===span.end)adjoining.push({day,employeeId:emp.id,type:'early-arrival',sourceShiftId:SHIFTS[(si+1)%3].id,targetShiftId:shiftId,position:handoffPosition,hours:HANDOFF_HOURS});
+        }
+        const variants=[[],...adjoining.map(h=>[h]),...(adjoining.length===2?[adjoining]:[])];
+        for(const hs of variants) {
+          const candidate={...base,handoffs:hs};
+          const own=completeSearchApply({ns:{},autoExtShifts:[],handoffs:[]},candidate);
+          // Ignore repairable short rest and source-dependent fixed handoffs only.
+          if(own && !completeSearchHardIssues(emp,own,cfg,basicOptions).length &&
+             !employeePolicyIssues(emp,own.ns,cfg,{...basicOptions,extShifts:own.autoExtShifts,handoffs:own.handoffs}).some(i=>i.type==='invalid_handoff')) {
+            const spans=collectCoverageIntervals(own.ns,own.autoExtShifts,own.handoffs);
+            // Equivalent extended halves have identical rule/coverage behavior once eligible.
+            const key=canonicalJSON({id:emp.id,kind:base.base.source,start:base.base.start,end:base.base.end,position:base.position,handoffs:hs});
+            if(!seen.has(key)) {
+              seen.add(key);candidate.index=candidates.length;candidate.spans=spans;
+              candidate.cost=preferenceFairnessCost(emp,own.ns,own.autoExtShifts,own.handoffs,input.fairnessHistory || {});
+              candidates.push(candidate);candidateCount=candidates.length;
+            }
+          }
+          yield;
+        }
+      }
+    }
+    let lastFailure=null;
+    function* visit(state,available,options) {
+      nodes++;yield;
+      const spans=collectCoverageIntervals(state.ns,state.autoExtShifts,state.handoffs),needs=[];let bodyDemand=0;
+      for(const slot of slots) {
+        const coverage=analyzeShiftCoverage(slot.day,slot.shiftId,state.ns,roster,state.autoExtShifts,state.handoffs,spans);
+        bodyDemand+=coverage.bodyGapHours;
+        for(const segment of coverage.segments) {
+          if(segment.regular<REGULAR_SLOTS(slot.day,slot.shiftId))needs.push({...slot,time:segment.start,kind:'regular',deficit:REGULAR_SLOTS(slot.day,slot.shiftId)-segment.regular,segment});
+          for(const role of segment.missing)needs.push({...slot,time:segment.start,kind:role,deficit:1,segment});
+        }
+      }
+      for(const emp of roster)if(hours(emp,state).shortfallHours>0)needs.push({kind:'hours',employeeId:emp.id,deficit:hours(emp,state).shortfallHours});
+      for(const h of state.handoffs)if(!spans.some(i=>i.handoff===h))needs.push({kind:'source',employeeId:h.employeeId,handoff:h,deficit:1});
+      if(!needs.length) {
+        const hard=[...validateAssignmentPolicy(state.ns,roster,cfg,{...options,extShifts:state.autoExtShifts,handoffs:state.handoffs}),
+          ...lockedDutyIssues(input.schedule || {},state.ns,{extShifts:input.extShifts || [],handoffs:input.handoffs || []},{extShifts:state.autoExtShifts,handoffs:state.handoffs})];
+        if(!hard.length) {
+          solution=owns({...state,usedPatterns:patterns,assignLog:{},trainingBlocks:input.trainingBlocks || [],
+            ...(options.creditHourLimits?{creditHourLimits:options.creditHourLimits}:{})});return true;
+        }
+        // A remaining short rest/orphan fixed handoff might still be repaired by
+        // an adjoining extension/source. Enumerate further additions before failing.
+        needs.push({kind:'finish',deficit:1});
+      }
+      const viable=[];
+      for(const index of available) {
+        const candidate=candidates[index],emp=roster.find(e=>e.id===candidate.employeeId),next=completeSearchApply(state,candidate);
+        if(next && !completeSearchHardIssues(emp,next,cfg,options).length) {
+          const nextSpans=collectCoverageIntervals(next.ns,next.autoExtShifts,next.handoffs).filter(i=>i.employeeId===emp.id);
+          const beforeHours=hours(emp,state),afterHours=hours(emp,next);
+          viable.push({index,candidate,next,nextSpans,added:afterHours.workedHours-beforeHours.workedHours,
+            extraOT:Math.max(0,afterHours.creditedHours-40)-Math.max(0,beforeHours.creditedHours-40)});
+        }
+        yield;
+      }
+      let capacity=0;
+      for(const emp of roster) {
+        const spansPossible=[...spans.filter(i=>i.employeeId===emp.id),...viable.filter(v=>v.candidate.employeeId===emp.id).flatMap(v=>v.nextSpans)].sort((a,b)=>a.start-b.start);
+        const total=completeSearchWorkUpperBound(spansPossible,emp,cfg);
+        const current=hours(emp,state),ot=emp.overtimePref && emp.overtimePref!=='neutral'?emp.overtimePref:cfg.defaultOvertimePref;
+        const ceiling=ot==='blocked'?40:(options.creditHourLimits?.[emp.id] ?? Infinity);
+        capacity+=Math.max(0,Math.min(total-current.workedHours,ceiling-current.creditedHours));
+        if(emp.employmentType==='full-time' && total+(pto.hoursByEmployee[emp.id] || 0)<40)return false;
+      }
+      if(capacity+1e-8<bodyDemand){lastFailure='Remaining legal employee-hour capacity is less than uncovered staffing hours.';return false;}
+      let branch=null;
+      for(const need of needs) {
+        const choices=viable.filter(v=>{
+          if(need.kind==='finish')return true;
+          if(need.kind==='source')return v.candidate.employeeId===need.employeeId && v.nextSpans.some(i=>i.handoff===need.handoff);
+          if(need.kind==='hours')return v.candidate.employeeId===need.employeeId && v.added>0;
+          const emp=roster.find(e=>e.id===v.candidate.employeeId);
+          if(need.kind==='regular' && need.segment.employeeIds.includes(emp.id))return false;
+          const supIds=new Set((v.next.ns[cellKey(need.day,need.shiftId)] || []).filter(a=>a.position==='Supervisor').map(a=>a.employeeId));
+          return v.nextSpans.some(i=>i.start<=need.time && i.end>need.time &&
+            (need.kind==='Supervisor' ? (i.position==='Supervisor'||supIds.has(emp.id)) :
+              i.position!=='Supervisor' && !supIds.has(emp.id) && (need.kind==='regular'||emp.qualifications?.includes(need.kind))));
+        });
+        const distinct=new Set(choices.map(v=>v.candidate.employeeId)).size;
+        if(!choices.length || (need.kind==='regular' && distinct<need.deficit)) {
+          lastFailure=need.kind==='hours'?`${roster.find(e=>e.id===need.employeeId).name} cannot reach 40 credited hours in this branch.`:
+            `${need.day || 'A remaining rule'} ${need.shiftId || ''}: no remaining combination supplies ${need.kind}.`;return false;
+        }
+        if(need.kind==='hours') {
+          const emp=roster.find(e=>e.id===need.employeeId),union=[...spans.filter(i=>i.employeeId===emp.id),...choices.flatMap(v=>v.nextSpans)].sort((a,b)=>a.start-b.start);
+          let total=0,end=-Infinity;for(const i of union){total+=Math.max(0,i.end-Math.max(end,i.start));end=Math.max(end,i.end);}
+          if(total+(pto.hoursByEmployee[emp.id] || 0)<40)return false;
+        }
+        if(!branch || choices.length<branch.length)branch=choices;
+        yield;
+      }
+      branch.sort((a,b)=>a.extraOT-b.extraOT || a.candidate.cost-b.candidate.cost || a.added-b.added || a.index-b.index);
+      const remaining=new Set(available);
+      for(const choice of branch) {
+        // Partition by the first included contributor. Earlier alternatives stay
+        // excluded only in later sibling branches; every feasible set is covered.
+        remaining.delete(choice.index);
+        if(yield* visit(choice.next,[...remaining],options))return true;
+      }
+      return false;
+    }
+    function* trimSurplus(options) {
+      // This is a finite cleanup of an already feasible candidate, not another
+      // search limit. Remove unnecessary duties only while every hard check and
+      // FT minimum still passes. It does not claim globally minimal overtime.
+      let changed=true;
+      while(changed) {
+        changed=false;const removals=[];
+        for(const [key,rows] of Object.entries(solution.ns))for(let n=0;n<rows.length;n++) {
+          const row=rows[n];if(row.locked || excluded.has(row.employeeId))continue;
+          removals.push({id:row.employeeId,state:{...solution,ns:{...solution.ns,[key]:rows.filter((_,j)=>j!==n)}}});
+        }
+        for(let n=0;n<solution.handoffs.length;n++) {
+          const h=solution.handoffs[n];if(h.locked || excluded.has(h.employeeId))continue;
+          removals.push({id:h.employeeId,state:{...solution,handoffs:solution.handoffs.filter((_,j)=>j!==n)}});
+        }
+        for(let n=0;n<solution.autoExtShifts.length;n++)for(const field of ['empAId','empBId']) {
+          const ext=solution.autoExtShifts[n],id=ext[field];
+          if(!id || ext.locked || excluded.has(id) || fixed.autoExtShifts.some(v=>v.day===ext.day && v.pairId===ext.pairId && v[field]===id))continue;
+          removals.push({id,state:{...solution,autoExtShifts:solution.autoExtShifts.map((v,j)=>j===n?{...v,[field]:null}:v).filter(v=>v.empAId || v.empBId)}});
+        }
+        const byId=new Map(roster.map(e=>[e.id,e]));
+        removals.sort((a,b)=>hours(byId.get(b.id),solution).creditedHours-hours(byId.get(a.id),solution).creditedHours);
+        for(const {state,id} of removals) {
+          const emp=byId.get(id);
+          if(!hours(emp,state).shortfallHours && !validateAssignmentPolicy(state.ns,roster,cfg,{...options,extShifts:state.autoExtShifts,handoffs:state.handoffs}).length &&
+             !lockedDutyIssues(input.schedule || {},state.ns,{extShifts:input.extShifts || [],handoffs:input.handoffs || []},{extShifts:state.autoExtShifts,handoffs:state.handoffs}).length &&
+             slots.every(s=>analyzeShiftCoverage(s.day,s.shiftId,state.ns,roster,state.autoExtShifts,state.handoffs).ok)) {
+            solution=state;changed=true;yield;break;
+          }
+          yield;
+        }
+      }
+    }
+    const limits=Object.fromEntries(roster.map(e=>[e.id,40]));
+    const phases=[{name:'regular-hours',options:{...basicOptions,creditHourLimits:limits}}];
+    if(roster.some(e=>(e.overtimePref && e.overtimePref!=='neutral'?e.overtimePref:cfg.defaultOvertimePref)!=='blocked'))
+      phases.push({name:'overtime-review',options:basicOptions});
+    for(const p of phases) {
+      phase=p.name;yield;
+      if(roster.some(e=>completeSearchHardIssues(e,fixed,cfg,p.options).length))continue;
+      if(yield* visit(fixed,candidates.map(c=>c.index),p.options)){yield* trimSurplus(p.options);status='feasible';return;}
+    }
+    status='infeasible';reasons=['All combinations in the stated duty menu were exhausted with the current rules, locked duties and exclusions.',...(lastFailure?['Example rejected branch: '+lastFailure]:[])];
+  }
+  const iterator=run();
+  const snapshot=()=>({status,phase,nodes,steps,candidates:candidateCount,solution:solution?owns(solution):null,reasons:[...reasons],scope:owns(scope)});
+  return {snapshot,advance({maxSteps=200,timeSliceMs=16}={}) {
+    if(status!=='searching')return snapshot();
+    const deadline=Date.now()+Math.max(1,timeSliceMs);let n=0;
+    try {do {steps++;n++;const r=iterator.next();if(r.done)break;}while(n<Math.max(1,maxSteps)&&Date.now()<deadline&&status==='searching');}
+    catch(e){status='invalid';reasons=['Search could not validate its input: '+e.message];iterator.return();}
+    return snapshot();
+  },cancel(){if(status==='searching'){status='cancelled';iterator.return();}return snapshot();}};
+}
+
 const ACTIVE_WEEK_KEY='shift_active_week';
 function emptyWeekDraft(weekStart) {
   if(!weekStart){const d=new Date();d.setDate(d.getDate()-d.getDay());weekStart=localISODate(d);}
@@ -12316,6 +12593,8 @@ function ScheduleGrid({ onOpenTestModal }) {
   const [autoFillRunning,  setAutoFillRunning]  = useState(false);
   const [autoFillProgress, setAutoFillProgress] = useState(null); // {attempt, bestErrors, bestWarns}
   const autoFillCancelRef = useRef(false);
+  const completeSearchRef = useRef(null);
+  useEffect(()=>()=>{completeSearchRef.current?.solver.cancel();completeSearchRef.current=null;},[]);
 
   useEffect(() => {
     const handler = (e) => {
@@ -12821,8 +13100,60 @@ function ScheduleGrid({ onOpenTestModal }) {
     setScheduleIssues(validateSchedule(schedule, extShifts, employees, handoffs));
   }, [validateSchedule, schedule, extShifts, employees, handoffs]);
 
+  const startCompleteSearch = (rosterOverride) => {
+    if(isReadOnly || !generationInputsReady || pendingProposal)return;
+    completeSearchRef.current?.solver.cancel();
+    const accountingRoster=Array.isArray(rosterOverride)?rosterOverride:employees;
+    const baseStamp=overtimeInputRef.current;
+    let solver;
+    try {solver=createCompleteScheduleSearch({weekStart,employees:accountingRoster,cfg,schedule,extShifts:extShifts || [],handoffs:handoffs || [],
+      trainingBlocks:trainingBlocks || [],timeOffReqs,history,empPatterns,excludedIds:afExclude || [],fairnessHistory});}
+    catch(e){showAlert({title:'Search inputs need correction',message:e.message,variant:'danger'});setAutoFillRunning(false);return;}
+    const job={solver,baseStamp,paused:false,tick:null,lastProgressAt:0};
+    completeSearchRef.current=job;autoFillCancelRef.current=false;setAutoFillRunning(true);
+    const progress=(result,extra={})=>setAutoFillProgress({...result,solution:undefined,engine:'complete',...extra});
+    job.tick=()=>{
+      if(completeSearchRef.current!==job)return;
+      if(overtimeInputRef.current!==baseStamp) {
+        solver.cancel();completeSearchRef.current=null;setAutoFillRunning(false);
+        progress(solver.snapshot(),{status:'stale',reasons:['Inputs changed. Start a fresh search for the current draft.']});return;
+      }
+      if(autoFillCancelRef.current){job.paused=true;setAutoFillRunning(false);progress(solver.snapshot(),{status:'paused'});return;}
+      const result=solver.advance({maxSteps:150,timeSliceMs:12});
+      if(result.status==='searching') {
+        if(Date.now()-job.lastProgressAt>=100){progress(result);job.lastProgressAt=Date.now();}
+        setTimeout(job.tick,0);return;
+      }
+      completeSearchRef.current=null;setAutoFillRunning(false);progress(result);
+      if(result.status==='feasible') {
+        const proposed=result.solution;
+        // A solver candidate is still a draft: use the normal validation and
+        // exact-schedule overtime approval path before replacing live records.
+        const issues=validateSchedule(proposed.ns,proposed.autoExtShifts,accountingRoster,proposed.handoffs);
+        if(issues.some(i=>i.level==='error')) {
+          progress(result,{status:'invalid',reasons:['The independent schedule validator rejected the candidate.',...issues.filter(i=>i.level==='error').map(i=>i.msg)]});return;
+        }
+        const reviewItems=overtimeReviewItems(accountingRoster,{schedule,extShifts,handoffs},proposed,cfg,ptoHoursByEmployee);
+        const proposal=makeOvertimeProposal({...proposed,reviewItems},baseStamp);
+        if(!proposalIsCurrent(proposal)){discardStaleProposal();return;}
+        if(reviewItems.length)setPendingProposal(proposal);else commitScheduleProposal(proposal);
+      }
+    };
+    progress(solver.snapshot());setTimeout(job.tick,0);
+  };
+  const resumeCompleteSearch = () => {
+    const job=completeSearchRef.current;if(!job?.paused || isReadOnly || pendingProposal || autoFillRunning || !generationInputsReady)return;
+    job.paused=false;autoFillCancelRef.current=false;setAutoFillRunning(true);setTimeout(job.tick,0);
+  };
+  const cancelCompleteSearch = () => {
+    const job=completeSearchRef.current;if(!job)return;
+    const result=job.solver.cancel();completeSearchRef.current=null;autoFillCancelRef.current=true;setAutoFillRunning(false);
+    setAutoFillProgress({...result,solution:undefined,engine:'complete'});
+  };
+
   const runAutoFill = useCallback((empOverride) => {
     if(isReadOnly || autoFillRunning || pendingProposal || !generationInputsReady) return;
+    completeSearchRef.current?.solver.cancel();completeSearchRef.current=null;
     const runBaseStamp = overtimeInputRef.current;
     const allSource = empOverride || employees;
     const excludeSet = new Set(afExclude || []);
@@ -13095,9 +13426,8 @@ function ScheduleGrid({ onOpenTestModal }) {
       }
 
       if (attemptNum >= MAX_ATTEMPTS || plateauCount >= PLATEAU_LIMIT) {
-        commit(best);
-        setAutoFillRunning(false);
-        setAutoFillProgress({attempt:attemptNum,done:true,stopReason:plateauCount>=PLATEAU_LIMIT ? "no_improvement" : "attempt_limit",quality:best.quality,searchInfo:best.searchInfo});
+        if(!proposalIsCurrent({baseStamp:runBaseStamp})){discardStaleProposal();setAutoFillRunning(false);return;}
+        startCompleteSearch(accountingRoster);
         return;
       }
 
@@ -14097,8 +14427,17 @@ function ScheduleGrid({ onOpenTestModal }) {
       {!isReadOnly && <p style={{fontWeight:700,color:currentPublished ? "var(--ss-scale)" : "var(--ss-warning)"}}>
         {currentPublished ? `Published snapshot matches this draft — ${currentPublished.publishedAt}` : "DRAFT — not currently published"}
       </p>}
+      {autoFillProgress?.engine==='complete' && <div role="status" style={{padding:12,marginBottom:12,border:'1px solid var(--ss-border)',borderRadius:6}}>
+        <strong>Complete schedule search: {({searching:'searching',paused:'paused',feasible:'complete candidate found',infeasible:'no feasible combination in the current duty menu',invalid:'input or validation error',cancelled:'cancelled — feasibility unknown',stale:'inputs changed — restart required'})[autoFillProgress.status]}</strong>
+        <p>{autoFillProgress.nodes || 0} branches explored · {autoFillProgress.candidates || 0} duty options · {autoFillProgress.phase==='overtime-review'?'checking combinations that may require overtime approval':'checking combinations within 40 credited hours'}</p>
+        <p>The search includes regular shifts, eligible 12-hour duties, and 4-hour handoffs. Locked duties and autofill exclusions stay fixed. Preferences guide the order; this does not prove the best preference balance.</p>
+        {autoFillProgress.status==='infeasible' && <p>Review staffing, qualifications, availability, PTO, locks and exclusions. The search did not relax your hard rules.</p>}
+        {autoFillProgress.reasons?.map((reason,i)=><p key={i}>{reason}</p>)}
+        {autoFillProgress.status==='paused' && <><p>The search has not reached a conclusion. Resume continues from the saved branch.</p><button onClick={resumeCompleteSearch}>Resume complete search</button> <button onClick={cancelCompleteSearch}>Cancel search</button></>}
+        {autoFillProgress.status==='feasible' && <p>The candidate passed the solver checks. Overtime still requires approval, and publication requires its separate final review.</p>}
+      </div>}
       {!isReadOnly && <WeeklyAccountingPanel/>}
-      {autoFillProgress?.done && <p style={{fontSize:12,color:"var(--ss-text-dim)"}}>
+      {autoFillProgress?.done && autoFillProgress.engine!=="complete" && <p style={{fontSize:12,color:"var(--ss-text-dim)"}}>
         Last autofill search: {autoFillProgress.stopReason === "complete_candidate" ? "a complete candidate was found; any overtime still requires approval." :
           `stopped after ${autoFillProgress.attempt} attempts ${autoFillProgress.stopReason === "no_improvement" ? "without further improvement" : "at its attempt limit"}. This does not prove the week is impossible.`}
         {autoFillProgress.searchInfo?.termination === "limit_reached" ? " The assignment search reached its time or node limit." : ""}
@@ -14280,9 +14619,9 @@ function ScheduleGrid({ onOpenTestModal }) {
                   padding:"9px 18px",borderRadius:6,cursor:"pointer",fontSize:12,fontWeight:600,fontFamily:"inherit",
                   display:"flex",alignItems:"center",gap:8}}>
                 <span style={{display:"inline-block",width:10,height:10,background:"#fff",borderRadius:2}}/>
-                Stop
+                {autoFillProgress?.engine==='complete'?'Pause':'Stop'}
               </button>
-              {autoFillProgress && (
+              {autoFillProgress && autoFillProgress.engine!=='complete' && (
                 <span style={{fontSize:11,color:"var(--ss-text-dim)"}}>
                   Attempt {autoFillProgress.attempt}
                   {autoFillProgress.bestErrors > 0
@@ -14295,6 +14634,7 @@ function ScheduleGrid({ onOpenTestModal }) {
           ) : (
             <button onClick={()=>runAutoFill()} className="ss-btn ss-btn-md ss-btn-success">{Icon("zap", {size:13, color:"#fff"})} AUTOFILL</button>
           )}
+          <button disabled={!generationInputsReady || autoFillRunning || !!pendingProposal} onClick={()=>startCompleteSearch()} className="ss-btn ss-btn-md ss-btn-secondary">Complete search</button>
           <button onClick={runTargetedRepair} disabled={!generationInputsReady || autoFillRunning || !!pendingProposal} className="ss-btn ss-btn-md ss-btn-secondary">Repair current draft</button>
           <button onClick={runPreferenceImprovement} disabled={!generationInputsReady || autoFillRunning || !!pendingProposal} className="ss-btn ss-btn-md ss-btn-secondary">Improve preferences</button>
           <button disabled={hasDutyLocks(schedule,extShifts || [],handoffs || [])} title="Unlock duties before clearing this draft" onClick={()=>{pushUndo();resetWeekDraft();setEmpPatterns({});setScheduleIssues(null);setScheduleStale(false);}} className="ss-btn ss-btn-md ss-btn-danger">{Icon("trash-2", {size:13, color:"var(--ss-danger)"})} Clear</button>

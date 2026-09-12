@@ -408,10 +408,12 @@ their assertions remain unchanged. All four inline scripts compile with Babel,
 and scope checks find no new unresolved names. Browser interaction and print
 layout have not been exercised.
 
-Limits: locked generation is a bounded repair path, not the unrestricted rebuild
-search. Each attempt allows up to 1.5 seconds, 10,000 placements and 128 accepted
-transactions; the existing ten-attempt/plateau stop still applies. It preserves
-existing extended records and does not invent new custom-hour duties. Preference
+The fast locked-generation path uses bounded local repair: each attempt allows
+up to 1.5 seconds, 10,000 placements and 128 accepted transactions. The complete
+search follow-up below now takes over if those attempts leave an incomplete
+candidate; the attempt/plateau limit no longer ends autofill generation. It can
+rearrange unlocked extended records and generate the standard eligible duties.
+Preference
 improvement allows up to 500ms, 1,200 candidate swaps and twelve accepted swaps by
 default. It is a local improvement, not a proof of global fairness or optimality.
 Role/availability differences can limit which employees can trade duties.
@@ -422,13 +424,16 @@ also changes the publication fingerprint and requires a fresh review.
 
 ## Follow-up validation and solver work
 
-The eight planned correction stages are implemented locally. Remaining work is
-browser interaction and print-layout validation, runs against the manager's
-current roster and actual prior-week work, and additional repair moves or a
-stronger solver for cases the bounded search cannot complete. The publication
-gate continues to block an incomplete result rather than treating a stopped
-search as proof that staffing is impossible.
+The eight planned correction stages, integration audit, and browser-native
+complete-search fallback are implemented. Remaining acceptance work is rendered
+browser/print testing and verification with the manager's current roster and
+actual prior-week work. See [complete-search.md](complete-search.md) for the
+supported duty menu, feasibility guarantees, overtime review and remaining limits.
 
 ## Integration audit follow-up
 
-The combined implementation received a further rule, persistence and UI integration review. See [integration-audit.md](integration-audit.md) for confirmed defects, corrections, migration behavior and remaining acceptance checks. The suite now contains 204 passing tests, including 35 integration regressions. Active weeks are saved as one complete weekly record, and navigation archives and restores complete weeks.
+The combined implementation received a further rule, persistence and UI integration review. See [integration-audit.md](integration-audit.md) for confirmed defects, corrections, migration behavior and remaining acceptance checks. At that audit, 204 tests passed, including 35 integration regressions. Active weeks are saved as one complete weekly record, and navigation archives and restores complete weeks.
+
+## Complete-search follow-up
+
+Autofill now hands an incomplete fast-search result to a resumable exhaustive feasibility search. A dedicated Complete search button is also available. The complete search preserves hard rules and locks, distinguishes exhaustion from cancellation, and stages overtime through the ordinary approval path. The suite now has 234 passing tests, including 30 complete-search tests. See [complete-search.md](complete-search.md) for details and the saved-roster benchmark.

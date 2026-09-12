@@ -57,6 +57,7 @@ const exportsList = [
   "canWorkOtherShifts", "overtimeReviewItems", "overtimeInputStamp", "makeOvertimeProposal",
   "canonicalJSON", "publicationSnapshot", "publicationStamp", "publicationOvertimeItems", "createOvertimeDecisions", "currentOvertimeDecision",
   "validatePublication", "createPublicationRecord", "publicationRecordValid", "createPublicationRepository", "publicationRows", "publicationPrintHtml",
+  "createCompleteScheduleSearch", "completeSearchSeed", "completeSearchHardIssues", "completeSearchApply", "completeSearchWorkUpperBound",
   "emptyWeekDraft", "validateWeekDraft", "migrateActiveWeek", "readSchedulerStorage", "writeSchedulerStorage",
   "isMissingStorageError", "runSchemaMigrations",
   "selectWeekHistory", "scheduleViewSnapshot", "makeHistoryEntry", "upsertHistoryEntry", "scheduleWeekTransition", "historyDataIssues",
