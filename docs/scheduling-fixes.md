@@ -428,3 +428,7 @@ current roster and actual prior-week work, and additional repair moves or a
 stronger solver for cases the bounded search cannot complete. The publication
 gate continues to block an incomplete result rather than treating a stopped
 search as proof that staffing is impossible.
+
+## Integration audit follow-up
+
+The combined implementation received a further rule, persistence and UI integration review. See [integration-audit.md](integration-audit.md) for confirmed defects, corrections, migration behavior and remaining acceptance checks. The suite now contains 204 passing tests, including 35 integration regressions. Active weeks are saved as one complete weekly record, and navigation archives and restores complete weeks.

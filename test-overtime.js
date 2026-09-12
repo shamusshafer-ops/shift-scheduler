@@ -160,7 +160,7 @@ test("production staging on an empty schedule changes only pending state", () =>
 function productionCommit(isCurrent, roster, cfg = {}) {
   const start=html.indexOf("  const commitScheduleProposal = proposal => {"),end=html.indexOf("  const commitAssignmentChange",start);
   const writes=[];
-  const setters=["pushUndo","setSchedule","setExtShifts","setHandoffs","setEmpPatterns","setAssignLog","setScheduleIssues","setScheduleStale","setPendingProposal"];
+  const setters=["pushUndo","setWeekDraft","setEmpPatterns","setAssignLog","setScheduleIssues","setScheduleStale","setPendingProposal"];
   const commit=new Function(...Object.keys(core),"isReadOnly","proposalIsCurrent","discardStaleProposal","employees","cfg","policyOptions","showAlert","validateSchedule",...setters,
     html.slice(start,end)+"return commitScheduleProposal;")(...Object.values(core),false,()=>isCurrent,()=>writes.push("discard"),roster,cfg,{},()=>writes.push("alert"),()=>[],...setters.map(name=>()=>writes.push(name)));
   return {commit,writes};
@@ -182,7 +182,7 @@ test("production commit applies every proposal component in one undo step after 
   const {commit,writes}=productionCommit(true,[emp()]);
   const input=proposal(shifts(),{creditHourLimits:{e:48},usedPatterns:{e:{trailingDays:0}}});
   assert.equal(commit(input),true);
-  assert.deepEqual(writes,["pushUndo","setSchedule","setExtShifts","setHandoffs","setEmpPatterns","setAssignLog","setScheduleIssues","setScheduleStale","setPendingProposal"]);
+  assert.deepEqual(writes,["pushUndo","setWeekDraft","setEmpPatterns","setAssignLog","setScheduleIssues","setScheduleStale","setPendingProposal"]);
 });
 
 test("production cancel clears only the proposal, and undo captures handoffs and patterns", () => {
@@ -192,7 +192,8 @@ test("production cancel clears only the proposal, and undo captures handoffs and
   new Function("setPendingProposal","return () => setPendingProposal(null)")(p=>{pending=p;})();
   assert.equal(pending,null);assert.equal(JSON.stringify(live),before);
   const start=html.indexOf("  const snapNow = () => ("),end=html.indexOf("  const pushUndo",start);
-  const snapshot=new Function("schedule","extShifts","handoffs","empPatterns","assignLog",html.slice(start,end)+"return snapNow();")(live,[],[{employeeId:"e"}],{e:{trailingDays:3}},{a:1});
+  const snapshot=new Function("schedule","extShifts","handoffs","empPatterns","assignLog","trainingBlocks",html.slice(start,end)+"return snapNow();")(live,[],[{employeeId:"e"}],{e:{trailingDays:3}},{a:1},[{id:"training"}]);
   assert.deepEqual(snapshot.handoffs,[{employeeId:"e"}]);
+  assert.deepEqual(snapshot.trainingBlocks,[{id:"training"}]);
   assert.deepEqual(snapshot.empPatterns,{e:{trailingDays:3}});
 });

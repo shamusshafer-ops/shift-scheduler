@@ -213,7 +213,7 @@ test('production publication reports a changed live draft accurately after savin
 
 function persistentHarness({asyncStorage=false,raw=null,read}) {
  const states=[],effects=[];let i=0;
- const scope={_hasWinStorage:asyncStorage,useRef:v=>({current:v}),useState:init=>{
+ const scope={...c,_hasWinStorage:asyncStorage,useRef:v=>({current:v}),useState:init=>{
   const index=i++;states[index]=typeof init==='function'?init():init;
   return [states[index],next=>{states[index]=typeof next==='function'?next(states[index]):next;}];
  },useEffect:effect=>effects.push(effect),useCallback:fn=>fn,localStorage:{getItem:()=>raw,setItem:()=>{}},window:{storage:{get:read,set:()=>true}}};
