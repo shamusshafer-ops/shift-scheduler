@@ -36,7 +36,7 @@ The autofill system is a constraint satisfaction solver with multiple passes:
 
 **Shifts:** `first` (0600–1400), `second` (1400–2200), `third` (2200–0600)
 **Extended 12h:** Day (0600–1800), Night (1800–0600)
-**Positions:** Guard, Scale, Medical (+ Supervisor on Monday 1st Shift)
+**Positions:** Guard, Scale, Medical (+ Supervisor on first shift Monday through Friday)
 
 Schedule is keyed as `"Day__shiftId"` (e.g., `"Monday__first"`), mapping to an array of `{ employeeId, position }` assignment objects.
 
@@ -46,7 +46,7 @@ Employee objects include: qualifications, employmentType, unavailableDays, block
 
 ### Business Rules (Hard Constraints)
 - Full-time employees must have ≥ 40 hours/week
-- Every shift requires minimum 3 people
+- Every shift requires exactly 3 regular staff; first shift Monday through Friday requires 1 additional dedicated Supervisor (4 total). No other shift may exceed 3 people, including partial overlap from extended duties and handoffs.
 - Every shift must have 1 Medic, 1 Scale, and 1 other (Guard/2nd Medic/2nd Scale)
 - Overtime requires explicit approval (OvertimeModal workflow)
 

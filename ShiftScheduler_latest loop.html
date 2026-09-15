@@ -663,10 +663,11 @@ const slotHasRole = (asgn, employees, role) =>
     return emp && (emp.qualifications || []).includes(role);
   });
 
-// Qualified extended staff reduce regular capacity only for continuous coverage.
+// A full regular duty must fit even during the busiest part of the slot.
+// Partial extended coverage leaves a gap to repair; it cannot justify overlap.
 const getEffectiveSlotCount = (d, s, extShifts, employees = []) =>
   Math.max(SUP_SLOT_DAY(d, s) ? 1 : 0,
-    getSlotCount(d, s) - extendedCoverageFloor(d, s, extShifts || [], employees));
+    getSlotCount(d, s) - analyzeShiftCoverage(d,s,{},employees,extShifts || []).maxRegular);
 const getAvailPos  = (d, s) => POSITIONS;                       // Sup slot handled separately
 const cellKey      = (d,s) => d+"__"+s;
 
@@ -758,6 +759,38 @@ function collectCoverageIntervals(schedule, extShiftsArg = [], handoffsArg = [])
   return intervals;
 }
 
+// Capacity counts every distinct person actually on duty, independently of the
+// roster/qualification filter used for minimum coverage. Callers may validate
+// only one employee, but that must never hide the other people already on shift.
+function staffingIssuesForSlot(day, shiftId, schedule, preparedIntervals) {
+  const span = shiftInterval(day, shiftId);
+  const intervals = preparedIntervals.filter(i => intervalsOverlap(i, span));
+  const supIds = new Set((schedule[cellKey(day, shiftId)] || []).filter(a => a.position === 'Supervisor').map(a => a.employeeId));
+  const points = [...new Set([span.start, span.end, ...intervals.flatMap(i =>
+    [Math.max(span.start, i.start), Math.min(span.end, i.end)])])].sort((a,b) => a-b);
+  const regLimit = REGULAR_SLOTS(day, shiftId), supLimit = SUP_SLOT_DAY(day, shiftId) ? 1 : 0;
+  const segments = [];
+  for (let n=0; n<points.length-1; n++) {
+    const start=points[n], end=points[n+1], people=new Set(), supervisors=new Set();
+    for (const i of intervals) if (i.start<=start && i.end>=end) {
+      people.add(i.employeeId);
+      if (i.position==='Supervisor' || supIds.has(i.employeeId)) supervisors.add(i.employeeId);
+    }
+    const regular=people.size-supervisors.size;
+    const excess=Math.max(0,regular-regLimit)+Math.max(0,supervisors.size-supLimit);
+    segments.push({start,end,excess,regular,supervisors:supervisors.size});
+  }
+  const amount=segments.reduce((sum,s)=>sum+s.excess*(s.end-s.start),0);
+  if (!amount) return [];
+  return [{level:'error',type:'overstaffed',day,shiftId,amount,
+    msg:`Overstaffed: ${day} ${shiftId} — maximum ${regLimit} regular staff${supLimit ? ' plus 1 Supervisor' : ''} (${coverageGapRanges({day,segments},s=>s.excess>0)})`}];
+}
+
+function validateStaffing(schedule, extShiftsArg = [], handoffsArg = [], preparedIntervals) {
+  const intervals=preparedIntervals || collectCoverageIntervals(schedule,extShiftsArg,handoffsArg);
+  return ALL_SLOTS.flatMap(s=>staffingIssuesForSlot(s.day,s.shiftId,schedule,intervals));
+}
+
 function analyzeShiftCoverage(day, shiftId, schedule, employees, extShiftsArg = [], handoffsArg = [], preparedIntervals) {
   const span = shiftInterval(day, shiftId);
   if (!span) throw new Error("Unknown coverage slot: " + day + "/" + shiftId);
@@ -796,10 +829,11 @@ function analyzeShiftCoverage(day, shiftId, schedule, employees, extShiftsArg = 
   }
   const missing = ["Scale", "Medical", "Supervisor"].filter(role => segments.some(s => s.missing.includes(role)));
   const count = Math.min(...segments.map(s => s.filled));
-  return { day, shiftId, need, count, minRegular: Math.min(...segments.map(s => s.regular)),
+  const staffingIssues = staffingIssuesForSlot(day,shiftId,schedule,intervals);
+  return { day, shiftId, need, count, minRegular: Math.min(...segments.map(s => s.regular)), maxRegular: Math.max(...segments.map(s => s.regular)),
     hasScale: !missing.includes("Scale"), hasMedical: !missing.includes("Medical"),
     hasSupervisor: !missing.includes("Supervisor"), missing, segments,
-    isFull: count >= need, ok: count >= need && missing.length === 0,
+    staffingIssues, isFull: count >= need, ok: count >= need && missing.length === 0 && !staffingIssues.length,
     bodyGapHours: segments.reduce((n, s) => n + s.deficit * (s.end - s.start), 0),
     roleGapHours: segments.reduce((n, s) => n + s.missing.length * (s.end - s.start), 0) };
 }
@@ -822,7 +856,7 @@ function coverageGapRanges(coverage, predicate) {
 }
 
 function coverageIssuesForSlot(c) {
-  const issues = [];
+  const issues = [...(c.staffingIssues || [])];
   if (!c.isFull) issues.push({ level: "error", type: "coverage", day: c.day, shiftId: c.shiftId,
     have: c.count, need: c.need,
     msg: `Coverage gap: ${c.day} ${c.shiftId} — ${c.count}/${c.need} bodies (${coverageGapRanges(c, s => s.deficit > 0)})` });
@@ -1262,7 +1296,8 @@ function employeePolicyIssues(emp, schedule, cfg = {}, options = {}) {
 
 function validateAssignmentPolicy(schedule, employees, cfg = {}, options = {}) {
   const ids = new Set(employees.map(e => e.id));
-  const issues = [...(options.empTimeOffDays?.issues || []), ...employees.flatMap(e => employeePolicyIssues(e, schedule, cfg, options))];
+  const issues = [...validateStaffing(schedule,options.extShifts,options.handoffs),
+    ...(options.empTimeOffDays?.issues || []), ...employees.flatMap(e => employeePolicyIssues(e, schedule, cfg, options))];
   const assigned = new Set([...Object.values(schedule).flat().map(a => a.employeeId),
     ...(options.extShifts || []).flatMap(e => [e.empAId, e.empBId]).filter(Boolean),
     ...(options.handoffs || []).map(h => h.employeeId)]);
@@ -1273,7 +1308,7 @@ function validateAssignmentPolicy(schedule, employees, cfg = {}, options = {}) {
 // Validate the complete proposed result, including the shift AFTER the change.
 // Existing violations may be reduced, but a mutation cannot add or worsen one.
 function scheduleChangeIssues(before, after, employees, cfg = {}, beforeOptions = {}, afterOptions = beforeOptions) {
-  const signature = i => i.employeeId + "__" + i.type +
+  const signature = i => i.type === 'overstaffed' ? i.type+'__'+i.day+'__'+i.shiftId : i.employeeId + "__" + i.type +
     (["short_rest", "continuous_hours"].includes(i.type) ? "__" + i.day + "__" + i.shiftId :
       ["weekly_shifts", "weekend_days", "consecutive_days", "consecutive_nights", "no_overtime", "overtime_approval_limit"].includes(i.type) ? "" : "__" + i.msg);
   const totals = issues => {
@@ -1288,15 +1323,20 @@ function scheduleChangeIssues(before, after, employees, cfg = {}, beforeOptions 
 
 function assignmentIssues(emp, day, shiftId, position, schedule, cfg = {}, options = {}) {
   const key = cellKey(day, shiftId);
-  return employeePolicyIssues(emp, { ...schedule, [key]: [...(schedule[key] || []), { employeeId: emp.id, position }] }, cfg, options);
+  const next = { ...schedule, [key]: [...(schedule[key] || []), { employeeId: emp.id, position }] };
+  const old = new Map(validateStaffing(schedule,options.extShifts,options.handoffs).map(i=>[cellKey(i.day,i.shiftId),i.amount]));
+  return [...employeePolicyIssues(emp,next,cfg,options),
+    ...validateStaffing(next,options.extShifts,options.handoffs).filter(i=>i.amount>(old.get(cellKey(i.day,i.shiftId)) || 0))];
 }
 
 function filterPolicyAssignments(schedule, employees, cfg, options = {}) {
   const rejected = [];
-  const accepted = {};
+  const accepted = Object.fromEntries(ALL_SLOTS.map(s => {
+    const key=cellKey(s.day,s.shiftId);
+    return [key,[...(options.preservedSchedule?.[key] || [])]];
+  }));
   for (const { day, shiftId } of ALL_SLOTS) {
     const key = cellKey(day, shiftId);
-    accepted[key] = [];
     for (const a of schedule[key] || []) {
       const emp = employees.find(e => e.id === a.employeeId);
       const failures = emp ? assignmentIssues(emp, day, shiftId, a.position, accepted, cfg,
@@ -1305,7 +1345,9 @@ function filterPolicyAssignments(schedule, employees, cfg, options = {}) {
       else accepted[key].push(a);
     }
   }
-  return { schedule: accepted, rejected };
+  const generated = Object.fromEntries(Object.entries(accepted).map(([key,rows]) =>
+    [key,rows.filter(a=>!(options.preservedSchedule?.[key] || []).includes(a))]));
+  return { schedule: generated, rejected };
 }
 
 function proposedSwap(schedule, src, tgt) {
@@ -2102,7 +2144,7 @@ function improveSchedulePreferences(input,context) {
 
 function buildLockedAutoFill(source,cfg,empTimeOffDays,empPatterns,extShifts,weeklyOptions) {
   const roster=weeklyOptions.roster || source,pto=weeklyOptions.ptoHoursByEmployee || {},handoffs=weeklyOptions.seedHandoffs || [];
-  const validateSchedule=(s,x,e,h)=>[...validateCoverage(s,roster,x,h),...validateAssignmentPolicy(s,roster,cfg,{extShifts:x,handoffs:h,empTimeOffDays,empPatterns,ptoHoursByEmployee:pto})];
+  const validateSchedule=(s,x,e,h)=>[...validateCoverage(s,roster,x,h).filter(i=>i.type!=='overstaffed'),...validateAssignmentPolicy(s,roster,cfg,{extShifts:x,handoffs:h,empTimeOffDays,empPatterns,ptoHoursByEmployee:pto})];
   const input={ns:weeklyOptions.seedSchedule || {},autoExtShifts:extShifts || [],handoffs,usedPatterns:empPatterns || {},assignLog:{}};
   const result=repairScheduleCompletion(input,{source,accountingRoster:roster,cfg,empTimeOffDays,ptoHoursByEmployee:pto,enrichedPatterns:empPatterns,
     fairnessHistory:weeklyOptions.fairnessHistory,validateSchedule,repairMaxTransactions:128,repairMaxNodes:10000,repairSearchMs:1500});
@@ -2139,7 +2181,7 @@ function scheduleQuality(result, employees, cfg = {}, options = {}, baseline) {
     const before=keys(baseline),after=keys(ns);
     changes=[...before].filter(k=>!after.has(k)).length+[...after].filter(k=>!before.has(k)).length;
   }
-  const hard=options.skipPolicy ? 0 : validateAssignmentPolicy(ns,employees,cfg,{...options,extShifts:exts,handoffs}).length;
+  const hard=options.skipPolicy ? validateStaffing(ns,exts,handoffs,intervals).length : validateAssignmentPolicy(ns,employees,cfg,{...options,extShifts:exts,handoffs}).length;
   return [hard,body+roles,body,shortfall,overtime,preferences,changes];
 }
 
@@ -2267,7 +2309,7 @@ function completeSearchSeed(input) {
 // an extension bridges it, but only if the entire joined block fits the cap.
 function completeSearchHardIssues(emp,state,cfg,options) {
   const issues=employeePolicyIssues(emp,state.ns,cfg,{...options,extShifts:state.autoExtShifts,handoffs:state.handoffs});
-  const hard=issues.filter(i=>i.type!=='short_rest' && i.type!=='invalid_handoff');
+  const hard=[...validateStaffing(state.ns,state.autoExtShifts,state.handoffs),...issues.filter(i=>i.type!=='short_rest' && i.type!=='invalid_handoff')];
   if(!issues.some(i=>i.type==='short_rest'))return hard;
   const pattern=options.empPatterns?.[emp.id] || {};
   const prior=pattern.prevWorkIntervals || (pattern.prevWeekLastSlot?(()=>{const i=shiftInterval(pattern.prevWeekLastSlot.day,pattern.prevWeekLastSlot.shiftId);return i?[{start:i.start-168,end:i.end-168}]:[];})():[]);
@@ -2595,7 +2637,7 @@ function historyDataIssues(record) {
 }
 
 const PUBLICATION_STORE_KEY = "shift_publication_records";
-const PUBLICATION_RULE_VERSION = 1;
+const PUBLICATION_RULE_VERSION = 2;
 const canonicalJSON = value => JSON.stringify(value,(_,v)=>v && typeof v === "object" && !Array.isArray(v)
   ? Object.fromEntries(Object.keys(v).sort().map(k=>[k,v[k]])) : v);
 function publicationSnapshot(input) {
@@ -2654,7 +2696,7 @@ function validatePublication(snapshot, approvals=[], options={}) {
     if(options.searchRunning) error("publication_search","Wait for the schedule search to finish before publishing.");
     const availability=buildTimeOffAvailability(snapshot.timeOffReqs,snapshot.weekStart);
     const accounting=buildWeeklyAccounting(snapshot.employees,snapshot.schedule,snapshot.extShifts,snapshot.handoffs,snapshot.timeOffReqs,snapshot.weekStart);
-    issues.push(...validateCoverage(snapshot.schedule,snapshot.employees,snapshot.extShifts,snapshot.handoffs),
+    issues.push(...validateCoverage(snapshot.schedule,snapshot.employees,snapshot.extShifts,snapshot.handoffs).filter(i=>i.type!=='overstaffed'),
       ...validateAssignmentPolicy(snapshot.schedule,snapshot.employees,snapshot.cfg,{extShifts:snapshot.extShifts,handoffs:snapshot.handoffs,
         empTimeOffDays:availability,ptoHoursByEmployee:accounting.pto.hoursByEmployee,
         empPatterns:boundaryPatterns(snapshot.previousWeek?[snapshot.previousWeek]:[],snapshot.weekStart,{})}),...accounting.issues);
@@ -4024,7 +4066,7 @@ function buildAutoFill(sourceEmps, cfg, empTimeOffDays, empPatterns, extShiftsAr
       day, shift.id, preservedSchedule, coverageRoster, extShiftsArg, weeklyOptions.preservedHandoffs || [], extIntervalsForFill);
   }
   const slotCap = (day, shiftId) => Math.max(0,
-    REGULAR_SLOTS(day, shiftId) - extCoverageBySlot[cellKey(day, shiftId)].minRegular);
+    REGULAR_SLOTS(day, shiftId) - extCoverageBySlot[cellKey(day, shiftId)].maxRegular);
 
   const needsSupervisor = (day, shiftId) => SUP_SLOT_DAY(day, shiftId) &&
     !extCoverageBySlot[cellKey(day, shiftId)].hasSupervisor;
@@ -5704,7 +5746,7 @@ function buildAutoFill(sourceEmps, cfg, empTimeOffDays, empPatterns, extShiftsAr
   }
 
   const filtered = filterPolicyAssignments(ns, sourceEmps, cfg,
-    { extShifts: extShiftsArg || [], empTimeOffDays, empPatterns, ptoHoursByEmployee });
+    { extShifts: extShiftsArg || [], handoffs:weeklyOptions.preservedHandoffs || [], preservedSchedule, empTimeOffDays, empPatterns, ptoHoursByEmployee });
   const accepted = filtered.schedule, policyRejected = filtered.rejected;
   Object.assign(ns, accepted);
   for (const emp of sourceEmps) {
@@ -13091,7 +13133,7 @@ function ScheduleGrid({ onOpenTestModal }) {
     const accounting = buildWeeklyAccounting(allRoster, sched, allExts, allHandoffs, timeOffReqs, weekStart, afExclude);
     const options = { extShifts: allExts, handoffs: allHandoffs, empTimeOffDays, ptoHoursByEmployee: accounting.pto.hoursByEmployee,
       empPatterns: boundaryPatterns(history, weekStart, empPatterns) };
-    const issues = [...validateCoverage(sched, allRoster, allExts, allHandoffs),
+    const issues = [...validateCoverage(sched, allRoster, allExts, allHandoffs).filter(i=>i.type!=='overstaffed'),
       ...validateAssignmentPolicy(sched, allRoster, cfg, options), ...accounting.issues];
     return issues;
   }, [employees, extShifts, cfg, empTimeOffDays, empPatterns, history, weekStart, timeOffReqs, afExclude, ptoHoursByEmployee]);
@@ -13349,7 +13391,7 @@ function ScheduleGrid({ onOpenTestModal }) {
       }
       const generatedOnly = Object.fromEntries(Object.entries(ns).map(([key, asgn]) => [key, asgn.filter(a => source.some(e => e.id === a.employeeId))]));
       const finalPolicy = filterPolicyAssignments(generatedOnly, source, cfg,
-        { extShifts: dedupedExts, empTimeOffDays, ptoHoursByEmployee, empPatterns: enrichedPatterns });
+        { extShifts: dedupedExts, handoffs:preservedHandoffs, preservedSchedule, empTimeOffDays, ptoHoursByEmployee, empPatterns: enrichedPatterns });
       Object.assign(ns, finalPolicy.schedule);
       for (const [key, asgn] of Object.entries(preservedSchedule)) ns[key] = [...(ns[key] || []), ...asgn];
       const rejected = [...(policyRejected || []), ...finalPolicy.rejected];

@@ -88,9 +88,12 @@ test('adjoining handoffs are searched together with their source duties',()=>{
  const i=input(roster,{timeOffReqs}),r=solve(i);assert.equal(r.status,'feasible');assert(r.solution.handoffs.length>=2);assert.deepEqual(policy(r,i),[]);
 });
 test('locked custom handoffs and their legal source remain intact',()=>{
- const roster=oneDay(['a','b','c']);roster.push(e('source',{willing16h:true}));
+ const roster=oneDay(['a','b']);roster.push(e('source',{willing16h:true}),e('late',{willing16h:true}));
  const h={day:'Sunday',employeeId:'source',sourceShiftId:'first',targetShiftId:'second',type:'late-stay',position:'Medical',hours:2,locked:true};
- const i=input(roster,{schedule:{Sunday__first:[a('source','Medical',false)]},handoffs:[h]}),r=solve(i);assert.equal(r.status,'feasible');assert(r.solution.handoffs.some(v=>JSON.stringify(v)===JSON.stringify(JSON.parse(c.canonicalJSON(h)))));
+ // The other six hours need a complementary duty, not a third full-shift
+ // employee overlapping the locked two-hour handoff.
+ const other={day:'Sunday',employeeId:'late',sourceShiftId:'third',targetShiftId:'second',type:'early-arrival',position:'Medical',hours:6,locked:true};
+ const i=input(roster,{schedule:{Sunday__first:[a('source','Medical',false)],Sunday__third:[a('late','Medical',false)]},handoffs:[h,other]}),r=solve(i);assert.equal(r.status,'feasible');assert(r.solution.handoffs.some(v=>JSON.stringify(v)===JSON.stringify(JSON.parse(c.canonicalJSON(h)))));
  assert.equal(c.lockedDutyIssues(i.schedule,r.solution.ns,{handoffs:i.handoffs},{handoffs:r.solution.handoffs,extShifts:r.solution.autoExtShifts}).length,0);assert.deepEqual(policy(r,i),[]);
 });
 test('invalid approved PTO or availability is an input error, never an infeasibility proof',()=>{
@@ -173,7 +176,7 @@ test('short rest that can be bridged is not pruned before its extension is consi
  assert.equal(c.employeePolicyIssues(emp,state.ns,{minRestHours:12},{...options,handoffs:[h]}).length,0);
 });
 test('locked extended halves and regular mirrors preserve the exact locked record',()=>{
- const roster=oneDay(['a','b','c']);roster.push(e('extended',{requiredShift:'first',ext12hPref:'day'}));
+ const roster=oneDay(['a','b']);roster.push(e('extended',{requiredShift:'first',ext12hPref:'day'}),e('late',{requiredShift:'third',ext12hPref:'night'}));
  const ext={day:'Sunday',pairId:'day',empAId:'extended',empBId:null,roles:['Scale','Medical'],locked:true};
  const i=input(roster,{extShifts:[ext],schedule:{Sunday__first:[a('extended','Medical')]}}),r=solve(i);
  assert.equal(r.status,'feasible');assert.deepEqual(r.solution.autoExtShifts.find(v=>v.locked),ext);

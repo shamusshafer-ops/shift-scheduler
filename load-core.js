@@ -45,6 +45,7 @@ const exportsList = [
   "MAX_CONSECUTIVE_HOURS", "extEmpHours", "dayIdx",
   "shiftInterval", "extendedWorkIntervals", "collectCoverageIntervals",
   "analyzeShiftCoverage", "validateCoverage", "coverageIssuesForSlot",
+  "validateStaffing", "staffingIssuesForSlot",
   "extendedCoverageFloor", "getEffectiveSlotCount", "getSlotCount",
   "HANDOFF_HOURS", "computeWeekStats",
   "employeePolicyIssues", "validateAssignmentPolicy", "scheduleChangeIssues", "assignmentIssues",

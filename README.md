@@ -5,8 +5,11 @@
 ### 1. Full-Time Employee Hours
 - All full-time employees **must** have at least **40 hours** scheduled per week.
 
-### 2. Minimum Staffing Per Shift
-- Every shift **must** have at least **3 people** — no exceptions.
+### 2. Exact Staffing Per Shift
+- Every shift requires **exactly 3 regular staff**.
+- **First shift, Monday through Friday, also requires 1 dedicated Supervisor**: exactly 4 people in total.
+- No other shift may have a fourth person. The limit applies throughout each shift, including overlapping extended duties and handoffs.
+- Full-time hours and role requirements must be met within these limits; adding surplus employees is not an acceptable repair.
 
 ### 3. Shift Role Requirements
 Every shift must include at minimum:
@@ -25,8 +28,8 @@ Every shift must include at minimum:
 
 ## Files
 - `ShiftScheduler_1_.jsx` — React component version
-- `ShiftScheduler_latest.html` — Standalone HTML version
+- `ShiftScheduler_latest loop.html` — Standalone HTML version
 
 ## Getting Started
-Open `ShiftScheduler_latest.html` in a browser for the standalone version,
+Open `ShiftScheduler_latest loop.html` in a browser for the standalone version,
 or import `ShiftScheduler_1_.jsx` into a React project.
