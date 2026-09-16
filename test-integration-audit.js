@@ -160,6 +160,14 @@ test('production commit persists regular, extended, handoff and training data in
  const p={ns:{Monday__first:[assignment()]},autoExtShifts:[],handoffs:[],trainingBlocks:[{id:'new'}]};assert(commit(p));
  assert.deepEqual(writes,[{schedule:p.ns,extShifts:[],handoffs:[],trainingBlocks:p.trainingBlocks}]);
 });
+test('production proposal commit rejects surplus staff before writing the weekly draft',()=>{
+ const staff=['a','b','c','d'].map(id=>employee(id)),alerts=[],writes=[];
+ const scope={isReadOnly:false,proposalIsCurrent:()=>true,discardStaleProposal:()=>assert.fail('stale'),employees:staff,cfg:{},policyOptions:{},
+  showAlert:a=>alerts.push(a),pushUndo:()=>assert.fail('must not change undo history'),setWeekDraft:v=>writes.push(v)};
+ const commit=evaluate(extract('  const commitScheduleProposal =','  const commitAssignmentChange')+'return commitScheduleProposal;',scope);
+ assert.equal(commit({ns:{Sunday__second:staff.map(e=>assignment(e.id))},autoExtShifts:[],handoffs:[]}),false);
+ assert.equal(writes.length,0);assert(alerts[0].items.some(i=>i.msg.includes('Overstaffed')));
+});
 test('roster removal clears all employee duties while preserving their extended-shift partner',()=>{
  let week={...live(),schedule:{Monday__first:[assignment()]},extShifts:[{empAId:'g',empBId:'partner'},{empAId:'g'}]},roster=[employee(),employee('partner')];
  const remove=evaluate(extract('  const removeEmployee =','  const saveEdit =')+'return removeEmployee;',{

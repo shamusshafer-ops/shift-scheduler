@@ -663,10 +663,11 @@ const slotHasRole = (asgn, employees, role) =>
     return emp && (emp.qualifications || []).includes(role);
   });
 
-// Qualified extended staff reduce regular capacity only for continuous coverage.
+// A full regular duty must fit even during the busiest part of the slot.
+// Partial extended coverage leaves a gap to repair; it cannot justify overlap.
 const getEffectiveSlotCount = (d, s, extShifts, employees = []) =>
   Math.max(SUP_SLOT_DAY(d, s) ? 1 : 0,
-    getSlotCount(d, s) - extendedCoverageFloor(d, s, extShifts || [], employees));
+    getSlotCount(d, s) - analyzeShiftCoverage(d,s,{},employees,extShifts || []).maxRegular);
 const getAvailPos  = (d, s) => POSITIONS;                       // Sup slot handled separately
 const cellKey      = (d,s) => d+"__"+s;
 
@@ -758,6 +759,38 @@ function collectCoverageIntervals(schedule, extShiftsArg = [], handoffsArg = [])
   return intervals;
 }
 
+// Capacity counts every distinct person actually on duty, independently of the
+// roster/qualification filter used for minimum coverage. Callers may validate
+// only one employee, but that must never hide the other people already on shift.
+function staffingIssuesForSlot(day, shiftId, schedule, preparedIntervals) {
+  const span = shiftInterval(day, shiftId);
+  const intervals = preparedIntervals.filter(i => intervalsOverlap(i, span));
+  const supIds = new Set((schedule[cellKey(day, shiftId)] || []).filter(a => a.position === 'Supervisor').map(a => a.employeeId));
+  const points = [...new Set([span.start, span.end, ...intervals.flatMap(i =>
+    [Math.max(span.start, i.start), Math.min(span.end, i.end)])])].sort((a,b) => a-b);
+  const regLimit = REGULAR_SLOTS(day, shiftId), supLimit = SUP_SLOT_DAY(day, shiftId) ? 1 : 0;
+  const segments = [];
+  for (let n=0; n<points.length-1; n++) {
+    const start=points[n], end=points[n+1], people=new Set(), supervisors=new Set();
+    for (const i of intervals) if (i.start<=start && i.end>=end) {
+      people.add(i.employeeId);
+      if (i.position==='Supervisor' || supIds.has(i.employeeId)) supervisors.add(i.employeeId);
+    }
+    const regular=people.size-supervisors.size;
+    const excess=Math.max(0,regular-regLimit)+Math.max(0,supervisors.size-supLimit);
+    segments.push({start,end,excess,regular,supervisors:supervisors.size});
+  }
+  const amount=segments.reduce((sum,s)=>sum+s.excess*(s.end-s.start),0);
+  if (!amount) return [];
+  return [{level:'error',type:'overstaffed',day,shiftId,amount,
+    msg:`Overstaffed: ${day} ${shiftId} — maximum ${regLimit} regular staff${supLimit ? ' plus 1 Supervisor' : ''} (${coverageGapRanges({day,segments},s=>s.excess>0)})`}];
+}
+
+function validateStaffing(schedule, extShiftsArg = [], handoffsArg = [], preparedIntervals) {
+  const intervals=preparedIntervals || collectCoverageIntervals(schedule,extShiftsArg,handoffsArg);
+  return ALL_SLOTS.flatMap(s=>staffingIssuesForSlot(s.day,s.shiftId,schedule,intervals));
+}
+
 function analyzeShiftCoverage(day, shiftId, schedule, employees, extShiftsArg = [], handoffsArg = [], preparedIntervals) {
   const span = shiftInterval(day, shiftId);
   if (!span) throw new Error("Unknown coverage slot: " + day + "/" + shiftId);
@@ -796,10 +829,11 @@ function analyzeShiftCoverage(day, shiftId, schedule, employees, extShiftsArg = 
   }
   const missing = ["Scale", "Medical", "Supervisor"].filter(role => segments.some(s => s.missing.includes(role)));
   const count = Math.min(...segments.map(s => s.filled));
-  return { day, shiftId, need, count, minRegular: Math.min(...segments.map(s => s.regular)),
+  const staffingIssues = staffingIssuesForSlot(day,shiftId,schedule,intervals);
+  return { day, shiftId, need, count, minRegular: Math.min(...segments.map(s => s.regular)), maxRegular: Math.max(...segments.map(s => s.regular)),
     hasScale: !missing.includes("Scale"), hasMedical: !missing.includes("Medical"),
     hasSupervisor: !missing.includes("Supervisor"), missing, segments,
-    isFull: count >= need, ok: count >= need && missing.length === 0,
+    staffingIssues, isFull: count >= need, ok: count >= need && missing.length === 0 && !staffingIssues.length,
     bodyGapHours: segments.reduce((n, s) => n + s.deficit * (s.end - s.start), 0),
     roleGapHours: segments.reduce((n, s) => n + s.missing.length * (s.end - s.start), 0) };
 }
@@ -822,7 +856,7 @@ function coverageGapRanges(coverage, predicate) {
 }
 
 function coverageIssuesForSlot(c) {
-  const issues = [];
+  const issues = [...(c.staffingIssues || [])];
   if (!c.isFull) issues.push({ level: "error", type: "coverage", day: c.day, shiftId: c.shiftId,
     have: c.count, need: c.need,
     msg: `Coverage gap: ${c.day} ${c.shiftId} — ${c.count}/${c.need} bodies (${coverageGapRanges(c, s => s.deficit > 0)})` });
@@ -1262,7 +1296,8 @@ function employeePolicyIssues(emp, schedule, cfg = {}, options = {}) {
 
 function validateAssignmentPolicy(schedule, employees, cfg = {}, options = {}) {
   const ids = new Set(employees.map(e => e.id));
-  const issues = [...(options.empTimeOffDays?.issues || []), ...employees.flatMap(e => employeePolicyIssues(e, schedule, cfg, options))];
+  const issues = [...validateStaffing(schedule,options.extShifts,options.handoffs),
+    ...(options.empTimeOffDays?.issues || []), ...employees.flatMap(e => employeePolicyIssues(e, schedule, cfg, options))];
   const assigned = new Set([...Object.values(schedule).flat().map(a => a.employeeId),
     ...(options.extShifts || []).flatMap(e => [e.empAId, e.empBId]).filter(Boolean),
     ...(options.handoffs || []).map(h => h.employeeId)]);
@@ -1273,7 +1308,7 @@ function validateAssignmentPolicy(schedule, employees, cfg = {}, options = {}) {
 // Validate the complete proposed result, including the shift AFTER the change.
 // Existing violations may be reduced, but a mutation cannot add or worsen one.
 function scheduleChangeIssues(before, after, employees, cfg = {}, beforeOptions = {}, afterOptions = beforeOptions) {
-  const signature = i => i.employeeId + "__" + i.type +
+  const signature = i => i.type === 'overstaffed' ? i.type+'__'+i.day+'__'+i.shiftId : i.employeeId + "__" + i.type +
     (["short_rest", "continuous_hours"].includes(i.type) ? "__" + i.day + "__" + i.shiftId :
       ["weekly_shifts", "weekend_days", "consecutive_days", "consecutive_nights", "no_overtime", "overtime_approval_limit"].includes(i.type) ? "" : "__" + i.msg);
   const totals = issues => {
@@ -1288,15 +1323,20 @@ function scheduleChangeIssues(before, after, employees, cfg = {}, beforeOptions 
 
 function assignmentIssues(emp, day, shiftId, position, schedule, cfg = {}, options = {}) {
   const key = cellKey(day, shiftId);
-  return employeePolicyIssues(emp, { ...schedule, [key]: [...(schedule[key] || []), { employeeId: emp.id, position }] }, cfg, options);
+  const next = { ...schedule, [key]: [...(schedule[key] || []), { employeeId: emp.id, position }] };
+  const old = new Map(validateStaffing(schedule,options.extShifts,options.handoffs).map(i=>[cellKey(i.day,i.shiftId),i.amount]));
+  return [...employeePolicyIssues(emp,next,cfg,options),
+    ...validateStaffing(next,options.extShifts,options.handoffs).filter(i=>i.amount>(old.get(cellKey(i.day,i.shiftId)) || 0))];
 }
 
 function filterPolicyAssignments(schedule, employees, cfg, options = {}) {
   const rejected = [];
-  const accepted = {};
+  const accepted = Object.fromEntries(ALL_SLOTS.map(s => {
+    const key=cellKey(s.day,s.shiftId);
+    return [key,[...(options.preservedSchedule?.[key] || [])]];
+  }));
   for (const { day, shiftId } of ALL_SLOTS) {
     const key = cellKey(day, shiftId);
-    accepted[key] = [];
     for (const a of schedule[key] || []) {
       const emp = employees.find(e => e.id === a.employeeId);
       const failures = emp ? assignmentIssues(emp, day, shiftId, a.position, accepted, cfg,
@@ -1305,7 +1345,9 @@ function filterPolicyAssignments(schedule, employees, cfg, options = {}) {
       else accepted[key].push(a);
     }
   }
-  return { schedule: accepted, rejected };
+  const generated = Object.fromEntries(Object.entries(accepted).map(([key,rows]) =>
+    [key,rows.filter(a=>!(options.preservedSchedule?.[key] || []).includes(a))]));
+  return { schedule: generated, rejected };
 }
 
 function proposedSwap(schedule, src, tgt) {
@@ -2102,7 +2144,7 @@ function improveSchedulePreferences(input,context) {
 
 function buildLockedAutoFill(source,cfg,empTimeOffDays,empPatterns,extShifts,weeklyOptions) {
   const roster=weeklyOptions.roster || source,pto=weeklyOptions.ptoHoursByEmployee || {},handoffs=weeklyOptions.seedHandoffs || [];
-  const validateSchedule=(s,x,e,h)=>[...validateCoverage(s,roster,x,h),...validateAssignmentPolicy(s,roster,cfg,{extShifts:x,handoffs:h,empTimeOffDays,empPatterns,ptoHoursByEmployee:pto})];
+  const validateSchedule=(s,x,e,h)=>[...validateCoverage(s,roster,x,h).filter(i=>i.type!=='overstaffed'),...validateAssignmentPolicy(s,roster,cfg,{extShifts:x,handoffs:h,empTimeOffDays,empPatterns,ptoHoursByEmployee:pto})];
   const input={ns:weeklyOptions.seedSchedule || {},autoExtShifts:extShifts || [],handoffs,usedPatterns:empPatterns || {},assignLog:{}};
   const result=repairScheduleCompletion(input,{source,accountingRoster:roster,cfg,empTimeOffDays,ptoHoursByEmployee:pto,enrichedPatterns:empPatterns,
     fairnessHistory:weeklyOptions.fairnessHistory,validateSchedule,repairMaxTransactions:128,repairMaxNodes:10000,repairSearchMs:1500});
@@ -2139,7 +2181,7 @@ function scheduleQuality(result, employees, cfg = {}, options = {}, baseline) {
     const before=keys(baseline),after=keys(ns);
     changes=[...before].filter(k=>!after.has(k)).length+[...after].filter(k=>!before.has(k)).length;
   }
-  const hard=options.skipPolicy ? 0 : validateAssignmentPolicy(ns,employees,cfg,{...options,extShifts:exts,handoffs}).length;
+  const hard=options.skipPolicy ? validateStaffing(ns,exts,handoffs,intervals).length : validateAssignmentPolicy(ns,employees,cfg,{...options,extShifts:exts,handoffs}).length;
   return [hard,body+roles,body,shortfall,overtime,preferences,changes];
 }
 
@@ -2267,7 +2309,7 @@ function completeSearchSeed(input) {
 // an extension bridges it, but only if the entire joined block fits the cap.
 function completeSearchHardIssues(emp,state,cfg,options) {
   const issues=employeePolicyIssues(emp,state.ns,cfg,{...options,extShifts:state.autoExtShifts,handoffs:state.handoffs});
-  const hard=issues.filter(i=>i.type!=='short_rest' && i.type!=='invalid_handoff');
+  const hard=[...validateStaffing(state.ns,state.autoExtShifts,state.handoffs),...issues.filter(i=>i.type!=='short_rest' && i.type!=='invalid_handoff')];
   if(!issues.some(i=>i.type==='short_rest'))return hard;
   const pattern=options.empPatterns?.[emp.id] || {};
   const prior=pattern.prevWorkIntervals || (pattern.prevWeekLastSlot?(()=>{const i=shiftInterval(pattern.prevWeekLastSlot.day,pattern.prevWeekLastSlot.shiftId);return i?[{start:i.start-168,end:i.end-168}]:[];})():[]);
@@ -2595,7 +2637,7 @@ function historyDataIssues(record) {
 }
 
 const PUBLICATION_STORE_KEY = "shift_publication_records";
-const PUBLICATION_RULE_VERSION = 1;
+const PUBLICATION_RULE_VERSION = 2;
 const canonicalJSON = value => JSON.stringify(value,(_,v)=>v && typeof v === "object" && !Array.isArray(v)
   ? Object.fromEntries(Object.keys(v).sort().map(k=>[k,v[k]])) : v);
 function publicationSnapshot(input) {
@@ -2654,7 +2696,7 @@ function validatePublication(snapshot, approvals=[], options={}) {
     if(options.searchRunning) error("publication_search","Wait for the schedule search to finish before publishing.");
     const availability=buildTimeOffAvailability(snapshot.timeOffReqs,snapshot.weekStart);
     const accounting=buildWeeklyAccounting(snapshot.employees,snapshot.schedule,snapshot.extShifts,snapshot.handoffs,snapshot.timeOffReqs,snapshot.weekStart);
-    issues.push(...validateCoverage(snapshot.schedule,snapshot.employees,snapshot.extShifts,snapshot.handoffs),
+    issues.push(...validateCoverage(snapshot.schedule,snapshot.employees,snapshot.extShifts,snapshot.handoffs).filter(i=>i.type!=='overstaffed'),
       ...validateAssignmentPolicy(snapshot.schedule,snapshot.employees,snapshot.cfg,{extShifts:snapshot.extShifts,handoffs:snapshot.handoffs,
         empTimeOffDays:availability,ptoHoursByEmployee:accounting.pto.hoursByEmployee,
         empPatterns:boundaryPatterns(snapshot.previousWeek?[snapshot.previousWeek]:[],snapshot.weekStart,{})}),...accounting.issues);
@@ -2739,6 +2781,147 @@ function publicationRows(snapshot) {
       duties:intervals.filter(i=>i.employeeId===emp.id && Math.max(0,Math.min(6,Math.floor(i.start/24)))===index).map(i=>({start:i.start,end:i.end,
         text:`${formatCoverageTime(i.start,day)}–${formatCoverageTime(i.end,day)} · ${i.position || (emp.qualifications || []).join("/")}${i.source==="extended" ? " · Extended" : i.source==="handoff" ? " · Handoff" : ""}`}))}))}));
 }
+// One presentation model owns both the Excel preview and downloaded workbook.
+// Labels describe actual continuous duty, not the name of an extended pair.
+const SCHEDULE_EXPORT_COLORS = {
+  header: '#92B86B', medical: '#B8CCE4', body: '#E7E6E1', white: '#FFFFFF',
+  overtime: '#FFF200', attention: '#E9987E', leave: '#92C46D', border: '#777777',
+};
+function scheduleExportEscape(value) {
+  return String(value ?? '').replace(/[\u0000-\u0008\u000B\u000C\u000E-\u001F]/g, '')
+    .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;').replace(/'/g, '&#39;');
+}
+function scheduleExportClock(hour) {
+  const minutes = ((Math.round(hour * 60) % 1440) + 1440) % 1440;
+  const h = Math.floor(minutes / 60), m = minutes % 60;
+  return `${h % 12 || 12}${m ? ':' + String(m).padStart(2, '0') : ''}${h < 12 ? 'A' : 'P'}`;
+}
+function scheduleExportDutyLabel(duty) {
+  const start = ((duty.start % 24) + 24) % 24, length = duty.end - duty.start;
+  if (length === 12 && start === 6) return '12A';
+  if (length === 12 && start === 18) return '12P';
+  if (length === 8 && [6, 14, 22].includes(start)) return String([6, 14, 22].indexOf(start) + 1);
+  if (length === 16 && start === 6) return '1+2';
+  if (length === 16 && start === 14) return '2+3';
+  const extraDays = Math.floor(duty.end / 24) - Math.floor(duty.start / 24);
+  return `${scheduleExportClock(duty.start)}–${scheduleExportClock(duty.end)}${extraDays ? ` (+${extraDays}d)` : ''}`;
+}
+function buildScheduleExportModel(input, generatedOn = localISODate(new Date())) {
+  const {employees = [], schedule = {}, extShifts = [], handoffs = [], trainingBlocks = [], timeOffReqs = [], weekStart} = input;
+  if (!validISODate(weekStart)) throw new Error('Select a valid schedule week before exporting.');
+  const C = SCHEDULE_EXPORT_COLORS;
+  const dates = weekDatesISO(weekStart);
+  const formatDate = iso => { const [y,m,d] = iso.split('-'); return `${Number(m)}/${Number(d)}/${y}`; };
+  const monthDate = iso => new Date(iso + 'T12:00:00Z').toLocaleDateString('en-US', {month:'short',day:'numeric',timeZone:'UTC'});
+  const intervals = collectCoverageIntervals(schedule, extShifts, handoffs);
+  const accounting = buildWeeklyAccounting(employees, schedule, extShifts, handoffs, timeOffReqs, weekStart);
+  const cell = (value, fill = C.body, extra = {}) => ({value, fill, ...extra});
+  const row = (cells, height = 23) => ({cells, height});
+  const shortName = emp => { const words = String(emp.name || emp.id).trim().split(/\s+/); return words.length > 1 ? `${words[0][0]}. ${words.slice(1).join(' ')}` : words[0]; };
+  const abbreviated = employees.map(shortName);
+  const employeeRows = employees.map(emp => {
+    const own = intervals.filter(i => i.employeeId === emp.id).sort((a,b) => a.start - b.start || a.end - b.end);
+    const duties = [];
+    for (const i of own) {
+      const last = duties[duties.length - 1];
+      if (last && i.start <= last.end) { last.end = Math.max(last.end, i.end); last.parts.push(i); }
+      else duties.push({start:i.start, end:i.end, parts:[i]});
+    }
+    const counts = SHIFTS.map(s => DAYS.reduce((n,d) => n + own.reduce((h,i) => {
+      const span = shiftInterval(d,s.id); return h + Math.max(0, Math.min(i.end,span.end) - Math.max(i.start,span.start));
+    },0),0));
+    const primary = emp.requiredShift || ((emp.preferredShifts || []).length === 1 ? emp.preferredShifts[0] : SHIFTS[counts.indexOf(Math.max(...counts))].id);
+    const hours = accounting.rows.find(r => r.employeeId === emp.id);
+    const medical = (emp.qualifications || []).includes('Medical');
+    const leave = timeOffReqs.filter(r => r.empId === emp.id && r.status === 'approved')
+      .flatMap(r => timeOffIntervals(r,weekStart).map(span => ({...span, request:r})));
+    let cumulative = 0;
+    for (const duty of duties) { cumulative += duty.end - duty.start; duty.overtime = cumulative > 40; }
+    const cells = DAYS.map((day,di) => {
+      // Out-of-week pair halves remain visible with an explicit start-day label.
+      const dayDuties = duties.filter(d => Math.max(0, Math.min(6, Math.floor(d.start / 24))) === di);
+      const parts = dayDuties.map(d => {
+        const startDay = Math.floor(d.start / 24);
+        const outside = startDay < 0 ? 'Prev Sat: ' : startDay > 6 ? 'Next Sun: ' : '';
+        const scale = d.parts.some(p => p.position === 'Scale') || DAYS.some(day => SHIFTS.some(shift =>
+          intervalsOverlap(d,shiftInterval(day,shift.id)) && (schedule[cellKey(day,shift.id)] || []).some(a => a.employeeId === emp.id && a.position === 'Scale')));
+        return outside + scheduleExportDutyLabel(d) + (scale ? '-Scale' : '');
+      });
+      const calendarSpan = {start:di*24,end:(di+1)*24};
+      const dayLeave = leave.filter(l => intervalsOverlap(l, calendarSpan));
+      for (const l of dayLeave) {
+        const label = l.request.type === 'vacation' ? 'Vac' : 'Off';
+        parts.push(l.start <= calendarSpan.start && l.end >= calendarSpan.end ? label :
+          `${label} ${scheduleExportClock(Math.max(l.start,calendarSpan.start))}–${scheduleExportClock(Math.min(l.end,calendarSpan.end))}`);
+      }
+      const training = trainingBlocks.filter(t => t.empId === emp.id && t.day === day);
+      parts.push(...training.map(t => `TRN ${scheduleExportClock(t.startHour)}–${scheduleExportClock(t.startHour+t.durationHours)}`));
+      const conflict = leave.some(l => dayDuties.some(d => intervalsOverlap(d,l))) ||
+        dayLeave.some(l => own.some(d => intervalsOverlap(d,l) && intervalsOverlap(d,calendarSpan))) ||
+        dayLeave.some(l => training.some(t => intervalsOverlap(l,{start:di*24+t.startHour,end:di*24+t.startHour+t.durationHours})));
+      const offShift = own.some(i => i.source === 'regular' && Math.floor(i.start/24) === di &&
+        i.start % 24 !== {first:6,second:14,third:22}[primary]);
+      const unusual = dayDuties.some(d => !['1','2','3','12A','12P','1+2','2+3'].includes(scheduleExportDutyLabel(d)) || d.start < 0 || d.start >= 168);
+      const fill = conflict || offShift || unusual ? C.attention : dayDuties.some(d => d.overtime) ? C.overtime : dayLeave.length ? C.leave : C.body;
+      return cell([...new Set(parts)].join('\n') || 'x', fill);
+    });
+    const rank = SHIFTS.findIndex(s => s.id === primary);
+    return {emp, primary, rank:(emp.qualifications || []).includes('Supervisor') && primary === 'first' ? -1 : rank,
+      name:abbreviated.filter(n => n === shortName(emp)).length > 1 ? emp.name : shortName(emp),
+      nameFill:medical ? C.medical : C.body, cells, duties, ...hours};
+  }).sort((a,b) => a.rank - b.rank);
+  const weekLabel = `${monthDate(dates[0])} – ${monthDate(dates[6])}, ${dates[6].slice(0,4)}`;
+  const main = [row([cell(weekLabel,C.header,{span:2,bold:true}), ...dates.map((date,i) => cell(`${DAYS[i]}\n${Number(date.slice(8))}`,C.header,{bold:true}))],38)];
+  let previous = null;
+  for (const r of employeeRows) {
+    if (previous !== null && previous !== r.primary) main.push(row(Array.from({length:9},() => cell('',C.white)),9));
+    previous = r.primary;
+    const name = cell(r.name,r.nameFill,{align:'Left'}), hours = cell(r.workedHours,r.nameFill);
+    main.push(row([name,hours,...r.cells],Math.max(23,Math.ceil(String(r.name).length/23)*13+6,
+      ...r.cells.map(c => String(c.value).split('\n').reduce((n,line)=>n+Math.max(1,Math.ceil(line.length/15)),0)*13+6))));
+  }
+  const totalOvertime = employeeRows.reduce((n,r) => n + Math.max(0,r.workedHours-40),0);
+  main.push(row([cell(`OT: ${totalOvertime}h`,C.body,{span:2}),cell('DRAFT • Not published',C.body,{span:5}),cell(formatDate(generatedOn),C.overtime,{span:2})],21));
+  main.push(row([cell('Any changes to this schedule must be approved by a Supervisor in advance.',C.overtime,{span:9,bold:true})],24));
+  main.push(row([cell('',C.white,{span:9})],12));
+  main.push(row([cell('Medical',C.medical,{span:2}),cell('Overtime',C.overtime,{span:2}),cell('Attention',C.attention,{span:2}),cell('Requested Off',C.leave,{span:3})],22));
+  main.push(row([cell('1 = 6A–2P   •   2 = 2P–10P   •   3 = 10P–6A   •   12A = 6A–6P   •   12P = 6P–6A',C.white,{span:9})],21));
+  main.push(row([cell('Hours = worked hours; PTO is separate. Yellow = duty exceeding 40 weekly work hours. Overnight duty is shown on its start day.',C.white,{span:9})],24));
+  const summary = [row(['Employee','Type','Qualifications','Work hours','PTO hours','Total credit','OT hours','Status'].map(v => cell(v,C.header,{bold:true})),30)];
+  for (const r of employeeRows) summary.push(row([
+    cell(r.emp.name,C.body,{align:'Left'}),cell(r.emp.employmentType || ''),cell((r.emp.qualifications || []).join(', ')),
+    cell(r.workedHours),cell(r.ptoHours),cell(r.creditedHours),cell(Math.max(0,r.workedHours-40)),cell(r.status),
+  ],Math.max(23,Math.ceil(String(r.emp.name).length/20)*13+6,Math.ceil((r.emp.qualifications || []).join(', ').length/22)*13+6,
+    Math.ceil(String(r.status).length/20)*13+6,Math.ceil(String(r.emp.employmentType || '').length/12)*13+6)));
+  summary.push(row([cell('TOTAL',C.header,{span:3,bold:true}),...['workedHours','ptoHours','creditedHours'].map(k => cell(employeeRows.reduce((n,r)=>n+r[k],0),C.header,{bold:true})),cell(totalOvertime,C.header,{bold:true}),cell('',C.header)]));
+  summary.push(row([cell('Training is shown on the schedule but is not included in worked-hour accounting.',C.white,{span:8})],25));
+  return {weekStart, employeeRows, totalOvertime, sheets:[
+    {name:'Weekly Schedule',widths:[140,36,77,77,77,77,77,77,77],rows:main},
+    {name:'Employee Hours',widths:[130,76,140,60,60,70,55,125],rows:summary},
+  ]};
+}
+function scheduleExportHtml(model) {
+  const esc = scheduleExportEscape, C = SCHEDULE_EXPORT_COLORS;
+  return model.sheets.map(sheet => `<section style="margin-bottom:24px"><h3 style="font:14px Arial;color:#222">${esc(sheet.name)}</h3>` +
+    `<table aria-label="${esc(sheet.name)}" style="border-collapse:collapse;table-layout:fixed;width:${sheet.widths.reduce((a,b)=>a+b,0)}pt;font:11pt Arial;color:#111">` +
+    `<colgroup>${sheet.widths.map(w=>`<col style="width:${w}pt">`).join('')}</colgroup><tbody>` +
+    sheet.rows.map(r=>`<tr style="height:${r.height}pt">${r.cells.map(c=>`<td colspan="${c.span || 1}" style="border:1px solid ${C.border};padding:3px 5px;overflow-wrap:anywhere;white-space:pre-line;text-align:${(c.align || 'Center').toLowerCase()};vertical-align:middle;background:${c.fill};font-weight:${c.bold ? 'bold' : 'normal'}">${esc(c.value)}</td>`).join('')}</tr>`).join('') + '</tbody></table></section>').join('');
+}
+function scheduleExportXml(model) {
+  const esc = scheduleExportEscape, styles = new Map();
+  const styleId = c => {
+    const key = JSON.stringify([c.fill,c.align || 'Center',!!c.bold]);
+    if (!styles.has(key)) styles.set(key,{id:'s'+styles.size,cell:c});
+    return styles.get(key).id;
+  };
+  const sheets = model.sheets.map(sheet => `<Worksheet ss:Name="${esc(sheet.name)}"><Table>` +
+    sheet.widths.map(w=>`<Column ss:Width="${w}"/>`).join('') + sheet.rows.map(r=>`<Row ss:AutoFitHeight="0" ss:Height="${r.height}">` +
+      r.cells.map(c=>`<Cell ss:StyleID="${styleId(c)}"${c.span > 1 ? ` ss:MergeAcross="${c.span-1}"` : ''}><Data ss:Type="${typeof c.value === 'number' ? 'Number' : 'String'}">${esc(c.value)}</Data></Cell>`).join('') + '</Row>').join('') +
+    '</Table><WorksheetOptions xmlns="urn:schemas-microsoft-com:office:excel"><PageSetup><Layout x:Orientation="Landscape"/><PageMargins x:Bottom="0.3" x:Left="0.3" x:Right="0.3" x:Top="0.3"/></PageSetup><FitToPage/><Print><PaperSizeIndex>1</PaperSizeIndex><FitWidth>1</FitWidth><FitHeight>0</FitHeight></Print><FreezePanes/><FrozenNoSplit/><SplitHorizontal>1</SplitHorizontal><TopRowBottomPane>1</TopRowBottomPane><SplitVertical>2</SplitVertical><LeftColumnRightPane>2</LeftColumnRightPane><ActivePane>0</ActivePane><DoNotDisplayGridlines/></WorksheetOptions></Worksheet>').join('');
+  const styleXml = [...styles.values()].map(({id,cell:c}) => `<Style ss:ID="${id}"><Alignment ss:Horizontal="${c.align || 'Center'}" ss:Vertical="Center" ss:WrapText="1"/><Font ss:FontName="Arial" ss:Size="11" ss:Color="#111111"${c.bold ? ' ss:Bold="1"' : ''}/><Interior ss:Color="${c.fill}" ss:Pattern="Solid"/><Borders>${['Bottom','Left','Right','Top'].map(p=>`<Border ss:Position="${p}" ss:LineStyle="Continuous" ss:Weight="1" ss:Color="${SCHEDULE_EXPORT_COLORS.border}"/>`).join('')}</Borders></Style>`).join('');
+  return `<?xml version="1.0" encoding="UTF-8"?><?mso-application progid="Excel.Sheet"?><Workbook xmlns="urn:schemas-microsoft-com:office:spreadsheet" xmlns:ss="urn:schemas-microsoft-com:office:spreadsheet" xmlns:x="urn:schemas-microsoft-com:office:excel"><Styles>${styleXml}</Styles>${sheets}</Workbook>`;
+}
+
 function publicationPrintHtml(record, approvals=record.approvals) {
   if(!publicationRecordValid(record,approvals)) throw new Error("This record is not a validated publication.");
   const esc=value=>String(value??"").replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
@@ -4024,7 +4207,7 @@ function buildAutoFill(sourceEmps, cfg, empTimeOffDays, empPatterns, extShiftsAr
       day, shift.id, preservedSchedule, coverageRoster, extShiftsArg, weeklyOptions.preservedHandoffs || [], extIntervalsForFill);
   }
   const slotCap = (day, shiftId) => Math.max(0,
-    REGULAR_SLOTS(day, shiftId) - extCoverageBySlot[cellKey(day, shiftId)].minRegular);
+    REGULAR_SLOTS(day, shiftId) - extCoverageBySlot[cellKey(day, shiftId)].maxRegular);
 
   const needsSupervisor = (day, shiftId) => SUP_SLOT_DAY(day, shiftId) &&
     !extCoverageBySlot[cellKey(day, shiftId)].hasSupervisor;
@@ -5704,7 +5887,7 @@ function buildAutoFill(sourceEmps, cfg, empTimeOffDays, empPatterns, extShiftsAr
   }
 
   const filtered = filterPolicyAssignments(ns, sourceEmps, cfg,
-    { extShifts: extShiftsArg || [], empTimeOffDays, empPatterns, ptoHoursByEmployee });
+    { extShifts: extShiftsArg || [], handoffs:weeklyOptions.preservedHandoffs || [], preservedSchedule, empTimeOffDays, empPatterns, ptoHoursByEmployee });
   const accepted = filtered.schedule, policyRejected = filtered.rejected;
   Object.assign(ns, accepted);
   for (const emp of sourceEmps) {
@@ -6009,655 +6192,54 @@ function ConfirmDialogProvider({ children }) {
 }
 
 function ExcelPreviewModal({ onDownload, onClose, snapshot }) {
-  const roster=useRoster(),live=useSchedule(),leave=useTimeOff();
-  const {employees,schedule,extShifts,trainingBlocks,weekStart,handoffs,timeOffReqs}=snapshot || {...live,employees:roster.employees,timeOffReqs:leave.timeOffReqs};
-  const t = useTheme();
-
-  const CLR = {
-    headerBg:"#4F6228", dayBg:"#76923C", rowBlue:"#B8CCE4", rowGray:"#C0C0C0",
-    rowWhite:"#FFFFFF", shift1:"#DAEEF3", shift2:"#E4DFEC", shift3:"#D9D9D9",
-    ptoGreen:"#92D050", splitYellow:"#FFFF00", splitOrange:"#FFC000",
-    multiYellow:"#FFF2CC", separator:"#F2F2F2", footerYellow:"#FFFF00",
-    white:"#FFFFFF", black:"#000000", darkGreen:"#375623",
-    red:"#CC0000", orange:"#CC6600", lightText:"#E8F0D0",
+  const roster = useRoster(), live = useSchedule(), leave = useTimeOff();
+  const source = snapshot || {...live, employees:roster.employees, timeOffReqs:leave.timeOffReqs};
+  const [busy,setBusy] = useState(false), [error,setError] = useState('');
+  let model, previewError = '';
+  try { model = buildScheduleExportModel(source); } catch (err) { previewError = err.message; }
+  const download = async () => {
+    setBusy(true); setError('');
+    try { await onDownload(model); } catch (err) { setError('Could not save the export: ' + err.message); }
+    finally { setBusy(false); }
   };
-
-  // Returns the approved time-off request (non-partial) for an employee on a given day name
-  const approvedTimeOffPrev = (empId, day) =>
-    (timeOffReqs||[]).find(r =>
-      r.status === "approved" && r.empId === empId && r.type !== "partial" &&
-      timeOffCoversSlot(r, day, "first", weekStart)
-    ) || null;
-
-  const getShiftLabel = (emp, day) => {
-    // Approved vacation or day-off requests always override schedule display
-    const req = approvedTimeOffPrev(emp.id, day);
-    if (req) {
-      const trnDay = (trainingBlocks||[]).filter(t => t.empId === emp.id && t.day === day);
-      const trnSuffix = trnDay.length > 0
-        ? " +" + trnDay.map(t => { const fh=h=>`${h%12||12}${h<12?"A":"P"}`; return `TRN ${fh(t.startHour)}-${fh((t.startHour+t.durationHours)%24)}`; }).join(",")
-        : "";
-      return req.type === "vacation"
-        ? { text:"Vac"+trnSuffix, kind:"pto" }
-        : { text:"Off"+trnSuffix, kind:"pto" };
-    }
-    const result = [];
-    for (const shift of SHIFTS) {
-      const asgn = (schedule[cellKey(day, shift.id)] || []).find(a => a.employeeId === emp.id);
-      if (asgn) result.push({ sid: shift.id, pos: asgn.position });
-    }
-    const ho = (handoffs||[]).find(h => h.day === day && h.employeeId === emp.id);
-    const hoSuffix = ho ? (ho.type === "late-stay" ? " +LS" : " +EA") : "";
-    const extDay = (extShifts || []).filter(e => e.day === day);
-    const extAsA = extDay.find(e => e.empAId === emp.id);
-    const extAsB = extDay.find(e => e.empBId === emp.id);
-    if (extAsA) {
-      const pair = EXT_PAIRS_BY_ID.get(extAsA.pairId);
-      const label = pair ? pair.label : "Ext";
-      return { text: label + hoSuffix, kind: pair && (pair.startHour ?? 6) < 12 ? "splitDay" : "splitNight" };
-    }
-    if (extAsB) {
-      const pair = EXT_PAIRS_BY_ID.get(extAsB.pairId);
-      const label = pair ? pair.label : "Ext";
-      return { text: label + hoSuffix, kind: pair && (pair.startHourB ?? pair.startHour ?? 18) < 12 ? "splitDay" : "splitNight" };
-    }
-    const trnDay = (trainingBlocks||[]).filter(t => t.empId === emp.id && t.day === day);
-    const trnSuffix = trnDay.length > 0
-      ? " +" + trnDay.map(t => { const fh=h=>`${h%12||12}${h<12?"A":"P"}`; return `TRN ${fh(t.startHour)}-${fh((t.startHour+t.durationHours)%24)}`; }).join(",")
-      : "";
-    if (!result.length) {
-      if (hoSuffix) return { text: hoSuffix.trim(), kind: "splitNight" };
-      if (trnSuffix) return { text: trnSuffix.trim().replace(/^\+/,""), kind:"training" };
-      return { text:"X", kind:"absent" };
-    }
-    if (result.length === 1 && result[0].pos === "PTO") return { text:"Vac"+trnSuffix, kind:"pto" };
-    if (result.length === 1 && result[0].pos === "Off") return { text:"Off"+trnSuffix, kind:"pto" };
-    if (result.length === 2) {
-      const nums = result.map(r=>({first:"1",second:"2",third:"3"}[r.sid])).join("+");
-      return { text:nums+hoSuffix+trnSuffix, kind:"multi" };
-    }
-    const { sid, pos } = result[0];
-    const num = {first:"1",second:"2",third:"3"}[sid];
-    const shiftAsgn = schedule[cellKey(day, sid)] || [];
-    const scaleOnShift = shiftAsgn.filter(a => {
-      const e = employees.find(x => x.id === a.employeeId);
-      return a.position === "Scale" || (e && (e.qualifications||[]).includes("Scale"));
-    }).length;
-    const medOnShift = shiftAsgn.filter(a => {
-      const e = employees.find(x => x.id === a.employeeId);
-      return a.position === "Medical" || a.position === "Supervisor"
-        || (e && ((e.qualifications||[]).includes("Medical") || (e.qualifications||[]).includes("Supervisor")));
-    }).length;
-    const suffix = pos==="Scale" && scaleOnShift > 1 ? "-Scale"
-                 : pos==="Medical" && medOnShift > 1 ? "-Med" : "";
-    return { text:num+suffix+hoSuffix+trnSuffix, kind:sid };
-  };
-
-  const primaryShift = (emp) => {
-    if (emp.requiredShift) return emp.requiredShift;
-    if ((emp.preferredShifts||[]).length === 1) return emp.preferredShifts[0];
-    const counts = {first:0,second:0,third:0};
-    DAYS.forEach(day => SHIFTS.forEach(s => {
-      if ((schedule[cellKey(day,s.id)]||[]).some(a=>a.employeeId===emp.id)) counts[s.id]++;
-    }));
-    return Object.entries(counts).sort((a,b)=>b[1]-a[1])[0]?.[0] || "first";
-  };
-
-  const rowBgFor = (emp) => {
-    if (primaryShift(emp)==="first") return CLR.rowBlue;
-    if (primaryShift(emp) === "third") return CLR.rowGray;
-    return CLR.rowWhite;
-  };
-
-  const kindStyle = (kind, rowBg) => {
-    const bg = {first:CLR.shift1,second:CLR.shift2,third:CLR.shift3,
-      splitDay:CLR.splitYellow,splitNight:CLR.splitOrange,
-      multi:CLR.multiYellow,pto:CLR.ptoGreen,training:"#FFF0D0",
-      absent:rowBg,off:rowBg,empty:rowBg}[kind]||rowBg;
-    const color = {splitDay:CLR.red,splitNight:CLR.red,pto:CLR.darkGreen,training:"#B45309",absent:"#999999"}[kind]||CLR.black;
-    const fontWeight = ["splitDay","splitNight","multi","training"].includes(kind) ? "bold" : "normal";
-    return { background:bg, color, fontWeight };
-  };
-
-  const shiftRank = {first:0,second:1,third:2};
-  const isSupervisor = (e) => (e.qualifications||[]).includes("Supervisor");
-  const sortedEmps = [...employees].sort((a,b) => {
-    // Supervisor on 1st shift always sorts to top row
-    const aRank = isSupervisor(a) && primaryShift(a) === "first" ? -1 : shiftRank[primaryShift(a)]||0;
-    const bRank = isSupervisor(b) && primaryShift(b) === "first" ? -1 : shiftRank[primaryShift(b)]||0;
-    return aRank - bRank;
-  });
-
-  const [wy,wm,wd] = (weekStart||"2024-01-07").split("-").map(Number);
-  const sun = new Date(wy,wm-1,wd,12);
-  const dayDates = DAYS.map((_,i)=>{ const d=new Date(sun); d.setDate(sun.getDate()+i); return d; });
-  const fmtDate = (d) => `${d.getMonth()+1}/${String(d.getDate()).padStart(2,"0")}`;
-  const weekLabel = `${fmtDate(dayDates[0])} \u2013 ${fmtDate(dayDates[6])}`;
-  const today = new Date();
-
-  const thStyle = (extra={}) => ({
-    background:CLR.headerBg, color:CLR.white, fontWeight:"bold",
-    padding:"5px 8px", fontSize:11, border:"1px solid #BFBFBF",
-    textAlign:"center", whiteSpace:"nowrap", ...extra,
-  });
-  const dayThStyle = { background:CLR.dayBg, color:CLR.white, fontWeight:"bold",
-    padding:"5px 8px", fontSize:11, border:"1px solid #BFBFBF", textAlign:"center" };
-  const tdStyle = (extra={}) => ({
-    padding:"4px 6px", fontSize:11, border:"1px solid #BFBFBF",
-    textAlign:"center", whiteSpace:"nowrap", ...extra,
-  });
-
-  let prevGroup = null;
-  const rows = [];
-  for (const emp of sortedEmps) {
-    const curGroup = primaryShift(emp);
-    if (prevGroup !== null && curGroup !== prevGroup) {
-      rows.push(
-        <tr key={"sep-"+emp.id}>
-          {Array(9).fill(0).map((_,i)=>(
-            <td key={i} style={{background:CLR.separator,padding:2,border:"1px solid #BFBFBF",height:4}}/>
-          ))}
-        </tr>
-      );
-    }
-    prevGroup = curGroup;
-    const hrs = calcHours(emp.id, schedule, extShifts);
-    const isFT = emp.employmentType === "full-time";
-    const rowBg = rowBgFor(emp);
-    const hrsColor = isFT && hrs < 40 ? CLR.red : hrs > 40 ? CLR.orange : CLR.black;
-    const hrsBold = (isFT && hrs < 40) || hrs > 40;
-    rows.push(
-      <tr key={emp.id}>
-        <td style={tdStyle({background:rowBg,fontWeight:"bold",textAlign:"left",minWidth:110,color:"#000000"})}>{emp.name}</td>
-        <td style={tdStyle({background:rowBg,color:hrsColor,fontWeight:hrsBold?"bold":"normal",minWidth:36})}>{hrs}</td>
-        {DAYS.map(day => {
-          const { text, kind } = getShiftLabel(emp, day);
-          const cs = kindStyle(kind, rowBg);
-          return <td key={day} style={tdStyle({...cs,minWidth:58})}>{text || "\u00a0"}</td>;
-        })}
-      </tr>
-    );
-  }
-
   return (
-    <div style={{position:"fixed",inset:0,background:"rgba(0,0,0,.65)",zIndex:9999,
-      display:"flex",alignItems:"center",justifyContent:"center",padding:20}}>
-      <div style={{background:"var(--ss-bg)",border:"1px solid var(--ss-border)",borderRadius:10,
-        display:"flex",flexDirection:"column",maxWidth:"96vw",maxHeight:"92vh",
-        boxShadow:"0 8px 40px rgba(0,0,0,.5)",overflow:"hidden"}}>
-
-        {}
-        <div style={{display:"flex",alignItems:"center",gap:12,padding:"14px 20px",
-          background:"var(--ss-surface)",borderBottom:"1px solid var(--ss-border)",flexShrink:0}}>
-          <span style={{fontSize:13,fontWeight:700,color:"var(--ss-text)",flex:1}}>
-            📊 Excel Preview &nbsp;
-            <span style={{fontWeight:400,color:"var(--ss-text-dim)",fontSize:11}}>Week of {weekLabel}</span>
-          </span>
-          <button onClick={onDownload}
-            style={{background:"var(--ss-scale)",color:"#fff",border:"none",padding:"8px 18px",
-              borderRadius:6,cursor:"pointer",fontSize:12,fontWeight:700,fontFamily:"inherit",
-              display:"flex",alignItems:"center",gap:6}}>
-            ↓ Download Excel
-          </button>
-          <button onClick={onClose}
-            style={{background:"transparent",border:"1px solid var(--ss-border)",color:"var(--ss-text-dim)",
-              padding:"8px 14px",borderRadius:6,cursor:"pointer",fontSize:12,fontFamily:"inherit"}}>
-            Close
-          </button>
+    <div style={{position:'fixed',inset:0,background:'rgba(0,0,0,.65)',zIndex:9999,display:'flex',alignItems:'center',justifyContent:'center',padding:20}}>
+      <div role="dialog" aria-modal="true" aria-label="Excel export preview" style={{background:'#fff',color:'#222',borderRadius:10,width:'min(1200px,96vw)',maxHeight:'94vh',display:'flex',flexDirection:'column',overflow:'hidden'}}>
+        <div style={{display:'flex',gap:12,alignItems:'center',padding:'16px 20px',borderBottom:'1px solid #ddd'}}>
+          <strong style={{flex:1}}>Excel export preview</strong>
+          <button onClick={download} disabled={busy || !model}>{busy ? 'Saving…' : 'Download Excel (.xls)'}</button>
+          <button onClick={onClose} disabled={busy}>Close</button>
         </div>
-
-        {}
-        <div style={{overflowX:"auto",overflowY:"auto",padding:"16px 20px",flex:1}}>
-          <table style={{borderCollapse:"collapse",fontFamily:"Arial,sans-serif",fontSize:11,minWidth:700}}>
-            <thead>
-              {}
-              <tr>
-                <td colSpan={9} style={{background:CLR.headerBg,color:CLR.white,fontWeight:"bold",
-                  fontSize:13,padding:"7px 10px",border:"1px solid #BFBFBF",textAlign:"center"}}>
-                  DRAFT — Shift Schedule — Week of {weekLabel}
-                </td>
-              </tr>
-              {}
-              <tr>
-                <th style={thStyle({textAlign:"left"})}>Employee</th>
-                <th style={thStyle()}>Hrs</th>
-                {DAYS.map((d,i)=>(
-                  <th key={d} style={dayThStyle}>
-                    <div style={{fontWeight:"bold"}}>{d.substring(0,3).toUpperCase()}</div>
-                    <div style={{fontSize:9,fontWeight:"normal",color:CLR.lightText}}>{fmtDate(dayDates[i])}</div>
-                  </th>
-                ))}
-              </tr>
-            </thead>
-            <tbody>
-              {rows}
-              {}
-              <tr>
-                <td colSpan={9} style={{background:CLR.footerYellow,color:CLR.darkGreen,
-                  fontWeight:"bold",padding:"6px 10px",fontSize:11,border:"1px solid #BFBFBF",
-                  textAlign:"center"}}>
-                  Any changes to this schedule must be approved by the Supervisor in advance*
-                </td>
-              </tr>
-              <tr>
-                <td colSpan={6} style={{background:"#fff",border:"1px solid #BFBFBF",padding:4}}/>
-                <td colSpan={3} style={{background:CLR.splitYellow,border:"1px solid #BFBFBF",
-                  padding:"4px 8px",fontSize:10,textAlign:"right",color:CLR.black}}>
-                  {today.toLocaleDateString()}
-                </td>
-              </tr>
-            </tbody>
-          </table>
-
-          {}
-          <div style={{marginTop:24,fontSize:11,fontWeight:700,color:"var(--ss-text-dim)",
-            letterSpacing:".06em",marginBottom:8}}>EMPLOYEE HOURS SHEET</div>
-          <table style={{borderCollapse:"collapse",fontFamily:"Arial,sans-serif",fontSize:11,minWidth:500}}>
-            <thead>
-              <tr>
-                {["Employee","Type","Qualifications","Shifts","Hours","Status","Days Off"].map((h,i)=>(
-                  <th key={h} style={thStyle({textAlign:i===0?"left":"center",
-                    minWidth:i===0?120:i===2?140:i===6?120:60})}>{h}</th>
-                ))}
-              </tr>
-            </thead>
-            <tbody>
-              {sortedEmps.map((emp,ri)=>{
-                const hrs = calcHours(emp.id, schedule, extShifts);
-                const isFT = emp.employmentType==="full-time";
-                const bg = ri%2===0?"#FFFFFF":"#DCE6F1";
-                const status = hrs>40?`OT +${hrs-40}h`:(isFT&&hrs<40)?`! ${hrs}/40h`:`${hrs}h`;
-                const hFg = isFT&&hrs<40?CLR.red:hrs>40?CLR.orange:"#1A1A1A";
-                const statusBold = hrs>40||(isFT&&hrs<40);
-                return (
-                  <tr key={emp.id}>
-                    <td style={tdStyle({background:bg,textAlign:"left",fontWeight:"bold",color:"#1A1A1A"})}>{emp.name}</td>
-                    <td style={tdStyle({background:bg,color:"#1A1A1A"})}>{isFT?"Full-Time":"Part-Time"}</td>
-                    <td style={tdStyle({background:bg,textAlign:"left",color:"#1A1A1A"})}>{emp.qualifications.join(", ")}</td>
-                    <td style={tdStyle({background:bg,color:"#1A1A1A"})}>{hrs/SHIFT_HOURS}</td>
-                    <td style={tdStyle({background:bg,color:hFg,fontWeight:"bold"})}>{hrs}</td>
-                    <td style={tdStyle({background:bg,color:hFg,fontWeight:statusBold?"bold":"normal"})}>{status}</td>
-                    <td style={tdStyle({background:bg,textAlign:"left",color:"#1A1A1A"})}>{(emp.unavailableDays||[]).join(", ")||"\u2014"}</td>
-                  </tr>
-                );
-              })}
-              <tr>
-                {["TOTAL","","",
-                  sortedEmps.reduce((s,e)=>s+calcHours(e.id,schedule,extShifts),0)/SHIFT_HOURS,
-                  sortedEmps.reduce((s,e)=>s+calcHours(e.id,schedule,extShifts),0),
-                  "",""].map((v,i)=>(
-                  <td key={i} style={tdStyle({background:CLR.headerBg,color:CLR.white,fontWeight:"bold"})}>{v}</td>
-                ))}
-              </tr>
-            </tbody>
-          </table>
+        {(error || previewError) && <p role="alert" style={{color:'#a00',padding:'0 20px'}}>{error || previewError}</p>}
+        <div style={{overflow:'auto',padding:'0 20px 20px'}}>
+          {model && <div dangerouslySetInnerHTML={{__html:scheduleExportHtml(model)}}/>}
         </div>
       </div>
     </div>
   );
 }
 
-async function exportToExcel(employees, schedule, extShifts, weekStart, trainingBlocks, timeOffReqs, handoffs) {
-  const getName = (id) => employees.find(e => e.id === id)?.name || "?";
-
-  const CLR = {
-    headerBg:    "4F6228",
-    dayBg:       "76923C",
-    rowBlue:     "B8CCE4",
-    rowGray:     "C0C0C0",
-    rowWhite:    "FFFFFF",
-    shift1:      "DAEEF3",
-    shift2:      "E4DFEC",
-    shift3:      "D9D9D9",
-    ptoGreen:    "92D050",
-    splitYellow: "FFFF00",
-    splitOrange: "FFC000",
-    multiYellow: "FFF2CC",
-    separator:   "F2F2F2",
-    footerYellow:"FFFF00",
-    border:      "BFBFBF",
-    white:       "FFFFFF",
-    black:       "000000",
-    darkGreen:   "375623",
-    red:         "CC0000",
-    orange:      "CC6600",
-    lightText:   "E8F0D0",
-    subText:     "4F4F4F",
-  };
-
-  // Returns the approved time-off request (non-partial) for an employee on a given day name
-  const approvedTimeOff = (empId, day) =>
-    (timeOffReqs||[]).find(r =>
-      r.status === "approved" && r.empId === empId && r.type !== "partial" &&
-      timeOffCoversSlot(r, day, "first", weekStart)
-    ) || null;
-
-  const getShiftLabel = (emp, day) => {
-    // Approved vacation or day-off requests always override schedule display
-    const req = approvedTimeOff(emp.id, day);
-    if (req) {
-      const trnDay = (trainingBlocks||[]).filter(t => t.empId === emp.id && t.day === day);
-      const trnSuffix = trnDay.length > 0
-        ? " +" + trnDay.map(t => { const fh=h=>`${h%12||12}${h<12?"A":"P"}`; return `TRN ${fh(t.startHour)}-${fh((t.startHour+t.durationHours)%24)}`; }).join(",")
-        : "";
-      return req.type === "vacation"
-        ? { text:"Vac"+trnSuffix, kind:"pto" }
-        : { text:"Off"+trnSuffix, kind:"pto" };
-    }
-    const result = [];
-    for (const shift of SHIFTS) {
-      const asgn = (schedule[cellKey(day, shift.id)] || []).find(a => a.employeeId === emp.id);
-      if (asgn) result.push({ sid: shift.id, pos: asgn.position });
-    }
-    // Handoff annotation — computed early so all return paths can include it
-    const ho = (handoffs||[]).find(h => h.day === day && h.employeeId === emp.id);
-    const hoSuffix = ho ? (ho.type === "late-stay" ? " +LS" : " +EA") : "";
-    const extDay = (extShifts || []).filter(e => e.day === day);
-    const extAsA = extDay.find(e => e.empAId === emp.id);
-    const extAsB = extDay.find(e => e.empBId === emp.id);
-    if (extAsA) {
-      const pair = EXT_PAIRS_BY_ID.get(extAsA.pairId);
-      const label = pair ? pair.label : "Ext";
-      return { text: label + hoSuffix, kind: pair && (pair.startHour ?? 6) < 12 ? "splitDay" : "splitNight" };
-    }
-    if (extAsB) {
-      const pair = EXT_PAIRS_BY_ID.get(extAsB.pairId);
-      const label = pair ? pair.label : "Ext";
-      return { text: label + hoSuffix, kind: pair && (pair.startHourB ?? pair.startHour ?? 18) < 12 ? "splitDay" : "splitNight" };
-    }
-    // Training block annotation: append TRN label to existing shift text
-    const trnDay = (trainingBlocks||[]).filter(t => t.empId === emp.id && t.day === day);
-    const trnSuffix = trnDay.length > 0
-      ? " +" + trnDay.map(t => { const fh=h=>`${h%12||12}${h<12?"A":"P"}`; return `TRN ${fh(t.startHour)}-${fh((t.startHour+t.durationHours)%24)}`; }).join(",")
-      : "";
-    if (!result.length) {
-      if (hoSuffix) return { text: hoSuffix.trim(), kind: "splitNight" };
-      if (trnSuffix) return { text: trnSuffix.trim().replace(/^\+/,""), kind:"training" };
-      return { text:"X", kind:"absent" };
-    }
-    if (result.length === 1 && result[0].pos === "PTO") return { text:"Vac"+trnSuffix, kind:"pto" };
-    if (result.length === 1 && result[0].pos === "Off") return { text:"Off"+trnSuffix, kind:"pto" };
-    if (result.length === 2) {
-      const nums = result.map(r => ({ first:"1",second:"2",third:"3" }[r.sid])).join("+");
-      return { text:nums+hoSuffix+trnSuffix, kind:"multi" };
-    }
-    const { sid, pos } = result[0];
-    const num = { first:"1", second:"2", third:"3" }[sid];
-    const shiftAsgn = schedule[cellKey(day, sid)] || [];
-    const scaleOnShift = shiftAsgn.filter(a => {
-      const e = employees.find(x => x.id === a.employeeId);
-      return a.position === "Scale" || (e && (e.qualifications||[]).includes("Scale"));
-    }).length;
-    const medOnShift = shiftAsgn.filter(a => {
-      const e = employees.find(x => x.id === a.employeeId);
-      return a.position === "Medical" || a.position === "Supervisor"
-        || (e && ((e.qualifications||[]).includes("Medical") || (e.qualifications||[]).includes("Supervisor")));
-    }).length;
-    const suffix = pos==="Scale" && scaleOnShift > 1 ? "-Scale"
-                 : pos==="Medical" && medOnShift > 1 ? "-Med" : "";
-    return { text: num+suffix+hoSuffix+trnSuffix, kind: sid };
-  };
-
-  const kindBg   = (kind, rowBg) => ({ first:CLR.shift1, second:CLR.shift2, third:CLR.shift3,
-    splitDay:CLR.splitYellow, splitNight:CLR.splitOrange, multi:CLR.multiYellow,
-    pto:CLR.ptoGreen, training:"FFF0D0", absent:rowBg, off:rowBg, empty:rowBg }[kind] || rowBg);
-  const kindFg   = (kind) => ({ splitDay:CLR.red, splitNight:CLR.red, pto:CLR.darkGreen, training:"B45309", absent:"999999" }[kind] || CLR.black);
-  const kindBold = (kind) => ["splitDay","splitNight","multi","training"].includes(kind);
-
-  const primaryShift = (emp) => {
-    if (emp.requiredShift) return emp.requiredShift;
-    if ((emp.preferredShifts||[]).length === 1) return emp.preferredShifts[0];
-    const counts = { first:0, second:0, third:0 };
-    DAYS.forEach(day => SHIFTS.forEach(s => {
-      if ((schedule[cellKey(day,s.id)]||[]).some(a=>a.employeeId===emp.id)) counts[s.id]++;
-    }));
-    return Object.entries(counts).sort((a,b)=>b[1]-a[1])[0]?.[0] || "first";
-  };
-  const shiftRank = { first:0, second:1, third:2 };
-  const isSupervisor = (e) => (e.qualifications||[]).includes("Supervisor");
-  const sortedEmps = [...employees].sort((a,b) => {
-    // Supervisor on 1st shift always sorts to top row
-    const aRank = isSupervisor(a) && primaryShift(a) === "first" ? -1 : shiftRank[primaryShift(a)] || 0;
-    const bRank = isSupervisor(b) && primaryShift(b) === "first" ? -1 : shiftRank[primaryShift(b)] || 0;
-    return aRank - bRank;
-  });
-  const rowBgFor = (emp) => {
-    if (primaryShift(emp)==="first") return CLR.rowBlue;
-    if (primaryShift(emp) === "third") return CLR.rowGray;
-    return CLR.rowWhite;
-  };
-
-  const weekStartDate = weekStart ? new Date(weekStart + "T12:00:00") : (() => {
-    const d = new Date(); d.setDate(d.getDate() - d.getDay());
-    d.setHours(12,0,0,0); // noon anchor — keeps downstream date math on the right day
-    return d;
-  })();
-  const dayDates = DAYS.map((_, i) => {
-    const d = new Date(weekStartDate); d.setDate(weekStartDate.getDate() + i); return d;
-  });
-  const fmtDate = (d) => `${d.getMonth()+1}/${String(d.getDate()).padStart(2,"0")}`;
-  const weekLabel = `${fmtDate(dayDates[0])} – ${fmtDate(dayDates[6])}`;
-  const today = new Date();
-
-  const styles = {};
-  let styleIdSeq = 0;
-  const getStyleId = (bg, fg="000000", bold=false, align="Center", vAlign="Center", wrapText=false, fontSize=10, italic=false) => {
-    const key = `${bg}|${fg}|${bold}|${align}|${vAlign}|${wrapText}|${fontSize}|${italic}`;
-    if (!styles[key]) {
-      styles[key] = { id: ++styleIdSeq, bg, fg, bold, align, vAlign, wrapText, fontSize, italic };
-    }
-    return styles[key].id;
-  };
-
-  const cell = (val, styleId, opts={}) => {
-    const type = opts.type || "String";
-    const merge = opts.merge ? ` ss:MergeAcross="${opts.merge}"` : "";
-    const height = opts.height ? ` ss:Height="${opts.height}"` : "";
-    const safeVal = String(val ?? "").replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;");
-    return `<Cell ss:StyleID="s${styleId}"${merge}><Data ss:Type="${type}">${safeVal}</Data></Cell>`;
-  };
-
-  const emptyCell = (styleId, count=1) =>
-    Array(count).fill(`<Cell ss:StyleID="s${styleId}"><Data ss:Type="String"></Data></Cell>`).join("");
-
-  const S = {
-    title:     () => getStyleId(CLR.headerBg, CLR.white, true,  "Center", "Center", false, 13),
-    dayHdr:    () => getStyleId(CLR.dayBg,    CLR.white, true,  "Center", "Center", true,  10),
-    dayHdrSub: () => getStyleId(CLR.dayBg,    CLR.lightText, false, "Center", "Center", false, 8),
-    colHdr:    () => getStyleId(CLR.headerBg, CLR.white, true,  "Left",   "Center", false, 10),
-    colHdrC:   () => getStyleId(CLR.headerBg, CLR.white, true,  "Center", "Center", false, 10),
-    empName:   (bg) => getStyleId(bg, CLR.black, true,  "Left",   "Center", false, 10),
-    empHrs:    (bg, fg) => getStyleId(bg, fg,       true,  "Center", "Center", false, 10),
-    empHrsOk:  (bg) => getStyleId(bg, CLR.black,    false, "Center", "Center", false, 10),
-    shiftCell: (bg, fg, bold) => getStyleId(bg, fg, bold, "Center", "Center", false, 10),
-    sep:       () => getStyleId(CLR.separator, CLR.separator, false, "Center", "Center", false, 6),
-    footer:    () => getStyleId(CLR.footerYellow, CLR.darkGreen, true, "Center", "Center", true, 10),
-    footerDate:() => getStyleId(CLR.splitYellow,  CLR.black,     false,"Right",  "Center", false, 9),
-    footerBlank:()=> getStyleId(CLR.white, CLR.white, false, "Center","Center", false, 10),
-    s2Hdr:     () => getStyleId(CLR.headerBg, CLR.white, true,  "Center", "Center", false, 10),
-    s2HdrL:    () => getStyleId(CLR.headerBg, CLR.white, true,  "Left",   "Center", false, 10),
-    s2Name:    (bg) => getStyleId(bg, CLR.black, true,  "Left",   "Center", false, 10),
-    s2Cell:    (bg, fg="000000", bold=false) => getStyleId(bg, fg, bold, "Left", "Center", false, 10),
-    s2CellC:   (bg, fg="000000", bold=false) => getStyleId(bg, fg, bold, "Center", "Center", false, 10),
-    s2Total:   () => getStyleId(CLR.headerBg, CLR.white, true, "Center", "Center", false, 10),
-  };
-
-  const COLS = 9;
-  let r1 = "";
-
-  r1 += `<Row ss:Height="22">`;
-  r1 += cell(`DRAFT — Shift Schedule — Week of ${weekLabel}`, S.title(), { merge: COLS-1 });
-  r1 += `</Row>`;
-
-  r1 += `<Row ss:Height="30">`;
-  r1 += cell("Employee", S.colHdr(),  { });
-  r1 += cell("Hrs",      S.colHdrC(), { });
-  DAYS.forEach((day, i) => {
-    const dd = fmtDate(dayDates[i]);
-    const hdrStyleId = getStyleId(CLR.dayBg, CLR.white, true, "Center", "Center", true, 10);
-    r1 += cell(`${day.substring(0,3).toUpperCase()}\n${dd}`, hdrStyleId);
-  });
-  r1 += `</Row>`;
-
-  let prevGroup = null;
-  for (const emp of sortedEmps) {
-    const hours   = calcHours(emp.id, schedule, extShifts, handoffs);
-    const isFT    = emp.employmentType === "full-time";
-    const rowBg   = rowBgFor(emp);
-    const curGroup = primaryShift(emp);
-
-    if (prevGroup !== null && curGroup !== prevGroup) {
-      r1 += `<Row ss:Height="4">`;
-      r1 += Array(COLS).fill(`<Cell ss:StyleID="s${S.sep()}"><Data ss:Type="String"></Data></Cell>`).join("");
-      r1 += `</Row>`;
-    }
-    prevGroup = curGroup;
-
-    const hrsColor = isFT && hours < 40 ? CLR.red : hours > 40 ? CLR.orange : CLR.black;
-    const hrsBold  = (isFT && hours < 40) || hours > 40;
-
-    r1 += `<Row ss:Height="16">`;
-    r1 += cell(emp.name, S.empName(rowBg));
-    r1 += cell(hours,    getStyleId(rowBg, hrsColor, hrsBold, "Center", "Center", false, 10), { type:"Number" });
-    DAYS.forEach(day => {
-      const { text, kind } = getShiftLabel(emp, day);
-      const bg   = kindBg(kind, rowBg);
-      const fg   = kindFg(kind);
-      const bold = kindBold(kind);
-      r1 += cell(text, S.shiftCell(bg, fg, bold));
-    });
-    r1 += `</Row>`;
-  }
-
-  r1 += `<Row ss:Height="18">`;
-  r1 += cell("Any changes to this schedule must be approved by the Supervisor in advance*",
-             S.footer(), { merge: COLS-1 });
-  r1 += `</Row>`;
-  r1 += `<Row ss:Height="14">`;
-  r1 += emptyCell(S.footerBlank(), 6);
-  r1 += cell(today.toLocaleDateString(), S.footerDate(), { merge: 2 });
-  r1 += `</Row>`;
-
-  let r2 = "";
-  const hdrCols2 = ["Employee","Type","Qualifications","Shifts","Hours","Status","Days Off"];
-
-  r2 += `<Row ss:Height="20">`;
-  r2 += cell(hdrCols2[0], S.s2HdrL());
-  hdrCols2.slice(1).forEach(h => { r2 += cell(h, S.s2Hdr()); });
-  r2 += `</Row>`;
-
-  sortedEmps.forEach((emp, ri) => {
-    const hrs   = calcHours(emp.id, schedule, extShifts, handoffs);
-    const isFT  = emp.employmentType === "full-time";
-    const bg    = ri % 2 === 0 ? "FFFFFF" : "DCE6F1";
-    const status = hrs > 40 ? `OT +${hrs-40}h` : (isFT && hrs < 40) ? `! ${hrs}/40h` : `${hrs}h`;
-    const hFg   = isFT && hrs < 40 ? CLR.red : hrs > 40 ? CLR.orange : "1F1F1F";
-    const statusFg = hFg;
-    const statusBold = hrs > 40 || (isFT && hrs < 40);
-    r2 += `<Row ss:Height="18">`;
-    r2 += cell(emp.name,                             getStyleId(bg, "1A1A1A", true,  "Left",   "Center", false, 10));
-    r2 += cell(isFT ? "Full-Time" : "Part-Time",     getStyleId(bg, "1A1A1A", false, "Left",   "Center", false, 10));
-    r2 += cell(emp.qualifications.join(", "),         getStyleId(bg, "1A1A1A", false, "Left",   "Center", false, 10));
-    r2 += cell(hrs / SHIFT_HOURS,                    getStyleId(bg, "1A1A1A", false, "Center", "Center", false, 10), { type:"Number" });
-    r2 += cell(hrs,                                  getStyleId(bg, hFg,      true,  "Center", "Center", false, 10), { type:"Number" });
-    r2 += cell(status,                               getStyleId(bg, statusFg, statusBold, "Center", "Center", false, 10));
-    r2 += cell((emp.unavailableDays||[]).join(", ")||"—", getStyleId(bg, "1A1A1A", false, "Left", "Center", false, 10));
-    r2 += `</Row>`;
-  });
-
-  const totalHrs = sortedEmps.reduce((s,e) => s + calcHours(e.id, schedule, extShifts, handoffs), 0);
-  r2 += `<Row ss:Height="18">`;
-  ["TOTAL","","",totalHrs/SHIFT_HOURS,totalHrs,"",""].forEach((v,i) => {
-    r2 += cell(v, S.s2Total(), i===3||i===4 ? { type:"Number" } : {});
-  });
-  r2 += `</Row>`;
-
-  const stylesXml = Object.values(styles).map(st => `
-  <Style ss:ID="s${st.id}">
-    <Alignment ss:Horizontal="${st.align}" ss:Vertical="${st.vAlign}"${st.wrapText?' ss:WrapText="1"':''} />
-    <Borders>
-      <Border ss:Position="Bottom" ss:LineStyle="Continuous" ss:Weight="1" ss:Color="#BFBFBF"/>
-      <Border ss:Position="Left"   ss:LineStyle="Continuous" ss:Weight="1" ss:Color="#BFBFBF"/>
-      <Border ss:Position="Right"  ss:LineStyle="Continuous" ss:Weight="1" ss:Color="#BFBFBF"/>
-      <Border ss:Position="Top"    ss:LineStyle="Continuous" ss:Weight="1" ss:Color="#BFBFBF"/>
-    </Borders>
-    <Font ss:FontName="Arial" ss:Size="${st.fontSize}" ss:Color="#${st.fg}"${st.bold?' ss:Bold="1"':''}${st.italic?' ss:Italic="1"':''} />
-    <Interior ss:Color="#${st.bg}" ss:Pattern="Solid"/>
-  </Style>`).join("");
-
-  const cols1 = `
-  <Column ss:Width="110"/>
-  <Column ss:Width="40"/>
-  <Column ss:Width="62"/>
-  <Column ss:Width="62"/>
-  <Column ss:Width="62"/>
-  <Column ss:Width="62"/>
-  <Column ss:Width="62"/>
-  <Column ss:Width="62"/>
-  <Column ss:Width="62"/>`;
-
-  const cols2 = `
-  <Column ss:Width="130"/>
-  <Column ss:Width="80"/>
-  <Column ss:Width="170"/>
-  <Column ss:Width="55"/>
-  <Column ss:Width="55"/>
-  <Column ss:Width="85"/>
-  <Column ss:Width="145"/>`;
-
-  const xml = `<?xml version="1.0" encoding="UTF-8"?>
-<?mso-application progid="Excel.Sheet"?>
-<Workbook xmlns="urn:schemas-microsoft-com:office:spreadsheet"
-  xmlns:ss="urn:schemas-microsoft-com:office:spreadsheet"
-  xmlns:x="urn:schemas-microsoft-com:office:excel">
-  <Styles>${stylesXml}
-  </Styles>
-  <Worksheet ss:Name="Weekly Schedule">
-    <Table>${cols1}
-      ${r1}
-    </Table>
-    <WorksheetOptions xmlns="urn:schemas-microsoft-com:office:excel">
-      <FreezePanes/>
-      <SplitHorizontal>2</SplitHorizontal>
-      <TopRowBottomPane>2</TopRowBottomPane>
-      <SplitVertical>1</SplitVertical>
-      <LeftColumnRightPane>1</LeftColumnRightPane>
-      <ActivePane>2</ActivePane>
-    </WorksheetOptions>
-  </Worksheet>
-  <Worksheet ss:Name="Employee Hours">
-    <Table>${cols2}
-      ${r2}
-    </Table>
-  </Worksheet>
-</Workbook>`;
-
-  const blob     = new Blob([xml], { type: "application/vnd.ms-excel;charset=utf-8" });
-  const fileName = `ShiftSchedule_${localISODate(today)}.xls`;
-
+async function exportToExcel(model) {
+  const blob = new Blob([scheduleExportXml(model)], {type:'application/vnd.ms-excel;charset=utf-8'});
+  const fileName = `ShiftSchedule_${model.weekStart}.xls`;
   if (window.showSaveFilePicker) {
     try {
-      const handle = await window.showSaveFilePicker({
-        suggestedName: fileName,
-        types: [{ description: "Excel Spreadsheet", accept: { "application/vnd.ms-excel": [".xls"] } }],
-      });
+      const handle = await window.showSaveFilePicker({suggestedName:fileName,
+        types:[{description:'Excel Spreadsheet',accept:{'application/vnd.ms-excel':['.xls']}}]});
       const writable = await handle.createWritable();
-      await writable.write(blob);
-      await writable.close();
-      return;
+      await writable.write(blob); await writable.close();
+      return true;
     } catch (err) {
-      if (err.name === "AbortError") return;
+      if (err.name === 'AbortError') return false;
+      // A save failure must be visible, rather than silently downloading a second copy.
+      throw err;
     }
   }
-
-  const url = URL.createObjectURL(blob);
-  const a   = document.createElement("a");
-  a.href    = url;
-  a.download = fileName;
-  document.body.appendChild(a);
-  a.click();
-  document.body.removeChild(a);
-  URL.revokeObjectURL(url);
+  const url = URL.createObjectURL(blob), anchor = document.createElement('a');
+  anchor.href = url; anchor.download = fileName;
+  document.body.appendChild(anchor); anchor.click(); anchor.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 1000);
+  return true;
 }
 
 // ── Weekending Payroll Export ────────────────────────────────────────────────
@@ -13091,7 +12673,7 @@ function ScheduleGrid({ onOpenTestModal }) {
     const accounting = buildWeeklyAccounting(allRoster, sched, allExts, allHandoffs, timeOffReqs, weekStart, afExclude);
     const options = { extShifts: allExts, handoffs: allHandoffs, empTimeOffDays, ptoHoursByEmployee: accounting.pto.hoursByEmployee,
       empPatterns: boundaryPatterns(history, weekStart, empPatterns) };
-    const issues = [...validateCoverage(sched, allRoster, allExts, allHandoffs),
+    const issues = [...validateCoverage(sched, allRoster, allExts, allHandoffs).filter(i=>i.type!=='overstaffed'),
       ...validateAssignmentPolicy(sched, allRoster, cfg, options), ...accounting.issues];
     return issues;
   }, [employees, extShifts, cfg, empTimeOffDays, empPatterns, history, weekStart, timeOffReqs, afExclude, ptoHoursByEmployee]);
@@ -13349,7 +12931,7 @@ function ScheduleGrid({ onOpenTestModal }) {
       }
       const generatedOnly = Object.fromEntries(Object.entries(ns).map(([key, asgn]) => [key, asgn.filter(a => source.some(e => e.id === a.employeeId))]));
       const finalPolicy = filterPolicyAssignments(generatedOnly, source, cfg,
-        { extShifts: dedupedExts, empTimeOffDays, ptoHoursByEmployee, empPatterns: enrichedPatterns });
+        { extShifts: dedupedExts, handoffs:preservedHandoffs, preservedSchedule, empTimeOffDays, ptoHoursByEmployee, empPatterns: enrichedPatterns });
       Object.assign(ns, finalPolicy.schedule);
       for (const [key, asgn] of Object.entries(preservedSchedule)) ns[key] = [...(ns[key] || []), ...asgn];
       const rejected = [...(policyRejected || []), ...finalPolicy.rejected];
@@ -13598,7 +13180,7 @@ function ScheduleGrid({ onOpenTestModal }) {
 
       {showExcelPreview && (
         <ExcelPreviewModal snapshot={viewSnapshot}
-          onDownload={()=>{ exportToExcel(employees, viewingHistory?viewingHistory.schedule:schedule, extShifts||[], weekStart, trainingBlocks||[], timeOffReqs||[], handoffs||[]); setShowExcelPreview(false); }}
+          onDownload={async model=>{ if(await exportToExcel(model)) setShowExcelPreview(false); }}
           onClose={()=>setShowExcelPreview(false)}
         />
       )}
@@ -17600,7 +17182,7 @@ function ShiftSchedulerApp() {
         </div>
       {showExcelPreviewApp && (
         <ExcelPreviewModal
-          onDownload={()=>{ exportToExcel(employees, schedule, extShifts||[], weekStartApp, trainingBlocks||[], timeOffReqs||[], []); setShowExcelPreviewApp(false); }}
+          onDownload={async model=>{ if(await exportToExcel(model)) setShowExcelPreviewApp(false); }}
           onClose={()=>setShowExcelPreviewApp(false)}
         />
       )}

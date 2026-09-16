@@ -24,6 +24,19 @@ function overtimeFixture() {
 }
 const publish=(s,approvals=[])=>createPublicationRecord(s,approvals,'Manager',{priorWeekConfirmed:true});
 const types=(s,a=[],o={})=>validatePublication(s,a,o).issues.filter(i=>i.level==='error').map(i=>i.type);
+test('an otherwise publishable week is blocked by a fourth regular person or a fifth weekday-first person',()=>{
+ for(const key of ['Sunday__second','Monday__first']) {
+  const s=fixture();s.schedule[key].push({employeeId:'on-call',position:'Guard'});
+  const result=validatePublication(s);
+  assert.equal(result.ok,false);
+  assert.equal(result.issues.filter(i=>i.type==='overstaffed').length,1);
+  assert.throws(()=>publish(s),/Overstaffed/);
+ }
+});
+test('snapshots using the old minimum-only staffing rules require revalidation',()=>{
+ const s=fixture();s.ruleVersion=1;
+ assert(types(s).includes('publication_version'));
+});
 function memory(initial=null) {
  let value=initial,writes=0;
  const repo=createPublicationRepository({read:async()=>value==null?null:JSON.parse(JSON.stringify(value)),write:async next=>{writes++;value=JSON.parse(JSON.stringify(next));return true;}});

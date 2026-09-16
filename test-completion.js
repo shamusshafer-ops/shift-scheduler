@@ -180,7 +180,12 @@ test('weekly-hour repair does not overstaff a slot already covered by an extende
  const {input,context,roster,credits}=fullFixture();
  roster.push(emp('extended',{qualifications:['Guard','Medical','Scale'],ext12hPref:'day',requiredShift:'first',maxShiftsPerWeek:1}));
  input.ns.Wednesday__first=input.ns.Wednesday__first.filter(a=>a.employeeId!=='first-1-0');
- input.autoExtShifts=[{day:'Wednesday',pairId:'day',empAId:'extended'}];
+ // Give the extended worker's 14:00-18:00 spillover a genuine vacancy and
+ // cover the remaining half with a different worker at 18:00.
+ roster.push(emp('late',{qualifications:['Guard','Medical','Scale'],ext12hPref:'night',requiredShift:'third',maxShiftsPerWeek:1}));
+ input.ns.Wednesday__second.pop();
+ input.ns.Wednesday__third.pop();
+ input.autoExtShifts=[{day:'Wednesday',pairId:'day',empAId:'extended',empBId:'late'}];
  assert.equal(validateCoverage(input.ns,roster,input.autoExtShifts).length,0);
  const result=repairScheduleCompletion(input,context);
  assert.equal(weeklyEmployeeHours(roster[0],result.ns,result.autoExtShifts,[],credits).creditedHours,40);

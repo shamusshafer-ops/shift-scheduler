@@ -6,6 +6,8 @@ on:
       - 'ShiftScheduler_latest loop.html'
       - 'load-core.js'
       - 'test-coverage.js'
+      - 'test-staffing.js'
+      - 'test-excel-export.js'
       - 'test-policy.js'
       - 'test-pto.js'
       - 'test-overtime.js'
@@ -22,6 +24,8 @@ on:
       - 'ShiftScheduler_latest loop.html'
       - 'load-core.js'
       - 'test-coverage.js'
+      - 'test-staffing.js'
+      - 'test-excel-export.js'
       - 'test-policy.js'
       - 'test-pto.js'
       - 'test-overtime.js'
@@ -45,4 +49,4 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: '22'
-      - run: node --test test-coverage.js test-policy.js test-pto.js test-overtime.js test-availability.js test-completion.js test-publication.js test-locks-fairness.js test-integration-audit.js test-complete-search.js
+      - run: node --test test-coverage.js test-staffing.js test-excel-export.js test-policy.js test-pto.js test-overtime.js test-availability.js test-completion.js test-publication.js test-locks-fairness.js test-integration-audit.js test-complete-search.js
