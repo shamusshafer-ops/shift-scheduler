@@ -36,6 +36,36 @@ test("a willing double is allowed, but 24 continuous hours is not", () => {
   assert(types(assignmentIssues(emp(), "Sunday", "second", "Guard", sched(["Sunday"]))).includes("continuous_hours"));
 });
 
+test("forty hours across four days cannot hide a first-and-third split double", () => {
+  for (const willing16h of [false, true]) {
+    const e = emp({ willing16h, overtimePref: "blocked" });
+    const s = { ...sched(["Sunday", "Tuesday", "Thursday", "Friday"]), ...sched(["Sunday"], "third") };
+    assert.equal(core.normalizedWorkedHours(e.id, s), 40);
+    const issues = check(e, s, { minRestHours: 8 });
+    assert.deepEqual(types(issues), ["split_double"]);
+    assert.equal(issues[0].day, "Sunday");
+    assert.equal(issues[0].shiftId, "third");
+    for (const [existing, added] of [["first", "third"], ["third", "first"]])
+      assert(types(assignmentIssues(e, "Sunday", added, "Guard", sched(["Sunday"], existing), { minRestHours: 8 })).includes("split_double"));
+    const repaired = { ...s, Sunday__third: [], Saturday__first: [a()] };
+    assert.deepEqual(scheduleChangeIssues(s, repaired, [e], { minRestHours: 8 }), []);
+    assert.equal(core.normalizedWorkedHours(e.id, repaired), 40);
+    assert(types(scheduleChangeIssues(repaired, s, [e], { minRestHours: 8 })).includes("split_double"));
+  }
+});
+
+test("same-day split detection uses actual blocks without rejecting continuous duties or overnight work", () => {
+  const e = emp({ willing16h: true, ext12hPref: "day" });
+  for (const first of ["first", "second"])
+    assert.deepEqual(check(e, { ...sched(["Sunday"], first), ...sched(["Sunday"], first === "first" ? "second" : "third") }, { minRestHours: 8 }), []);
+  assert.deepEqual(check(e, sched(["Sunday", "Monday"], "third"), { minRestHours: 8 }), []);
+  const ext = [{ day: "Sunday", pairId: "day", empAId: "e" }];
+  assert.deepEqual(check(e, { ...sched(["Sunday"]), ...sched(["Sunday"], "second") }, {}, options({ extShifts: ext })), []);
+  const split = { ...sched(["Sunday"]), ...sched(["Sunday"], "third") };
+  assert(types(check(e, split, { minRestHours: 0 }, options({ extShifts: ext }))).includes("split_double"));
+  assert(types(core.getFatigueIssues(e.id, split, { minRestHours: 8 }, [e], [])).includes("split_double"));
+});
+
 test("qualified twelve-hour work is allowed without sixteen-hour consent", () => {
   const e = emp({ ext12hPref: "day" });
   const exts = [{ day: "Sunday", pairId: "day", empAId: "e" }];

@@ -24,6 +24,11 @@ Every shift must include at minimum:
 - **Efficiency** — minimize gaps, overtime, and unnecessary overlap
 - **Simplicity** — easy to read, manage, and edit
 
+### 5. No Same-Day Split Doubles
+- Separate work blocks starting on the same date are prohibited, including first plus third shift. An eight-hour rest gap, correct weekly total, or willingness to work 16 hours does not waive this rule.
+- Continuous 12-hour duties and authorized back-to-back doubles remain permitted under their existing eligibility and fatigue limits. Extended-shift display mirrors and adjoining handoffs count as one continuous block; overnight duties keep their start date.
+- Generation, repair, manual edits, fatigue warnings, and publication use the same rule. Existing drafts with a split double must be repaired before publication; hours and exact staffing requirements still apply.
+
 ---
 
 ## Files
