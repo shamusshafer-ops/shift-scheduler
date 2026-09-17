@@ -175,6 +175,31 @@ test('short rest that can be bridged is not pruned before its extension is consi
  const h={day:'Sunday',employeeId:'bridge',sourceShiftId:'second',targetShiftId:'first',type:'early-arrival',position:'Guard',hours:4};
  assert.equal(c.employeePolicyIssues(emp,state.ns,{minRestHours:12},{...options,handoffs:[h]}).length,0);
 });
+test('same-day split blocks can be bridged only within the continuous-hours cap',()=>{
+ const emp=e('bridge',{willing16h:true}),state={ns:{Sunday__second:[a('bridge','Guard',false)]},autoExtShifts:[],handoffs:[]};
+ const options={empPatterns:{bridge:{prevWorkIntervals:[{start:6,end:10}]}}};
+ assert(c.employeePolicyIssues(emp,state.ns,{minRestHours:0},options).some(i=>i.type==='split_double'));
+ assert.deepEqual(c.completeSearchHardIssues(emp,state,{minRestHours:0},options),[]);
+ const split={ns:{Sunday__first:[a('bridge')],Sunday__third:[a('bridge')]},autoExtShifts:[],handoffs:[]};
+ assert(c.completeSearchHardIssues(emp,split,{minRestHours:8},{}).some(i=>i.type==='split_double'));
+});
+test('search distributes forty hours across five days instead of first and third on one day',()=>{
+ const targetSlots=['Sunday__first','Sunday__third','Monday__second','Tuesday__second','Thursday__second','Friday__second'];
+ const roster=[e('ft',{employmentType:'full-time',willing16h:true}),e('relief')],schedule={};
+ for(const key of targetSlots) {
+  schedule[key]=[];
+  for(let n=0;n<2;n++) { const id=key+n;roster.push(e(id));schedule[key].push(a(id)); }
+ }
+ // The imported draft totals forty hours with three days off. Unlocked work
+ // must be rebuilt while the two locked colleagues in every slot stay put.
+ for(const key of targetSlots.slice(0,5))schedule[key].push(a('ft','Guard',false));
+ const i=input(roster,{targetSlots,schedule,cfg:{minRestHours:8,maxConsecutiveShifts:5,maxConsecutiveNights:4}}),r=solve(i);
+ assert.equal(r.status,'feasible');assert.deepEqual(policy(r,i),[]);
+ assert.equal(c.normalizedWorkedHours('ft',r.solution.ns),40);
+ const days=Object.entries(r.solution.ns).filter(([,rows])=>rows.some(v=>v.employeeId==='ft')).map(([key])=>key.split('__')[0]);
+ assert.equal(new Set(days).size,5);
+ for(const key of targetSlots)assert(c.analyzeShiftCoverage(...key.split('__'),r.solution.ns,roster).ok);
+});
 test('locked extended halves and regular mirrors preserve the exact locked record',()=>{
  const roster=oneDay(['a','b']);roster.push(e('extended',{requiredShift:'first',ext12hPref:'day'}),e('late',{requiredShift:'third',ext12hPref:'night'}));
  const ext={day:'Sunday',pairId:'day',empAId:'extended',empBId:null,roles:['Scale','Medical'],locked:true};

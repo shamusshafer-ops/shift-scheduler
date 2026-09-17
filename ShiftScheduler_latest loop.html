@@ -1155,7 +1155,7 @@ function calcConsecutiveHours(empId, schedule, day, shiftId, extShifts, handoffs
 
 function getFatigueIssues(empId, schedule, cfg, employees, extShifts, handoffs = [], empPatterns = {}) {
   const emp = (employees || []).find(e => e.id === empId) || { id: empId, name: empId, qualifications: [], willing16h: true };
-  const types = { consecutive_nights: "consecutive_nights", short_rest: "short_rest", continuous_hours: "over_16h" };
+  const types = { consecutive_nights: "consecutive_nights", short_rest: "short_rest", continuous_hours: "over_16h", split_double: "split_double" };
   return employeePolicyIssues(emp, schedule, cfg || {}, { extShifts: extShifts || [], handoffs, empPatterns })
     .filter(i => types[i.type]).map(i => ({ ...i, type: types[i.type],
       count: i.type === "consecutive_nights" ? (cfg?.maxConsecutiveNights ?? MAX_CONSECUTIVE_NIGHTS) + i.amount : undefined,
@@ -1275,6 +1275,11 @@ function employeePolicyIssues(emp, schedule, cfg = {}, options = {}) {
     if (!b.current) continue;
     const hour = ((b.start % 24) + 24) % 24;
     const location = { day: DAYS[Math.max(0, Math.min(6, Math.floor(b.start / 24)))], shiftId: hour >= 22 || hour < 6 ? "third" : hour >= 14 ? "second" : "first" };
+    // Separate duties starting on one date are a split double even when the
+    // rest gap is legal. Merge actual work first so extended mirrors and
+    // adjoining handoffs remain one duty; overnight work keeps its start date.
+    if (idx && Math.floor(b.start / 24) === Math.floor(blocks[idx - 1].start / 24))
+      add("split_double", `separate work blocks on ${location.day}; schedule this duty on another day instead of a split double`, 1, location);
     if (b.end - b.start > maxHours) add("continuous_hours", `${b.end - b.start} continuous hours exceeds ${maxHours}`, b.end - b.start - maxHours, location);
     if (idx && b.start - blocks[idx - 1].end < minRest)
       add("short_rest", `${b.start - blocks[idx - 1].end} hours rest before ${formatCoverageTime(b.start)}; minimum ${minRest}`, minRest - (b.start - blocks[idx - 1].end), location);
@@ -2305,18 +2310,21 @@ function completeSearchSeed(input) {
   return {ns,autoExtShifts,handoffs};
 }
 
-// Adding work cannot repair most hard errors. A short rest CAN disappear when
-// an extension bridges it, but only if the entire joined block fits the cap.
+// Adding work cannot repair most hard errors. A short rest or split double CAN
+// disappear when an extension bridges it, if the joined block fits the cap.
 function completeSearchHardIssues(emp,state,cfg,options) {
   const issues=employeePolicyIssues(emp,state.ns,cfg,{...options,extShifts:state.autoExtShifts,handoffs:state.handoffs});
-  const hard=[...validateStaffing(state.ns,state.autoExtShifts,state.handoffs),...issues.filter(i=>i.type!=='short_rest' && i.type!=='invalid_handoff')];
-  if(!issues.some(i=>i.type==='short_rest'))return hard;
+  const bridgeable = new Set(['short_rest','split_double']);
+  const hard=[...validateStaffing(state.ns,state.autoExtShifts,state.handoffs),...issues.filter(i=>!bridgeable.has(i.type) && i.type!=='invalid_handoff')];
+  if(!issues.some(i=>bridgeable.has(i.type)))return hard;
   const pattern=options.empPatterns?.[emp.id] || {};
   const prior=pattern.prevWorkIntervals || (pattern.prevWeekLastSlot?(()=>{const i=shiftInterval(pattern.prevWeekLastSlot.day,pattern.prevWeekLastSlot.shiftId);return i?[{start:i.start-168,end:i.end-168}]:[];})():[]);
   const spans=[...collectCoverageIntervals(state.ns,state.autoExtShifts,state.handoffs).filter(i=>i.employeeId===emp.id).map(i=>({...i,current:true})),...prior].sort((a,b)=>a.start-b.start),blocks=[];
   for(const i of spans){const last=blocks.at(-1);if(last && i.start<=last.end){last.end=Math.max(last.end,i.end);last.current ||= i.current;}else blocks.push({...i});}
-  for(let i=1;i<blocks.length;i++)if(blocks[i].current && blocks[i].start-blocks[i-1].end<(cfg.minRestHours ?? MIN_REST_HOURS) && blocks[i].end-blocks[i-1].start>empMaxConsec(emp)) {
-    hard.push(issues.find(v=>v.type==='short_rest'));break;
+  for(let i=1;i<blocks.length;i++)if(blocks[i].current && blocks[i].end-blocks[i-1].start>empMaxConsec(emp)) {
+    const type = Math.floor(blocks[i].start / 24) === Math.floor(blocks[i-1].start / 24) ? 'split_double' :
+      blocks[i].start-blocks[i-1].end<(cfg.minRestHours ?? MIN_REST_HOURS) ? 'short_rest' : null;
+    if(type) { hard.push(issues.find(v=>v.type===type));break; }
   }
   return hard;
 }
@@ -2454,7 +2462,7 @@ function createCompleteScheduleSearch(rawInput) {
           const nextSpans=collectCoverageIntervals(next.ns,next.autoExtShifts,next.handoffs).filter(i=>i.employeeId===emp.id);
           const beforeHours=hours(emp,state),afterHours=hours(emp,next);
           viable.push({index,candidate,next,nextSpans,added:afterHours.workedHours-beforeHours.workedHours,
-            extraOT:Math.max(0,afterHours.creditedHours-40)-Math.max(0,beforeHours.creditedHours-40)});
+            shortfall:beforeHours.shortfallHours, extraOT:Math.max(0,afterHours.creditedHours-40)-Math.max(0,beforeHours.creditedHours-40)});
         }
         yield;
       }
@@ -2494,7 +2502,11 @@ function createCompleteScheduleSearch(rawInput) {
         if(!branch || choices.length<branch.length)branch=choices;
         yield;
       }
-      branch.sort((a,b)=>a.extraOT-b.extraOT || a.candidate.cost-b.candidate.cost || a.added-b.added || a.index-b.index);
+      // Satisfy outstanding full-time hours before soft preferences. Filling
+      // scarce slots with already-satisfied staff can strand another employee
+      // below forty now that same-day split doubles cannot supply extra hours.
+      // This changes exploration order only; every legal branch remains available.
+      branch.sort((a,b)=>a.extraOT-b.extraOT || b.shortfall-a.shortfall || a.candidate.cost-b.candidate.cost || a.added-b.added || a.index-b.index);
       const remaining=new Set(available);
       for(const choice of branch) {
         // Partition by the first included contributor. Earlier alternatives stay
@@ -2637,7 +2649,7 @@ function historyDataIssues(record) {
 }
 
 const PUBLICATION_STORE_KEY = "shift_publication_records";
-const PUBLICATION_RULE_VERSION = 2;
+const PUBLICATION_RULE_VERSION = 3;
 const canonicalJSON = value => JSON.stringify(value,(_,v)=>v && typeof v === "object" && !Array.isArray(v)
   ? Object.fromEntries(Object.keys(v).sort().map(k=>[k,v[k]])) : v);
 function publicationSnapshot(input) {
@@ -2937,7 +2949,7 @@ ${rows.map(r=>`<tr><td><strong>${esc(r.name)}</strong><br><small>${esc(r.employm
 function buildCompletionDiagnostics(schedule,employees,cfg={},options={}) {
   const {extShifts=[],handoffs=[],excludedIds=[]}=options;
   const excluded=new Set(excludedIds),gaps=[];
-  const reasonNames={availability:"leave or unavailable hours",availability_data:"availability data needs review",qualification:"qualification",training:"training restriction",required_shift:"required shift permission",blocked_shift:"blocked shift",short_rest:"minimum rest",continuous_hours:"continuous-hour limit",weekly_shifts:"weekly duty cap",weekend_days:"weekend limit",consecutive_days:"consecutive-day limit",consecutive_nights:"consecutive-night limit",no_overtime:"No OT limit",overtime_approval_limit:"approved hour limit",supervisor_slot:"dedicated supervisor position",overlap:"overlapping work"};
+  const reasonNames={availability:"leave or unavailable hours",availability_data:"availability data needs review",qualification:"qualification",training:"training restriction",required_shift:"required shift permission",blocked_shift:"blocked shift",split_double:"same-day split double",short_rest:"minimum rest",continuous_hours:"continuous-hour limit",weekly_shifts:"weekly duty cap",weekend_days:"weekend limit",consecutive_days:"consecutive-day limit",consecutive_nights:"consecutive-night limit",no_overtime:"No OT limit",overtime_approval_limit:"approved hour limit",supervisor_slot:"dedicated supervisor position",overlap:"overlapping work"};
   for(const slot of ALL_SLOTS) {
     const coverage=analyzeShiftCoverage(slot.day,slot.shiftId,schedule,employees,extShifts,handoffs);
     if(coverage.ok) continue;
@@ -7981,6 +7993,8 @@ function FatigueBanner() {
                   ? `${iss.hours}h consecutive (cap: ${iss.cap ?? MAX_CONSECUTIVE_HOURS}h) on ${iss.day}`
                   : iss.type==="consecutive_nights"
                   ? `${iss.count} consecutive night shifts (${iss.day})`
+                  : iss.type==="split_double"
+                  ? `Split double on ${iss.day} — move one duty to another day`
                   : `Only ${iss.restHours}h rest before ${iss.day} ${iss.shiftId}`}
               </span>
             ))}

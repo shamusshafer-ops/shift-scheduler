@@ -37,6 +37,20 @@ test('snapshots using the old minimum-only staffing rules require revalidation',
  const s=fixture();s.ruleVersion=1;
  assert(types(s).includes('publication_version'));
 });
+test('publication rejects a split double even with exact staffing and forty weekly hours',()=>{
+ const s=fixture(),id='on-call',e=s.employees.find(v=>v.id===id);
+ e.employmentType='full-time';e.willing16h=true;s.cfg.minRestHours=8;
+ for(const key of ['Sunday__first','Sunday__third','Tuesday__first','Thursday__first','Friday__first'])
+  s.schedule[key][0]={employeeId:id,position:'Guard'};
+ assert.equal(c.normalizedWorkedHours(id,s.schedule),40);
+ assert.deepEqual(types(s),['split_double']);
+ assert.throws(()=>publish(s),/split double/);
+ // A move to an otherwise available day preserves hours and staffing.
+ s.schedule.Sunday__third[0]={employeeId:'third-0-0',position:'Guard'};
+ s.schedule.Saturday__first[0]={employeeId:id,position:'Guard'};
+ assert(validatePublication(s).ok);
+ const old={...s,ruleVersion:2};assert(types(old).includes('publication_version'));
+});
 function memory(initial=null) {
  let value=initial,writes=0;
  const repo=createPublicationRepository({read:async()=>value==null?null:JSON.parse(JSON.stringify(value)),write:async next=>{writes++;value=JSON.parse(JSON.stringify(next));return true;}});
