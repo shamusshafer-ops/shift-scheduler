@@ -1,20 +1,21 @@
-# Complete schedule search
+# Complete schedule search and overtime optimization
 
-Autofill no longer treats the fast search's attempt or plateau limit as the end of schedule generation. If that search leaves an incomplete candidate, it hands off to a resumable, exhaustive feasibility search. The **Complete search** button starts that search directly.
+Autofill uses its fast search to obtain a complete candidate, then passes that candidate to resumable overtime optimization. It no longer commits the first valid result just because coverage and full-time hours are satisfied. The **Complete search** button starts the same optimizer directly and retains the current draft as an incumbent if it passes validation.
 
 The implementation stays in the single HTML application. It adds no server, external solver package, account, or transmission of employee data.
 
 ## Manager workflow
 
 1. Set the week, roster, leave, rules, locks and autofill exclusions as usual. Wait for saves to finish.
-2. Use **AUTOFILL** for the fast search followed automatically by complete search when necessary, or use **Complete search** directly.
-3. During complete search, **Pause** retains the current search frontier. **Resume complete search** continues that same search. Cancel ends it without a feasibility conclusion.
-4. A found candidate goes through the existing independent validator and proposal commit path. Overtime is staged for manager approval; the solver cannot approve it or publish a week.
-5. Publish only through the existing publication review, including prior-week verification and saved approvals for that exact schedule.
+2. Use **AUTOFILL** or **Complete search**.
+3. The progress panel shows the best valid overtime total found and an optimistic lower bound. **Minimum overtime proven** appears only when the candidate meets a valid bound or every potentially better combination has been exhausted.
+4. **Pause** retains the frontier. **Resume complete search** continues it with unchanged inputs. **Use best found** stops the search and submits the retained candidate to independent validation and normal overtime approval. It is available while searching or paused; accepting early does not assert optimality. **Cancel search** leaves the draft unchanged.
+5. Any overtime still requires manager approval. The search cannot approve overtime or publish a week. Denial, repairs, edits or changed inputs may change the result; a proof applies to the searched candidate and inputs.
+6. Publish only through the existing publication review, including prior-week verification and saved approvals for that exact schedule.
 
-The complete search tries schedules within 40 credited hours per employee first. If all those combinations fail, it searches reviewable overtime combinations for employees whose policy allows overtime. No OT remains absolute in both phases. PTO counts toward the ceiling and every full-time employee's 40-hour obligation. Excluded employees remain in the accounting roster, and their existing duties stay fixed.
+The objective is total credited overtime hours: the sum across employees of `max(0, worked hours + approved PTO - 40)`. It uses the application's existing credited-hour policy, not wage rates or a new payroll calculation. No OT remains absolute, and full-time minimums, qualifications, rest, split-double restrictions, exact staffing, locks and exclusions remain hard constraints.
 
-The first complete candidate is not necessarily the least expensive or fairest schedule. Candidate ordering favors less added overtime, then stated preferences and fewer added hours. A final cleanup removes duties that can be removed while preserving all hard rules, coverage, full-time hours, exclusions and locks. This is not proof of globally minimal overtime or optimal preferences.
+With no incumbent, the solver tries 40-hour ceilings first and then overtime combinations if necessary. A validated initial candidate lets it start optimization immediately. Each valid candidate is compared by total overtime first, then stated preference fairness. Equal-overtime preference improvements may be retained, but global preference optimality is not promised. Zero overtime establishes the minimum immediately.
 
 ## What “complete” means
 
@@ -37,10 +38,12 @@ The solver may rearrange any unlocked duty belonging to an included employee. It
 | --- | --- |
 | Searching | Work remains in the frontier; there is no infeasibility conclusion. |
 | Paused | The frontier is retained in memory and can be resumed with unchanged inputs. |
-| Complete candidate found | The supported staffing and employee-hour constraints have a solution. Approval and publication review still apply. |
+| Searching with a best result | A complete valid candidate is retained while alternatives are explored. Its overtime minimum is not yet proven. |
+| Minimum overtime proven | A candidate meets a valid lower bound, or all potentially better combinations were exhausted. Approval and publication review still apply. |
+| Best found accepted | The user stopped optimization and selected its best candidate. This does not prove the minimum. |
 | No feasible combination in the current duty menu | Every remaining branch was exhausted or rejected by a necessary constraint/bound. |
 | Input or validation error | Data could not be modeled or a candidate failed the independent validator; correct the input or investigate the error. |
-| Cancelled | No feasibility conclusion was reached. |
+| Cancelled | The search stopped without applying a candidate. Cancellation never establishes infeasibility or optimality. |
 | Inputs changed | The old search cannot apply its result; start a fresh search. |
 
 This separation follows the distinction between feasible, proven infeasible and unknown results documented for constraint solvers in [Google's CP-SAT documentation](https://developers.google.com/optimization/cp/cp_solver). This application uses its own JavaScript search, not OR-Tools.
@@ -48,6 +51,10 @@ This separation follows the distinction between feasible, proven infeasible and 
 ## Search and pruning
 
 `createCompleteScheduleSearch` owns a snapshot of all inputs. It enumerates legal employee duty bundles, selects an unmet coverage, qualification, source-duty or full-time-hour requirement, and branches over contributors to that requirement. Sibling branches exclude earlier alternatives only after their inclusion branches have been explored; branches are not dropped because of an attempt, depth, node or total-time limit.
+
+The solver retains the best complete result instead of returning from the first feasible leaf. Branch-and-bound rejects states whose existing overtime or optimistic remaining-hour bound already exceeds that result. Search only adds work, so existing overtime cannot decrease inside a branch. Missing body-hours already include the dedicated supervisor; qualification gaps are not added again because Scale and Medical may be supplied by the same person. Available straight-time capacity deliberately overestimates supply. Only a bound at the unrestricted root is reported as a global lower bound; bounds from restricted branches cannot establish a global minimum.
+
+A warm start must independently pass coverage, hard policy, full-time accounting, exact locks and exclusions. It supplies an upper bound without fixing its unlocked assignments. The search still explores the entire generated menu. Arbitrary custom duties in an existing candidate are retained only as that candidate; the search does not generate every possible custom duration.
 
 Necessary capacity checks include distinct qualified people, available work intervals, continuous-work limits, minimum rest, weekly duty caps, remaining credited-hour allowances and full-time shortfalls. Bounds intentionally overestimate possible supply. A bound is used to reject a branch only when even that optimistic supply cannot satisfy demand.
 
@@ -59,23 +66,22 @@ The generator yields between work items. The browser controller advances approxi
 
 ## Validation evidence
 
-- **234 tests pass**, including **30 complete-search tests** and all 204 preceding regressions.
-- An independent exhaustive oracle checked all three-person regular staffing combinations for three slots across 24 generated constrained rosters; feasibility results agreed with the complete search.
-- Fixtures cover continuous 12-hour and handoff coverage, separate supervisors, dual qualifications, previous-week rest, PTO, full-time obligations, locks, exclusions, six-day No OT conflicts, overtime-only weeks, stale callbacks, cancellation and resumption.
-- The saved 15-person roster dated April 12, 2026 completed in approximately **1.8 seconds** in the local Node benchmark after the capacity and ordering corrections. Its candidate had no coverage, hard-policy or full-time-accounting errors. It contained **52 overtime hours across five employees**, requiring approval; that is a candidate total, not a proven minimum. The saved rules for that benchmark allow seven consecutive days/nights and eight hours of rest. No live schedule was changed or published.
-- An anonymized version of those scheduling constraints is included in `fixtures/complete-search-roster.json`; employee names, IDs and notes from the saved roster are not included.
-- All four inline scripts compile with Babel; scope comparison finds no new unresolved identifiers.
+- **276 regression tests**, including **39 complete-search tests**.
+- An independent exhaustive oracle checks feasibility on 24 constrained rosters and minimum overtime on 16 additional PTO/qualification-constrained rosters, both from scratch and from deliberately expensive warm starts.
+- Regression cases cover a positive minimum proved by exhaustion, a supervisor lower-bound counterexample, rejected warm starts, best-result snapshot isolation, cancellation without proof, pause/resume, early acceptance, stale inputs, independent validation failure and exact-schedule overtime staging.
+- All existing staffing, split-double, rest, leave, locks, publication and Excel-export regressions are included.
+- The anonymized 15-person fixture remains a full-coverage/employee-hours regression. Its test requires a usable candidate without requiring a potentially lengthy optimality proof. In a local timed optimization run it improved from 56 to 48 to 40 overtime hours. At that point the lower bound was 8, so the result correctly remained **unproven**. Timing and best result depend on run duration and inputs; this is not a claim about a live schedule.
+- All four inline scripts compile; scope comparison against main finds no new unresolved identifiers.
+- Production controller functions are exercised directly by automated tests. A rendered browser test could not run because the available Chromium download failed; visual browser acceptance remains outstanding.
 
 Run:
 
 ```sh
-node --test test-coverage.js test-policy.js test-pto.js test-overtime.js test-availability.js test-completion.js test-publication.js test-locks-fairness.js test-integration-audit.js test-complete-search.js
+node --test test-coverage.js test-staffing.js test-excel-export.js test-policy.js test-pto.js test-overtime.js test-availability.js test-completion.js test-publication.js test-locks-fairness.js test-integration-audit.js test-complete-search.js
 ```
 
 ## Remaining limits
 
-Exhaustive search can still take substantial time and memory on difficult inputs. This change removes arbitrary termination of feasibility search; it does not make every scheduling problem quick. Cancellation, reload, browser termination or resource exhaustion does not establish infeasibility.
+Exhaustive optimization can take substantial time and memory. There is no total search cutoff. A time-sliced advance, pause, cancellation, reload, browser termination or resource exhaustion does not prove infeasibility or optimality. The frontier is held in memory and is lost on reload.
 
-The small **Repair current draft** and **Improve preferences** actions remain local improvement tools with limited budgets. Complete search handles feasibility when those local moves are insufficient. Global overtime minimization, global preference optimization, persistent checkpoints and a solver service for very large rosters are separate enhancements.
-
-Rendered browser interaction and print layout remain unverified in this environment. Browser acceptance is still required before merging the draft PR for operational use.
+The small **Repair current draft** and **Improve preferences** actions remain local improvement tools with limited budgets. Global preference optimization, persistent checkpoints and a solver service for very large rosters remain separate enhancements.
