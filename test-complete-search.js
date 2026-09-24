@@ -119,16 +119,16 @@ test('complete-search feasibility agrees with an exhaustive oracle on 24 constra
   const r=solve(input(roster,{targetSlots:days.map(d=>d+'__second')}));assert.equal(r.status==='feasible',expected,'oracle mismatch trial '+trial);assert(['feasible','infeasible'].includes(r.status));
  }
 });
-function uiHarness(result={status:'searching',phase:'regular-hours',nodes:1,candidates:1,reasons:[],solution:null}) {
+function uiHarness(result={status:'searching',phase:'regular-hours',nodes:1,candidates:1,reasons:[],solution:null},overrides={}) {
  const queue=[],events=[],ref={current:null},stamp={current:'base'},cancel={current:false};let advances=0;
  const fake={snapshot:()=>result,advance:()=>{advances++;return result;},cancel:()=>({...result,status:'cancelled'})};
  const scope={...c,isReadOnly:false,generationInputsReady:true,pendingProposal:null,employees:oneDay(['a','b','c']),weekStart:'2026-09-06',cfg:{},schedule:{},extShifts:[],handoffs:[],trainingBlocks:[],timeOffReqs:[],history:[],empPatterns:{},afExclude:[],fairnessHistory:{},ptoHoursByEmployee:{},
   completeSearchRef:ref,overtimeInputRef:stamp,autoFillCancelRef:cancel,autoFillRunning:false,
   createCompleteScheduleSearch:()=>fake,setAutoFillRunning:v=>events.push(['running',v]),setAutoFillProgress:v=>events.push(['progress',v]),
   showAlert:v=>events.push(['alert',v]),validateSchedule:()=>[],proposalIsCurrent:p=>p.baseStamp===stamp.current,discardStaleProposal:()=>events.push(['stale']),
-  setPendingProposal:p=>events.push(['pending',p]),commitScheduleProposal:p=>events.push(['commit',p]),setTimeout:f=>queue.push(f)};
+  setPendingProposal:p=>events.push(['pending',p]),commitScheduleProposal:p=>events.push(['commit',p]),setTimeout:f=>queue.push(f),...overrides};
  const start=html.indexOf('  const startCompleteSearch ='),end=html.indexOf('  const runAutoFill =',start);
- const ui=new Function(...Object.keys(scope),html.slice(start,end)+'return {startCompleteSearch,resumeCompleteSearch,cancelCompleteSearch};')(...Object.values(scope));
+ const ui=new Function(...Object.keys(scope),html.slice(start,end)+'return {startCompleteSearch,resumeCompleteSearch,cancelCompleteSearch,useBestCompleteSearch};')(...Object.values(scope));
  return {ui,events,queue,ref,stamp,cancel,get advances(){return advances;}};
 }
 test('production pause and resume keep the same frontier, and cancel reports unknown feasibility',()=>{
@@ -208,7 +208,13 @@ test('locked extended halves and regular mirrors preserve the exact locked recor
  assert.equal(c.lockedDutyIssues(i.schedule,r.solution.ns,{extShifts:i.extShifts},{extShifts:r.solution.autoExtShifts,handoffs:r.solution.handoffs}).length,0);
 });
 test('the anonymized 15-person operational roster gets complete coverage and all FT hours',()=>{
- const i=JSON.parse(fs.readFileSync(__dirname+'/fixtures/complete-search-roster.json','utf8')),r=solve(i);assert.equal(r.status,'feasible');assert.equal(r.phase,'overtime-review');
+ const i=JSON.parse(fs.readFileSync(__dirname+'/fixtures/complete-search-roster.json','utf8')),search=c.createCompleteScheduleSearch(i);
+ let r,start=Date.now();do{r=search.advance({maxSteps:150,timeSliceMs:12});assert(Date.now()-start<15000);}while(!r.solution && r.status==='searching');
+ assert(r.solution);assert.equal(r.phase,'overtime-review');
+ // An operational-sized search may continue for a long time. A usable result
+ // must remain available without misreporting an optimality proof.
+ if(r.status==='searching')assert.equal(r.minimumOvertimeProven,false);
+ search.cancel();
  assert.equal(c.validateCoverage(r.solution.ns,i.employees,r.solution.autoExtShifts,r.solution.handoffs).length,0);assert.deepEqual(policy(r,i),[]);
  const accounting=c.buildWeeklyAccounting(i.employees,r.solution.ns,r.solution.autoExtShifts,r.solution.handoffs,[],i.weekStart);assert.equal(accounting.rows.length,15);assert.equal(accounting.issues.filter(v=>v.level==='error').length,0);
  assert(c.overtimeReviewItems(i.employees,{},r.solution,i.cfg).length>0);
@@ -227,4 +233,100 @@ test('the relaxed review phase never overrides a No OT employee',()=>{
  const days=c.DAYS.slice(0,6),roster=[e('scale',{qualifications:['Scale'],overtimePref:'neutral'}),e('guard',{qualifications:['Guard'],overtimePref:'neutral'}),e('med',{qualifications:['Medical'],requiredShift:'second'})];
  const schedule=Object.fromEntries(days.map(day=>[day+'__second',[a('scale','Scale'),a('guard')]]));
  const i=input(roster,{schedule,targetSlots:days.map(d=>d+'__second'),cfg:{minRestHours:12,maxConsecutiveShifts:7,maxConsecutiveNights:7}}),r=solve(i);assert.equal(r.status,'infeasible');assert.equal(r.phase,'overtime-review');
+});
+
+// Enumerate every complete regular-only schedule independently. Approved PTO
+// makes overtime possible with two target days, keeping the oracle exhaustive.
+test('minimum overtime agrees with exhaustive enumeration, including PTO and qualified scarcity',()=>{
+ const days=['Sunday','Monday'],comb=[];
+ for(let a=0;a<5;a++)for(let b=a+1;b<5;b++)for(let d=b+1;d<5;d++)comb.push([a,b,d]);
+ let random=921;const rand=()=>{random=(random*1664525+1013904223)>>>0;return random/4294967296;};
+ let checked=0,improved=0;
+ for(let trial=0;trial<16;trial++) {
+  const roster=Array.from({length:5},(_,n)=>e('e'+n,{requiredShift:'second',availableDaysOfWeek:days,
+   qualifications:n<2?['Guard','Scale','Medical']:['Guard'],overtimePref:trial%4===0&&n===0?'blocked':'neutral',maxShiftsPerWeek:rand()<.25?1:2}));
+  const credits=Object.fromEntries(roster.map(v=>[v.id,[16,24,32,40][Math.floor(rand()*4)]]));
+  const timeOffReqs=roster.flatMap(v=>[
+   {id:v.id+'a',empId:v.id,type:'single_day',status:'approved',paid:true,startDate:'2026-09-08',endDate:'2026-09-08',ptoHoursByDate:{'2026-09-08':Math.min(24,credits[v.id])}},
+   ...(credits[v.id]>24?[{id:v.id+'b',empId:v.id,type:'single_day',status:'approved',paid:true,startDate:'2026-09-09',endDate:'2026-09-09',ptoHoursByDate:{'2026-09-09':credits[v.id]-24}}]:[])]);
+  const i=input(roster,{targetSlots:days.map(d=>d+'__second'),timeOffReqs});let minimum=Infinity,worst=null,worstOT=-1;
+  for(const x of comb)for(const y of comb) {
+   const schedule=Object.fromEntries([x,y].map((ids,j)=>[days[j]+'__second',ids.map(n=>a('e'+n,'Guard',false))]));
+   if(!days.every(day=>c.analyzeShiftCoverage(day,'second',schedule,roster).ok))continue;
+   if(c.validateAssignmentPolicy(schedule,roster,i.cfg,{ptoHoursByEmployee:credits}).length)continue;
+   const overtime=roster.reduce((sum,v)=>sum+Math.max(0,credits[v.id]+8*[x,y].filter(ids=>ids.some(n=>'e'+n===v.id)).length-40),0);
+   minimum=Math.min(minimum,overtime);if(overtime>worstOT){worstOT=overtime;worst=schedule;}
+  }
+  // Start deliberately from the most expensive legal schedule, when available.
+  if(worst)i.initialSolution={ns:worst,autoExtShifts:[],handoffs:[]};
+  const r=solve(i);checked++;
+  if(minimum===Infinity){assert.equal(r.status,'infeasible');assert.equal(r.minimumOvertimeProven,false);continue;}
+  assert.equal(r.status,'feasible');assert.equal(r.bestOvertimeHours,minimum,'oracle trial '+trial);
+  assert.equal(r.minimumOvertimeProven,true);assert(r.lowerBoundHours<=minimum+1e-8);
+  assert.deepEqual(policy(r,i),[]);if(worstOT>minimum)improved++;
+  const unseeded=solve({...i,initialSolution:undefined});assert.equal(unseeded.bestOvertimeHours,minimum,'unseeded oracle trial '+trial);assert.equal(unseeded.minimumOvertimeProven,true);
+ }
+ assert.equal(checked,16);assert(improved>=5,'fixtures must demonstrate continued improvement');
+});
+
+test('supervisor hours are counted once in the minimum overtime bound',()=>{
+ const roster=['s','a','b','c','spare'].map(id=>e(id,{requiredShift:'first',availableDaysOfWeek:['Monday'],overtimePref:'neutral',qualifications:id==='s'?['Supervisor']:['Guard','Scale','Medical']}));
+ const timeOffReqs=[{id:'a1',empId:'a',type:'single_day',status:'approved',paid:true,startDate:'2026-09-08',endDate:'2026-09-08',ptoHoursByDate:{'2026-09-08':24}},
+  {id:'a2',empId:'a',type:'single_day',status:'approved',paid:true,startDate:'2026-09-09',endDate:'2026-09-09',ptoHoursByDate:{'2026-09-09':16}}];
+ const i=input(roster,{targetSlots:['Monday__first'],timeOffReqs,initialSolution:{ns:{Monday__first:['s','a','b','c'].map(id=>a(id,id==='s'?'Supervisor':'Guard',false))},autoExtShifts:[],handoffs:[]}});
+ const search=c.createCompleteScheduleSearch(i),first=search.advance({maxSteps:1});assert.equal(first.bestOvertimeHours,8);
+ const r=finish(search);assert.equal(r.bestOvertimeHours,0);assert.equal(r.lowerBoundHours,0);assert.equal(r.minimumOvertimeProven,true);
+});
+
+test('a retained expensive schedule stays usable while search continues and cancellation never proves it optimal',()=>{
+ const roster=c.DAYS.slice(0,6).flatMap((day,n)=>oneDay(['s'+n,'m'+n]).map(v=>({...v,availableDaysOfWeek:[day]})));
+ roster.push(e('busy',{availableDaysOfWeek:c.DAYS,requiredShift:'second',overtimePref:'neutral'}),e('relief',{availableDaysOfWeek:['Friday'],requiredShift:'second'}));
+ const ns=Object.fromEntries(c.DAYS.slice(0,6).map((day,n)=>[day+'__second',[a('s'+n,'Scale',false),a('m'+n,'Medical',false),a('busy','Guard',false)]]));
+ const i=input(roster,{targetSlots:c.DAYS.slice(0,6).map(d=>d+'__second'),cfg:{minRestHours:12,maxConsecutiveShifts:7,maxConsecutiveNights:7},initialSolution:{ns,autoExtShifts:[],handoffs:[]}});
+ const search=c.createCompleteScheduleSearch(i),first=search.advance({maxSteps:1});
+ assert.equal(first.status,'searching');assert.equal(first.bestOvertimeHours,8);assert.equal(first.minimumOvertimeProven,false);
+ first.solution.ns.Sunday__second=[];assert.equal(search.snapshot().solution.ns.Sunday__second.length,3);
+ const cancelled=search.cancel();assert.equal(cancelled.status,'cancelled');assert.equal(cancelled.bestOvertimeHours,8);assert.equal(cancelled.minimumOvertimeProven,false);
+ const r=solve(i);assert.equal(r.bestOvertimeHours,0);assert.equal(r.minimumOvertimeProven,true);
+});
+
+test('invalid or changed-exclusion warm starts are rejected instead of becoming usable incumbents',()=>{
+ const roster=oneDay(['a','b','c','d']),schedule={Sunday__second:[a('a','Guard',false)]};
+ const i=input(roster,{excludedIds:['a'],schedule,initialSolution:{ns:{Sunday__second:['b','c','d'].map(id=>a(id,'Guard',false))},autoExtShifts:[],handoffs:[]}});
+ const s=c.createCompleteScheduleSearch(i);assert.equal(s.advance({maxSteps:1}).solution,null);
+ const r=finish(s);assert(r.solution.ns.Sunday__second.some(v=>v.employeeId==='a'));
+ const bad=input(roster,{initialSolution:{ns:{Sunday__second:['a','b','missing'].map(id=>a(id,'Guard',false))}}});
+ assert.equal(c.createCompleteScheduleSearch(bad).advance({maxSteps:1}).solution,null);
+});
+
+test('Use best found works while paused, stages overtime, and cancels queued search work',()=>{
+ const solution={ns:Object.fromEntries(c.DAYS.slice(0,6).map(day=>[day+'__second',[a('a','Guard',false)]])),autoExtShifts:[],handoffs:[],usedPatterns:{a:{trailingDays:3}}};
+ const result={status:'searching',solution,bestOvertimeHours:8,lowerBoundHours:0,minimumOvertimeProven:false};
+ const h=uiHarness(result);h.ui.startCompleteSearch();h.cancel.current=true;h.queue.shift()();
+ assert.equal(h.ref.current.paused,true);h.ui.useBestCompleteSearch();
+ assert.equal(h.ref.current,null);assert.equal(h.events.filter(e=>e[0]==='pending').length,1);
+ assert(!h.events.some(e=>e[0]==='commit'));
+ const pending=h.events.find(e=>e[0]==='pending')[1];assert.deepEqual(pending.usedPatterns,solution.usedPatterns);assert.notEqual(pending.ns,solution.ns);
+ const progress=h.events.filter(e=>e[0]==='progress').at(-1)[1];assert.equal(progress.status,'accepted');assert.equal(progress.minimumOvertimeProven,false);
+ while(h.queue.length)h.queue.shift()();assert.equal(h.advances,0);
+});
+
+test('Use best found rejects changed inputs, missing incumbents and independent validation failures',()=>{
+ const result={status:'searching',solution:{ns:{},autoExtShifts:[],handoffs:[]},bestOvertimeHours:0,minimumOvertimeProven:false};
+ const stale=uiHarness(result);stale.ui.startCompleteSearch();stale.stamp.current='changed';stale.ui.useBestCompleteSearch();
+ assert(!stale.events.some(e=>['pending','commit'].includes(e[0])));assert(stale.events.some(e=>e[0]==='stale'));
+ const empty=uiHarness();empty.ui.startCompleteSearch();empty.ui.useBestCompleteSearch();assert(empty.ref.current);assert(!empty.events.some(e=>['pending','commit'].includes(e[0])));
+ const invalid=uiHarness(result,{validateSchedule:()=>[{level:'error',msg:'coverage missing'}]});invalid.ui.startCompleteSearch();invalid.ui.useBestCompleteSearch();
+ assert(!invalid.events.some(e=>['pending','commit'].includes(e[0])));assert.equal(invalid.events.at(-1)[1].status,'invalid');
+});
+
+
+test('exhaustion proves a positive minimum even when the initial capacity bound is loose',()=>{
+ const roster=['med','g1','g2','g3','g4'].map(id=>e(id,{requiredShift:'second',availableDaysOfWeek:['Sunday'],qualifications:id==='med'?['Medical','Scale']:['Guard'],overtimePref:'neutral'}));
+ const timeOffReqs=[{id:'m1',empId:'med',type:'single_day',status:'approved',paid:true,startDate:'2026-09-08',endDate:'2026-09-08',ptoHoursByDate:{'2026-09-08':24}},
+  {id:'m2',empId:'med',type:'single_day',status:'approved',paid:true,startDate:'2026-09-09',endDate:'2026-09-09',ptoHoursByDate:{'2026-09-09':16}}];
+ const i=input(roster,{timeOffReqs}),search=c.createCompleteScheduleSearch(i);let r;
+ do{r=search.advance({maxSteps:1});}while(!r.solution && r.status==='searching');
+ assert.equal(r.bestOvertimeHours,8);assert.equal(r.lowerBoundHours,0);assert.equal(r.minimumOvertimeProven,false);
+ const result=finish(search);assert.equal(result.status,'feasible');assert.equal(result.bestOvertimeHours,8);assert.equal(result.lowerBoundHours,8);assert.equal(result.minimumOvertimeProven,true);
 });

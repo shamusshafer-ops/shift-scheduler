@@ -143,18 +143,13 @@ test("all relevant input changes invalidate an old proposal fingerprint", () => 
   for(const key of Object.keys(input)) assert.notEqual(core.overtimeInputStamp({...input,[key]:null}),stamp,key);
 });
 
-test("production staging on an empty schedule changes only pending state", () => {
-  const start=html.indexOf("    const commit = result => {"),end=html.indexOf("    // ── C2:",start);
-  let pending=null,commits=0;
-  const roster=[emp("e",{overtimePref:"preferred"})];
-  const stage=new Function(...Object.keys(core),"accountingRoster","schedule","extShifts","handoffs","cfg","ptoHoursByEmployee","runBaseStamp","proposalIsCurrent","discardStaleProposal","setPendingProposal","commitScheduleProposal",
-    html.slice(start,end)+"return commit;")(...Object.values(core),roster,{},[],[],{},{},"base",()=>true,()=>assert.fail("not stale"),p=>{pending=p;},()=>{commits++;});
+test("production Autofill sends its first complete schedule to the optimizer", () => {
+  const start=html.indexOf("    const commit = result =>"),end=html.indexOf("    // ── C2:",start);
+  const roster=[emp("e",{overtimePref:"preferred"})],calls=[];
+  const stage=new Function("accountingRoster","startCompleteSearch",html.slice(start,end)+"return commit;")(roster,(...args)=>calls.push(args));
   const input=proposal(shifts(),{usedPatterns:{e:{trailingDays:3}},handoffs:[]});
   stage(input);
-  assert.equal(commits,0);
-  assert.equal(pending.reviewItems.length,1);
-  assert.deepEqual(pending.usedPatterns,input.usedPatterns);
-  assert.notEqual(pending.ns,input.ns);
+  assert.deepEqual(calls,[[roster,input]]);
 });
 
 function productionCommit(isCurrent, roster, cfg = {}) {
