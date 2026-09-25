@@ -119,14 +119,14 @@ test('complete-search feasibility agrees with an exhaustive oracle on 24 constra
   const r=solve(input(roster,{targetSlots:days.map(d=>d+'__second')}));assert.equal(r.status==='feasible',expected,'oracle mismatch trial '+trial);assert(['feasible','infeasible'].includes(r.status));
  }
 });
-function uiHarness(result={status:'searching',phase:'regular-hours',nodes:1,candidates:1,reasons:[],solution:null}) {
+function uiHarness(result={status:'searching',phase:'regular-hours',nodes:1,candidates:1,reasons:[],solution:null},overrides={}) {
  const queue=[],events=[],ref={current:null},stamp={current:'base'},cancel={current:false};let advances=0;
  const fake={snapshot:()=>result,advance:()=>{advances++;return result;},cancel:()=>({...result,status:'cancelled'})};
  const scope={...c,isReadOnly:false,generationInputsReady:true,pendingProposal:null,employees:oneDay(['a','b','c']),weekStart:'2026-09-06',cfg:{},schedule:{},extShifts:[],handoffs:[],trainingBlocks:[],timeOffReqs:[],history:[],empPatterns:{},afExclude:[],fairnessHistory:{},ptoHoursByEmployee:{},
   completeSearchRef:ref,overtimeInputRef:stamp,autoFillCancelRef:cancel,autoFillRunning:false,
   createCompleteScheduleSearch:()=>fake,setAutoFillRunning:v=>events.push(['running',v]),setAutoFillProgress:v=>events.push(['progress',v]),
   showAlert:v=>events.push(['alert',v]),validateSchedule:()=>[],proposalIsCurrent:p=>p.baseStamp===stamp.current,discardStaleProposal:()=>events.push(['stale']),
-  setPendingProposal:p=>events.push(['pending',p]),commitScheduleProposal:p=>events.push(['commit',p]),setTimeout:f=>queue.push(f)};
+  setPendingProposal:p=>events.push(['pending',p]),commitScheduleProposal:p=>events.push(['commit',p]),setTimeout:f=>queue.push(f),...overrides};
  const start=html.indexOf('  const startCompleteSearch ='),end=html.indexOf('  const runAutoFill =',start);
  const ui=new Function(...Object.keys(scope),html.slice(start,end)+'return {startCompleteSearch,resumeCompleteSearch,cancelCompleteSearch};')(...Object.values(scope));
  return {ui,events,queue,ref,stamp,cancel,get advances(){return advances;}};
@@ -151,9 +151,40 @@ test('production infeasibility leaves the current draft untouched',()=>{
  const h=uiHarness({status:'infeasible',phase:'regular-hours',solution:null,reasons:['exhausted']});h.ui.startCompleteSearch();h.queue.shift()();assert(!h.events.some(e=>['commit','pending'].includes(e[0])));assert.equal(h.events.at(-1)[1].status,'infeasible');
 });
 test('a heuristic plateau hands off to complete search without committing the incomplete candidate',()=>{
- const start=html.indexOf('      if (attemptNum >= MAX_ATTEMPTS || plateauCount >= PLATEAU_LIMIT) {'),end=html.indexOf('      setTimeout(tick, 0);',start);let calls=0;
- new Function('attemptNum','MAX_ATTEMPTS','plateauCount','PLATEAU_LIMIT','proposalIsCurrent','runBaseStamp','startCompleteSearch','accountingRoster','discardStaleProposal','setAutoFillRunning',html.slice(start,end))(10,10,3,3,()=>true,'base',()=>calls++,[],()=>assert.fail('stale'),()=>{});
- assert.equal(calls,1);
+ const start=html.indexOf('      if (attemptNum >= MAX_ATTEMPTS || plateauCount >= PLATEAU_LIMIT) {'),end=html.indexOf('      setTimeout(tick, 0);',start);const calls=[];const best={ns:{},errors:2};
+ new Function('attemptNum','MAX_ATTEMPTS','plateauCount','PLATEAU_LIMIT','proposalIsCurrent','runBaseStamp','startCompleteSearch','accountingRoster','discardStaleProposal','setAutoFillRunning','best',html.slice(start,end))(10,10,3,3,()=>true,'base',(...args)=>calls.push(args),[],()=>assert.fail('stale'),()=>{},best);
+ assert.equal(calls.length,1);
+ assert.equal(calls[0][1],best,'the best heuristic draft is handed over as the fallback, not committed here');
+});
+const fallbackDraft=()=>({ns:{Sunday__second:oneDay(['a','b','c']).map(v=>a(v.id,'Guard',false))},autoExtShifts:[],handoffs:[],usedPatterns:{},errors:1});
+test('an infeasible complete search applies the heuristic fallback draft instead of leaving the grid empty',()=>{
+ const fb=fallbackDraft(),h=uiHarness({status:'infeasible',phase:'regular-hours',solution:null,reasons:['exhausted']});
+ h.ui.startCompleteSearch(undefined,fb);h.queue.shift()();
+ const commit=h.events.find(e=>e[0]==='commit');
+ assert(commit,'fallback committed');assert.deepEqual(commit[1].ns,fb.ns);
+ const last=h.events.filter(e=>e[0]==='progress').at(-1)[1];
+ assert.equal(last.status,'infeasible');assert.equal(last.fallbackApplied,true);assert.equal(last.fallbackErrors,1);
+});
+test('a fallback draft that needs overtime goes through the approval step, not straight to the grid',()=>{
+ const fb=fallbackDraft();fb.ns=Object.fromEntries(c.DAYS.slice(0,6).map(day=>[day+'__second',[a('a','Guard',false)]]));
+ const h=uiHarness({status:'infeasible',phase:'overtime-review',solution:null,reasons:['exhausted']});
+ h.ui.startCompleteSearch(undefined,fb);h.queue.shift()();
+ assert(!h.events.some(e=>e[0]==='commit'));assert.equal(h.events.find(e=>e[0]==='pending')[1].reviewItems[0].newHours,48);
+});
+test('a validator-rejected complete candidate falls back to the heuristic draft',()=>{
+ const solution={ns:{Sunday__second:[]},autoExtShifts:[],handoffs:[],usedPatterns:{}},fb=fallbackDraft();
+ const h=uiHarness({status:'feasible',phase:'regular-hours',solution},{validateSchedule:(ns)=>ns===solution.ns?[{level:'error',msg:'bad'}]:[]});
+ h.ui.startCompleteSearch(undefined,fb);h.queue.shift()();
+ const commits=h.events.filter(e=>e[0]==='commit');
+ assert.equal(commits.length,1);assert.deepEqual(commits[0][1].ns,fb.ns);
+ assert.equal(h.events.filter(e=>e[0]==='progress').at(-1)[1].status,'invalid');
+});
+test('stale or cancelled searches never apply the fallback draft',()=>{
+ const stale=uiHarness();stale.ui.startCompleteSearch(undefined,fallbackDraft());stale.stamp.current='edited';stale.queue.shift()();
+ assert(!stale.events.some(e=>['commit','pending'].includes(e[0])));
+ const cancelled=uiHarness();cancelled.ui.startCompleteSearch(undefined,fallbackDraft());cancelled.ui.cancelCompleteSearch();
+ while(cancelled.queue.length)cancelled.queue.shift()();
+ assert(!cancelled.events.some(e=>['commit','pending'].includes(e[0])));
 });
 test('fixed excluded overtime is still a reviewable combination when no editable employee wants OT',()=>{
  const roster=oneDay(['a','b','fixed']);roster[2]={...roster[2],requiredShift:null,availableDaysOfWeek:c.DAYS,overtimePref:'preferred'};

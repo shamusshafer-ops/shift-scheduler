@@ -36,8 +36,23 @@ window.onerror = function(msg, src, line, col, err) {
 // Wire Preact as window.React so Babel-transformed JSX calls preact.h()
 // @babel/standalone processes text/babel scripts at DOMContentLoaded,
 // so this regular script always runs first.
+// Plain Preact binds onChange to the DOM "change" event, which text fields only
+// fire on blur. The app's JSX is written React-style (onChange = every
+// keystroke), so map it to onInput for text fields and textareas the same way
+// preact/compat does. Without this, a button enabled by typing (e.g. the
+// overtime approval's manager name) stays disabled until the field loses focus,
+// which on touch devices may never happen. Number fields keep change-on-commit.
+const _TEXT_INPUT_TYPES = new Set(["", "text", "search", "email", "tel", "url", "password"]);
+function _createElement(type, props, ...children) {
+  if (props && props.onChange && !props.onInput && (type === "textarea" ||
+      (type === "input" && _TEXT_INPUT_TYPES.has(String(props.type || "").toLowerCase())))) {
+    props = { ...props, onInput: props.onChange };
+    delete props.onChange;
+  }
+  return preact.h(type, props, ...children);
+}
 window.React = {
-  createElement: preact.h,
+  createElement: _createElement,
   Fragment:      preact.Fragment,
   createContext: preact.createContext,
   useState:      preactHooks.useState,
@@ -2246,12 +2261,21 @@ function repairScheduleCompletion(input, context) {
     const before=result.ns,oldQuality=scheduleQuality(result,accountingRoster,cfg,options,baseline);
     const oldCoverage=ALL_SLOTS.map(slot=>analyzeShiftCoverage(slot.day,slot.shiftId,before,accountingRoster,result.autoExtShifts,result.handoffs));
     const oldShortfall=Object.fromEntries(accountingRoster.map(e=>[e.id,weeklyEmployeeHours(e,before,result.autoExtShifts,result.handoffs,ptoHoursByEmployee).shortfallHours || 0]));
-    const targets=oldCoverage.filter(c=>!c.ok && (!context.targetSlots || context.targetSlots.includes(cellKey(c.day,c.shiftId)))).sort((a,b)=>(b.bodyGapHours+b.roleGapHours)-(a.bodyGapHours+a.roleGapHours)).map(c=>({day:c.day,shiftId:c.shiftId}));
-    if (!targets.length && !context.targetSlots) for(const e of source.filter(e=>oldShortfall[e.id]>0)) for(const slot of ALL_SLOTS) targets.push({...slot,employeeId:e.id});
+    // Only real coverage gaps are targets: this search inserts or replaces people,
+    // so a slot whose only problem is overstaffing can never be fixed here and
+    // must not crowd out the weekly-hours targets below.
+    const hasGap=c=>c.bodyGapHours>1e-8 || c.roleGapHours>1e-8 || (c.missing || []).length>0 || !c.isFull;
+    const targets=oldCoverage.filter(c=>!c.ok && hasGap(c) && (!context.targetSlots || context.targetSlots.includes(cellKey(c.day,c.shiftId)))).sort((a,b)=>(b.bodyGapHours+b.roleGapHours)-(a.bodyGapHours+a.roleGapHours)).map(c=>({day:c.day,shiftId:c.shiftId}));
+    if (!context.targetSlots) for(const e of source.filter(e=>oldShortfall[e.id]>0)) for(const slot of ALL_SLOTS) targets.push({...slot,employeeId:e.id});
     let best=null,bestQuality=oldQuality;
+    // Iterative deepening: try every target with a direct insert/swap before any
+    // linked move chains. A depth-2 search on the first target can otherwise use
+    // the whole budget before a one-step fix on a later target is ever tried.
+    for(const depth of [0,1,2]) {
+    if (best || stop()) break;
     for(const target of targets) {
       if (stop()) break;
-      for(const ns of fill(before,target,2,new Set(),target.employeeId)) {
+      for(const ns of fill(before,target,depth,new Set(),target.employeeId)) {
         if (stop()) break;
         const candidate={...result,ns},quality=scheduleQuality(candidate,accountingRoster,cfg,options,baseline);
         if (compareScheduleQuality(quality,bestQuality)>=0) continue;
@@ -2266,6 +2290,7 @@ function repairScheduleCompletion(input, context) {
         break;
       }
       if (best) break;
+    }
     }
     if (!best) break;
     for(const key of new Set([...Object.keys(before),...Object.keys(best.ns)])) if(JSON.stringify(before[key] || [])!==JSON.stringify(best.ns[key] || [])) footprint.add(key);
@@ -3278,7 +3303,11 @@ function repairScheduleGaps(result, context) {
             const e = source.find(x => x.id === a.employeeId);
             const proposed = { day: rg.day, employeeId: e?.id, type: shiftOrder[adjSid] < shiftOrder[rg.shiftId] ? "late-stay" : "early-arrival",
               sourceShiftId: adjSid, targetShiftId: rg.shiftId, position: rg.role, hours: HANDOFF_HOURS };
-            return e && !employeePolicyIssues(e, ns, cfg, { extShifts: autoExtShifts, handoffs: [...handoffs, proposed], empTimeOffDays, ptoHoursByEmployee, creditHourLimits, empPatterns: enrichedPatterns }).length && (e.qualifications || []).includes(rg.role) &&
+            // Check the whole schedule, not only the moving employee: a handoff into
+            // an already-full shift would add a fourth regular body (overstaffing).
+            const hoOpts = { extShifts: autoExtShifts, handoffs, empTimeOffDays, ptoHoursByEmployee, creditHourLimits, empPatterns: enrichedPatterns };
+            return e && (e.qualifications || []).includes(rg.role) &&
+              !scheduleChangeIssues(ns, ns, accountingRoster, cfg, hoOpts, { ...hoOpts, handoffs: [...handoffs, proposed] }).length &&
               !handoffs.some(h => h.day === rg.day && h.employeeId === e.id && h.targetShiftId === rg.shiftId);
           });
           if (cand) {
@@ -7195,8 +7224,9 @@ function OvertimeModal({ items, onApprove, onCancel, busy=false }) {
         <div style={{padding:"16px 28px 24px",flexShrink:0,borderTop:"1px solid var(--ss-border)",display:"flex",gap:10,justifyContent:"flex-end"}}>
           <button disabled={busy} onClick={onCancel} style={{background:"transparent",color:"var(--ss-text-muted)",border:"1px solid var(--ss-border)",
             padding:"9px 20px",borderRadius:6,cursor:"pointer",fontSize:12,fontWeight:600,fontFamily:"inherit"}}>CANCEL PROPOSAL</button>
+          {!actor.trim() && <span style={{alignSelf:"center",fontSize:11,color:"var(--ss-text-dim)"}}>Enter the approving manager to proceed</span>}
           <button disabled={busy || !actor.trim()} onClick={()=>onApprove(approved,actor)} style={{background:"var(--ss-warning)",color:"#000",border:"none",
-            padding:"9px 20px",borderRadius:6,cursor:"pointer",fontSize:12,fontWeight:700,fontFamily:"inherit"}}>
+            padding:"9px 20px",borderRadius:6,cursor:(busy || !actor.trim())?"not-allowed":"pointer",opacity:(busy || !actor.trim())?0.45:1,fontSize:12,fontWeight:700,fontFamily:"inherit"}}>
             PROCEED ({Object.values(approved).filter(Boolean).length}/{items.length} approved)
           </button>
         </div>
@@ -12696,7 +12726,10 @@ function ScheduleGrid({ onOpenTestModal }) {
     setScheduleIssues(validateSchedule(schedule, extShifts, employees, handoffs));
   }, [validateSchedule, schedule, extShifts, employees, handoffs]);
 
-  const startCompleteSearch = (rosterOverride) => {
+  // fallback: the fast autofill's best draft. If the complete search cannot
+  // produce a valid week, that draft is applied (through the normal overtime
+  // approval path) so the grid is never left empty with the problems hidden.
+  const startCompleteSearch = (rosterOverride, fallback) => {
     if(isReadOnly || !generationInputsReady || pendingProposal)return;
     completeSearchRef.current?.solver.cancel();
     const accountingRoster=Array.isArray(rosterOverride)?rosterOverride:employees;
@@ -12708,6 +12741,15 @@ function ScheduleGrid({ onOpenTestModal }) {
     const job={solver,baseStamp,paused:false,tick:null,lastProgressAt:0};
     completeSearchRef.current=job;autoFillCancelRef.current=false;setAutoFillRunning(true);
     const progress=(result,extra={})=>setAutoFillProgress({...result,solution:undefined,engine:'complete',...extra});
+    const applyFallback=(result,extra={})=>{
+      if(!fallback) return false;
+      const reviewItems=overtimeReviewItems(accountingRoster,{schedule,extShifts,handoffs},fallback,cfg,ptoHoursByEmployee);
+      const proposal=makeOvertimeProposal({...fallback,reviewItems},baseStamp);
+      if(!proposalIsCurrent(proposal)){discardStaleProposal();return true;}
+      progress(result,{...extra,fallbackApplied:true,fallbackErrors:fallback.errors || 0});
+      if(reviewItems.length)setPendingProposal(proposal);else commitScheduleProposal(proposal);
+      return true;
+    };
     job.tick=()=>{
       if(completeSearchRef.current!==job)return;
       if(overtimeInputRef.current!==baseStamp) {
@@ -12721,13 +12763,16 @@ function ScheduleGrid({ onOpenTestModal }) {
         setTimeout(job.tick,0);return;
       }
       completeSearchRef.current=null;setAutoFillRunning(false);progress(result);
+      if(result.status==='infeasible') {applyFallback(result);return;}
       if(result.status==='feasible') {
         const proposed=result.solution;
         // A solver candidate is still a draft: use the normal validation and
         // exact-schedule overtime approval path before replacing live records.
         const issues=validateSchedule(proposed.ns,proposed.autoExtShifts,accountingRoster,proposed.handoffs);
         if(issues.some(i=>i.level==='error')) {
-          progress(result,{status:'invalid',reasons:['The independent schedule validator rejected the candidate.',...issues.filter(i=>i.level==='error').map(i=>i.msg)]});return;
+          const extra={status:'invalid',reasons:['The independent schedule validator rejected the candidate.',...issues.filter(i=>i.level==='error').map(i=>i.msg)]};
+          if(!applyFallback(result,extra)) progress(result,extra);
+          return;
         }
         const reviewItems=overtimeReviewItems(accountingRoster,{schedule,extShifts,handoffs},proposed,cfg,ptoHoursByEmployee);
         const proposal=makeOvertimeProposal({...proposed,reviewItems},baseStamp);
@@ -13023,7 +13068,7 @@ function ScheduleGrid({ onOpenTestModal }) {
 
       if (attemptNum >= MAX_ATTEMPTS || plateauCount >= PLATEAU_LIMIT) {
         if(!proposalIsCurrent({baseStamp:runBaseStamp})){discardStaleProposal();setAutoFillRunning(false);return;}
-        startCompleteSearch(accountingRoster);
+        startCompleteSearch(accountingRoster, best);
         return;
       }
 
@@ -14031,6 +14076,7 @@ function ScheduleGrid({ onOpenTestModal }) {
         {autoFillProgress.reasons?.map((reason,i)=><p key={i}>{reason}</p>)}
         {autoFillProgress.status==='paused' && <><p>The search has not reached a conclusion. Resume continues from the saved branch.</p><button onClick={resumeCompleteSearch}>Resume complete search</button> <button onClick={cancelCompleteSearch}>Cancel search</button></>}
         {autoFillProgress.status==='feasible' && <p>The candidate passed the solver checks. Overtime still requires approval, and publication requires its separate final review.</p>}
+        {autoFillProgress.fallbackApplied && <p><strong>No complete week was found, so autofill applied its best draft instead.</strong> {autoFillProgress.fallbackErrors ? `${autoFillProgress.fallbackErrors} issue${autoFillProgress.fallbackErrors===1?"":"s"} remain — see the issue list and "Why the draft is incomplete".` : "Review the issue list before publishing."}</p>}
       </div>}
       {!isReadOnly && <WeeklyAccountingPanel/>}
       {autoFillProgress?.done && autoFillProgress.engine!=="complete" && <p style={{fontSize:12,color:"var(--ss-text-dim)"}}>
