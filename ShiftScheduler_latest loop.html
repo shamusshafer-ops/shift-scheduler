@@ -395,7 +395,11 @@ const _hasWinStorage = (typeof window !== "undefined") &&
   !!window.storage && (typeof window.storage.get === "function");
 
 function isMissingStorageError(error) {
-  return error?.code==='NOT_FOUND' || error?.code==='KEY_NOT_FOUND' || error?.status===404 || /^key not found(?:[:.].*)?$/i.test(error?.message || '');
+  // The Claude app's storage wraps the reason ("Storage get failed: Key not
+  // found"), so match the phrase anywhere, not only at the start. A missing key
+  // on a fresh device is "no saved data yet", not a load failure.
+  const text=typeof error==='string' ? error : error?.message || '';
+  return error?.code==='NOT_FOUND' || error?.code==='KEY_NOT_FOUND' || error?.status===404 || /\bkey not found\b/i.test(text);
 }
 const lsGet = (k) => {
   if (_hasWinStorage) return window.storage.get(k).catch(() => null);
