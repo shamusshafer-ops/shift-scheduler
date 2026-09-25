@@ -18,6 +18,7 @@ on:
       - 'test-integration-audit.js'
       - 'test-complete-search.js'
       - 'test-autofill-repair.js'
+      - 'test-calloff.js'
       - 'fixtures/complete-search-roster.json'
       - 'fixtures/autofill-real-roster-drafts.json'
       - '.github/workflows/scheduler-tests.yml'
@@ -38,6 +39,7 @@ on:
       - 'test-integration-audit.js'
       - 'test-complete-search.js'
       - 'test-autofill-repair.js'
+      - 'test-calloff.js'
       - 'fixtures/complete-search-roster.json'
       - 'fixtures/autofill-real-roster-drafts.json'
       - '.github/workflows/scheduler-tests.yml'
@@ -53,4 +55,4 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: '22'
-      - run: node --test test-coverage.js test-staffing.js test-excel-export.js test-policy.js test-pto.js test-overtime.js test-availability.js test-completion.js test-publication.js test-locks-fairness.js test-integration-audit.js test-complete-search.js test-autofill-repair.js
+      - run: node --test test-coverage.js test-staffing.js test-excel-export.js test-policy.js test-pto.js test-overtime.js test-availability.js test-completion.js test-publication.js test-locks-fairness.js test-integration-audit.js test-complete-search.js test-autofill-repair.js test-calloff.js

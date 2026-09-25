@@ -3483,64 +3483,82 @@ const isGuardOnly = (e) => {
 //   3  FT into OT, OT-neutral
 //   4  FT into OT, OT-declined        → last resort, flagged red
 // Within a tier: not-on-preferred-day-off first, then fewest current hours.
-function buildCallOffList(day, shiftId, neededPos, excludeEmpId,
-                          employees, schedule, extShifts, timeOffReqs, weekStartISO, cfg) {
+// What a call-off replacement must supply, from actual coverage rather than the
+// stored position label (a dual-qualified employee saved as "Guard" may be the
+// shift's only Medic). Returns the schedule without the call-off and the roles
+// still missing once that person is removed.
+// requiredRoles are the ones the call-off itself takes away: the replacement
+// must cover all of them. neededRoles also includes gaps that already existed,
+// which the replacement fills if qualified but which never disqualify anyone.
+// The supervisor seat is separate from the three regular seats.
+function callOffNeeds(day, shiftId, callOffId, employees, schedule, options = {}) {
+  const key = cellKey(day, shiftId);
+  const removed = (schedule[key] || []).find(a => a.employeeId === callOffId);
+  const without = { ...schedule, [key]: (schedule[key] || []).filter(a => a.employeeId !== callOffId) };
+  const cov = s => analyzeShiftCoverage(day, shiftId, s, employees, options.extShifts || [], options.handoffs || []).missing;
+  const before = cov(schedule), after = cov(without);
+  const supervisorSeat = removed?.position === "Supervisor";
+  const keep = r => supervisorSeat ? r === "Supervisor" : r === "Scale" || r === "Medical";
+  const neededRoles = after.filter(keep);
+  return { without, neededRoles, requiredRoles: neededRoles.filter(r => !before.includes(r)), supervisorSeat };
+}
+
+// Position to save for a replacement: the dedicated supervisor seat when that
+// is what is missing, else a missing specialist role, else Guard, else another
+// qualified regular position (a second Scale/Medic fills the "other" seat).
+function callOffPosition(emp, day, neededRoles) {
+  const quals = emp.qualifications || [];
+  const can = p => quals.includes(p) && canFillPos(emp, p, day);
+  if (neededRoles.includes("Supervisor")) return can("Supervisor") ? "Supervisor" : null;
+  for (const role of neededRoles) if (can(role)) return role;
+  if (can("Guard")) return "Guard";
+  return POSITIONS.find(p => can(p)) || null;
+}
+
+// Ranked call-off replacements. Eligibility is the exact rule check used when
+// the change is committed (scheduleChangeIssues on "remove call-off + add
+// replacement"), so anyone listed as eligible can actually be assigned.
+function buildCallOffList(day, shiftId, excludeEmpId, employees, schedule, cfg = {}, options = {}) {
   const minRest  = cfg?.minRestHours ?? MIN_REST_HOURS;
-  const maxN     = cfg?.maxConsecutiveNights ?? MAX_CONSECUTIVE_NIGHTS;
   const key      = cellKey(day, shiftId);
   const inSlot   = new Set((schedule[key] || []).map(a => a.employeeId));
-  const adjPairs = new Set(["first__second","second__first","second__third","third__second"]);
+  const { without, neededRoles, requiredRoles, supervisorSeat } = callOffNeeds(day, shiftId, excludeEmpId, employees, schedule, options);
+  const extShifts = options.extShifts || [], handoffs = options.handoffs || [], pto = options.ptoHoursByEmployee || {};
   const out = [];
-  const timeOffAvailability = buildTimeOffAvailability(timeOffReqs, weekStartISO);
 
   for (const emp of employees) {
-    if (emp.id === excludeEmpId) continue;
-    if (inSlot.has(emp.id)) continue;
-
+    if (emp.id === excludeEmpId || inSlot.has(emp.id)) continue;
     const reasons = [];  // hard blocks — any entry means "do not call"
     const flags   = [];  // soft cautions shown as chips — {label, level}
-
-    if ((emp.unavailableDays || []).includes(day))
-      reasons.push("Unavailable on " + day);
-    if (availabilityConflicts(emp, [shiftInterval(day, shiftId)], timeOffAvailability).length)
-      reasons.push("Approved leave or recurring unavailable hours");
-    if (emp.requiredShift && emp.requiredShift !== shiftId && !canWorkOtherShifts(emp))
-      reasons.push("Locked to " + emp.requiredShift + " shift");
-    if ((emp.blockedShifts || []).includes(shiftId))
-      reasons.push("Shift is blocked for this employee");
-    if (neededPos && neededPos !== "Guard" && !canFillPos(emp, neededPos, day))
-      reasons.push("Not qualified: " + neededPos);
-
-    // Already working another shift the same day?
-    let otherSameDay = null;
-    for (const s of SHIFTS) {
-      if (s.id === shiftId) continue;
-      if ((schedule[cellKey(day, s.id)] || []).some(a => a.employeeId === emp.id)) otherSameDay = s.id;
-    }
-    if (otherSameDay) {
-      if (!emp.willing16h) reasons.push("Already on " + otherSameDay + " shift (not 16h-willing)");
-      else if (!adjPairs.has(otherSameDay + "__" + shiftId)) reasons.push("Already on " + otherSameDay + " shift (non-adjacent)");
+    const position = callOffPosition(emp, day, supervisorSeat ? ["Supervisor"] : neededRoles);
+    const missingQuals = requiredRoles.filter(r => !(emp.qualifications || []).includes(r));
+    if (!position) reasons.push(supervisorSeat ? "Not a qualified supervisor"
+      : (emp.qualifications || []).includes("Supervisor") && isWeekday(day) ? "Weekday supervisor — can only fill the supervisor seat"
+      : "Not qualified for this seat");
+    else if (missingQuals.length)
+      reasons.push("Must cover " + requiredRoles.join(" + ") + " — not qualified for " + missingQuals.join(", "));
+    let after = without;
+    if (position) {
+      after = { ...without, [key]: [...(without[key] || []), { employeeId: emp.id, position }] };
+      const prefix = emp.name + ": ";
+      for (const i of scheduleChangeIssues(schedule, after, employees, cfg, options)) {
+        const msg = i.msg.startsWith(prefix) ? i.msg.slice(prefix.length) : i.msg;
+        if (!reasons.includes(msg)) reasons.push(msg);
+      }
+      const still = analyzeShiftCoverage(day, shiftId, after, employees, extShifts, handoffs).missing;
+      const uncovered = requiredRoles.filter(r => still.includes(r));
+      if (uncovered.length && !missingQuals.length) reasons.push("Would leave the shift without " + uncovered.join(", "));
     }
 
-    const gap = calcRestGap(emp.id, schedule, day, shiftId, extShifts);
-    if (isRestViolation(emp, gap, minRest))
-      reasons.push("Rest violation — only " + (Math.round(gap * 10) / 10) + "h since last shift");
-    const consec = calcConsecutiveHours(emp.id, schedule, day, shiftId, extShifts);
-    if (consec > empMaxConsec(emp))
-      reasons.push("Would exceed " + empMaxConsec(emp) + "h consecutive cap");
-    if (shiftId === "third" && calcConsecutiveNights(emp.id, schedule, day, shiftId) >= maxN)
-      reasons.push("At max consecutive nights");
-    if (emp.maxShiftsPerWeek != null && countShiftsInWeek(emp.id, schedule) >= emp.maxShiftsPerWeek)
-      reasons.push("Weekly shift cap reached (" + emp.maxShiftsPerWeek + ")");
-
-    const hrs      = calcHours(emp.id, schedule, extShifts || []);
-    const projHrs  = hrs + SHIFT_HOURS;
+    const hrs      = weeklyEmployeeHours(emp, schedule, extShifts, handoffs, pto).creditedHours;
+    const projHrs  = position ? weeklyEmployeeHours(emp, after, extShifts, handoffs, pto).creditedHours : hrs + SHIFT_HOURS;
     const isFT     = emp.employmentType === "full-time";
     const otRaw    = emp.overtimePref && emp.overtimePref !== "neutral"
                        ? emp.overtimePref : (cfg?.defaultOvertimePref || "neutral");
     const otPref   = isFT ? otRaw : "neutral";
     const wouldOT  = isFT && projHrs > FT_MIN_HOURS;
     const prefOff  = (emp.preferredDaysOff || []).includes(day);
+    const gap      = calcRestGap(emp.id, schedule, day, shiftId, extShifts);
 
     if (gap !== Infinity)
       flags.push({ label: (Math.round(gap * 10) / 10) + "h rest", level: gap < minRest + 4 ? "warn" : "ok" });
@@ -3549,26 +3567,25 @@ function buildCallOffList(day, shiftId, neededPos, excludeEmpId,
     if ((emp.preferredShifts || []).length && !(emp.preferredShifts || []).includes(shiftId))
       flags.push({ label: "Off preferred shift", level: "info" });
     if (wouldOT)
-      flags.push({ label: (otPref === "blocked" ? "OT declined " : "OT ") + hrs + "h → " + projHrs + "h",
-                   level: otPref === "blocked" ? "danger" : "warn" });
-    if (emp.inTraining)
-      flags.push({ label: "In training", level: "warn" });
+      flags.push({ label: (otPref === "preferred" ? "Prefers OT " : "OT ") + hrs + "h → " + projHrs + "h",
+                   level: otPref === "preferred" ? "ok" : "warn" });
+    if (position && position !== "Guard")
+      flags.push({ label: "As " + position, level: "info" });
 
     const eligible = reasons.length === 0;
     let tier;
-    if (!eligible)                      tier = 99;
-    else if (isFT && projHrs <= FT_MIN_HOURS) tier = 0;
-    else if (!isFT)                     tier = 1;
-    else if (otPref === "willing")      tier = 2;
-    else if (otPref === "neutral")      tier = 3;
-    else                                tier = 4;
+    if (!eligible)                             tier = 99;
+    else if (isFT && projHrs <= FT_MIN_HOURS)  tier = 0;
+    else if (!isFT)                            tier = 1;
+    else if (otPref === "preferred")           tier = 2;
+    else                                       tier = 3;
 
-    out.push({ emp, eligible, reasons, flags, hrs, projHrs, wouldOT, otPref, tier,
+    out.push({ emp, eligible, reasons, flags, hrs, projHrs, wouldOT, otPref, tier, position,
                _k: [tier + (prefOff ? 0.5 : 0), hrs] });
   }
 
   out.sort((a, b) => (a._k[0] - b._k[0]) || (a._k[1] - b._k[1]) || a.emp.name.localeCompare(b.emp.name));
-  return out;
+  return Object.assign(out, { neededRoles, requiredRoles });
 }
 
 // Extracts cross-week boundary data from a previous week's saved schedule.
@@ -7343,10 +7360,9 @@ function TrainingBlockModal({ initialDay, onApprove, onCancel }) {
 // Supervisor workflow: someone calls off → pick the slot → get a ranked
 // "who to call first" list with eligibility built from the same rules the
 // auto-fill uses. One click assigns the replacement (and removes the call-off).
-function CallOffModal({ initialDay, initialShiftId, onAssign, onClose }) {
+function CallOffModal({ initialDay, initialShiftId, onAssign, onClose, policyOptions }) {
   const { employees } = useRoster();
-  const { schedule, extShifts, weekStart } = useSchedule();
-  const { timeOffReqs } = useTimeOff();
+  const { schedule } = useSchedule();
   const cfg = useSettings();
   const [day,        setDay]        = useState(initialDay || DAYS[new Date().getDay()]);
   const [shiftId,    setShiftId]    = useState(initialShiftId || "first");
@@ -7354,16 +7370,11 @@ function CallOffModal({ initialDay, initialShiftId, onAssign, onClose }) {
   const [showAll,    setShowAll]    = useState(false);
 
   const slotAsgn   = schedule[cellKey(day, shiftId)] || [];
-  const callOffA   = slotAsgn.find(a => a.employeeId === callOffId);
-  const callOffEmp = callOffId ? employees.find(e => e.id === callOffId) : null;
-  // The position we're trying to backfill: the call-off's position if it's a
-  // specialist role, otherwise unconstrained (Guard).
-  const neededPos  = callOffA && callOffA.position !== "Guard" ? callOffA.position : null;
-
   const list = useMemo(() =>
-    buildCallOffList(day, shiftId, neededPos, callOffId || null,
-      employees, schedule, extShifts || [], timeOffReqs || [], weekStart, cfg),
-    [day, shiftId, neededPos, callOffId, employees, schedule, extShifts, timeOffReqs, weekStart, cfg]);
+    buildCallOffList(day, shiftId, callOffId || null, employees, schedule, cfg, policyOptions || {}),
+    [day, shiftId, callOffId, employees, schedule, cfg, policyOptions]);
+  // Roles the shift is missing once the call-off is removed (from coverage, not labels).
+  const neededRoles = list.neededRoles || [];
 
   const eligible   = list.filter(c => c.eligible);
   const ineligible = list.filter(c => !c.eligible);
@@ -7372,9 +7383,8 @@ function CallOffModal({ initialDay, initialShiftId, onAssign, onClose }) {
   const TIER_LABELS = {
     0: "No overtime cost — needs the hours",
     1: "Part-time / on-call",
-    2: "Into overtime — OT willing",
-    3: "Into overtime — no OT preference",
-    4: "Into overtime — OT declined (last resort)",
+    2: "Into overtime — prefers OT",
+    3: "Into overtime — needs approval",
   };
 
   const chipColor = (lvl) =>
@@ -7425,10 +7435,10 @@ function CallOffModal({ initialDay, initialShiftId, onAssign, onClose }) {
               })}
             </select>
           </div>
-          {neededPos&&(
+          {neededRoles.length>0&&(
             <div style={{fontSize:11,color:"var(--ss-warning-readable)",marginTop:8,display:"flex",alignItems:"center",gap:6}}>
               {Icon("alert-triangle",{size:12,color:"var(--ss-warning)"})}
-              Backfilling a <b style={{margin:"0 3px"}}>{neededPos}</b> position — only {neededPos}-qualified staff are eligible.
+              <span>This shift needs <b>{neededRoles.join(" + ")}</b> — only staff who can cover {neededRoles.length>1?"them":"it"} are eligible.</span>
             </div>
           )}
         </div>
@@ -7478,10 +7488,7 @@ function CallOffModal({ initialDay, initialShiftId, onAssign, onClose }) {
                     )}
                   </div>
                   <button onClick={()=>{
-                      const pos = neededPos && canFillPos(c.emp, neededPos, day) ? neededPos
-                                : (callOffA ? "Guard" : null) || "Guard";
-                      onAssign(day, shiftId, callOffId || null, c.emp.id, pos);
-                      onClose();
+                      if (onAssign(day, shiftId, callOffId || null, c.emp.id, c.position) !== false) onClose();
                     }}
                     style={{fontSize:11,fontWeight:700,padding:"5px 12px",borderRadius:5,cursor:"pointer",
                       background:"var(--ss-accent-22)",color:"var(--ss-accent)",
@@ -12507,7 +12514,7 @@ function ScheduleGrid({ onOpenTestModal }) {
     if (isReadOnly) return;
     pushUndo();
     const key = cellKey(d, s);
-    commitAssignmentChange(p => {
+    return commitAssignmentChange(p => {
       let asgn = (p[key] || []);
       if (removeId) asgn = asgn.filter(a => a.employeeId !== removeId);
       if (asgn.some(a => a.employeeId === addId)) return p; // already there
@@ -13252,6 +13259,7 @@ function ScheduleGrid({ onOpenTestModal }) {
         initialDay={callOffOpen.day}
         initialShiftId={callOffOpen.shiftId}
         onAssign={executeCallOffReplacement}
+        policyOptions={policyOptions}
         onClose={()=>setCallOffOpen(null)}/>}
       {manualPairDay&&<ManualPairModal
         initialDay={manualPairDay}

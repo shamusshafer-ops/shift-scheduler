@@ -64,7 +64,7 @@ const exportsList = [
   "isMissingStorageError", "runSchemaMigrations",
   "selectWeekHistory", "scheduleViewSnapshot", "makeHistoryEntry", "upsertHistoryEntry", "scheduleWeekTransition", "historyDataIssues",
   "hasDutyLocks", "lockedDutyIssues", "preferenceBurden", "buildPreferenceHistory", "preferenceFairnessCost", "improveSchedulePreferences", "buildLockedAutoFill",
-  "remainingSlotCapacity", "compareScheduleQuality", "scheduleQuality", "repairScheduleCompletion", "buildCompletionDiagnostics",
+  "remainingSlotCapacity", "buildCallOffList", "callOffNeeds", "callOffPosition", "compareScheduleQuality", "scheduleQuality", "repairScheduleCompletion", "buildCompletionDiagnostics",
   "overtimeCreditLimits", "trimOvertimeProposal", "resolveOvertimeProposal", "repairScheduleGaps",
 ];
 const wrapped = src + "\n;module.exports = {" +
