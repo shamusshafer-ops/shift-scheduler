@@ -199,7 +199,7 @@ test('capacity bounds account for rest windows and weekly duty caps without excl
  assert.equal(c.completeSearchWorkUpperBound([{start:6,end:14},{start:30,end:38}],e('regular'),{minRestHours:12}),16);
 });
 test('short rest that can be bridged is not pruned before its extension is considered',()=>{
- const emp=e('bridge',{willing16h:true}),state={ns:{Sunday__second:[a('bridge','Guard',false)]},autoExtShifts:[],handoffs:[]};
+ const emp=e('bridge',{willing16h:true,swingEligible:['swing-10a-10p']}),state={ns:{Sunday__second:[a('bridge','Guard',false)]},autoExtShifts:[],handoffs:[]};
  const options={empPatterns:{bridge:{prevWorkIntervals:[{start:6,end:10}]}}};
  assert(c.employeePolicyIssues(emp,state.ns,{minRestHours:12},options).some(i=>i.type==='short_rest'));
  assert.equal(c.completeSearchHardIssues(emp,state,{minRestHours:12},options).length,0);

@@ -30,7 +30,7 @@ test('quality compares uncovered hours instead of the number of error messages',
  const base=prop({Sunday__first:[a('med'),a('scale','Scale')],Sunday__second:[a('guard','Guard')]});
  const partial={...base,handoffs:[{day:'Sunday',employeeId:'guard',type:'early-arrival',sourceShiftId:'second',targetShiftId:'first',position:'Guard',hours:4}]};
  const full={...base,ns:{...base.ns,Sunday__first:[...base.ns.Sunday__first,a('guard','Guard')]}};
- roster[2].willing16h=true;
+ roster[2].willing16h=true;roster[2].swingEligible=['swing-10a-10p'];
  assert(compareScheduleQuality(scheduleQuality(partial,roster),scheduleQuality(base,roster))<0);
  assert(compareScheduleQuality(scheduleQuality(full,roster),scheduleQuality(partial,roster))<0);
 });

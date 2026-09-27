@@ -226,3 +226,13 @@ test("production generation returns complete coverage for a feasible qualified r
   assert.equal(validateAssignmentPolicy(result.ns, roster, cfg, options({ extShifts: result.autoExtShifts, handoffs: result.handoffs })).length, 0);
   assert.equal(Object.values(result.ns).flat().length, 68);
 });
+
+test("a handoff that works a swing's hours requires that swing to be selected", () => {
+  const s = sched(["Saturday"]);
+  const early = { day: "Friday", employeeId: "e", type: "early-arrival", sourceShiftId: "first", targetShiftId: "third", position: "Guard", hours: 4 };
+  const late = { day: "Saturday", employeeId: "e", type: "late-stay", sourceShiftId: "first", targetShiftId: "second", position: "Guard", hours: 4 };
+  assert(types(check(emp(), s, {}, options({ handoffs: [early] }))).includes("swing_eligibility"));
+  assert(!types(check(emp({ swingEligible: ["swing-2a-2p"] }), s, {}, options({ handoffs: [early] }))).includes("swing_eligibility"));
+  // 0600–1800 is a 12-hour day, not a swing.
+  assert(!types(check(emp(), s, {}, options({ handoffs: [late] }))).includes("swing_eligibility"));
+});

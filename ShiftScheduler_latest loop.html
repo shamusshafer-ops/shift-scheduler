@@ -528,6 +528,14 @@ const POSITIONS = ["Guard","Scale","Medical"];
 const ALL_POSITIONS = ["Supervisor",...POSITIONS];
 const SHIFT_HOURS = 8;
 const HANDOFF_HOURS = 4;  // partial-shift handoff: late-stay or early-arrival
+// A handoff joined to its source shift works the same hours as a swing, so it
+// needs the same swingEligible opt-in (e.g. arriving early for 1st = 2A–2P).
+const HANDOFF_SWING_IDS = {
+  "first:early-arrival":  "swing-2a-2p",
+  "second:early-arrival": "swing-10a-10p",
+  "second:late-stay":     "swing-2p-2a",
+  "third:late-stay":      "swing-10p-10a",
+};
 const FT_MIN_HOURS = 40;
 // MAX_CONSECUTIVE_NIGHTS and MIN_REST_HOURS are now user-configurable via SettingsCtx.
 // Fallback values used in module-level helpers that can't access context:
@@ -1214,6 +1222,9 @@ function employeePolicyIssues(emp, schedule, cfg = {}, options = {}) {
   for (const h of ownHandoffs) {
     if (!intervals.some(i => i.handoff === h)) add("invalid_handoff", `handoff on ${h.day} has no valid adjoining source or duration`);
     if (!(emp.qualifications || []).includes(h.position)) add("qualification", `not qualified for handoff position ${h.position}`);
+    const swingId = HANDOFF_SWING_IDS[h.sourceShiftId + ":" + h.type];
+    if (swingId && !(emp.swingEligible || []).includes(swingId))
+      add("swing_eligibility", `${h.type === "late-stay" ? "late stay" : "early arrival"} on ${h.day} works the ${EXT_PAIRS_BY_ID.get(swingId).label.split(" / ")[0]} swing, which is not selected`);
     if ((h.position === "Supervisor" && !SUP_SLOT_DAY(h.day,h.targetShiftId)) ||
         ((emp.qualifications || []).includes("Supervisor") && isWeekday(h.day) && (h.position !== "Supervisor" || h.targetShiftId !== "first")))
       add("supervisor_slot", `weekday supervisor handoff must fill the separate first-shift supervisor position (${h.day})`);
