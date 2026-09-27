@@ -2486,6 +2486,8 @@ function createCompleteScheduleSearch(rawInput) {
   const optimize=rawInput.optimizeOvertime===true,seeded=optimize && Number.isFinite(rawInput.overtimeBudget);
   const seedBound=seeded?[rawInput.supervisorExtensionBudget ?? 0,rawInput.withoutDayOffBudget ?? 0,rawInput.overtimeBudget]:null;
   let bound=seedBound || [Infinity,Infinity,Infinity],incumbent=null,improvements=0,proven=false;
+  // Every incumbent, in the order found, so each better week can be reviewed.
+  const found=[];
   const lexLess=(a,b)=>{for(let i=0;i<a.length;i++){if(a[i]<b[i]-1e-8)return true;if(a[i]>b[i]+1e-8)return false;}return false;};
   // Restarts (optimizing only): depth-first search spends its time deep in the
   // first subtree and rarely revisits early choices. Each restart gets a node
@@ -2592,7 +2594,7 @@ function createCompleteScheduleSearch(rawInput) {
           if(!optimize)return true;
           yield* trimSurplus(options);
           const value=[supervisorExtensions(roster,solution.handoffs),withoutDayOff(solution),overtime(solution)];
-          if(lexLess(value,bound)){incumbent=solution;bound=value;improvements++;}
+          if(lexLess(value,bound)){incumbent=solution;bound=value;improvements++;found.push({value,nodes,solution});}
           solution=incumbent;
           if(incumbent && bound[0]===0 && bound[1]===0 && bound[2]<=floor+1e-8){proven=true;return true;}
           return false;
@@ -2744,7 +2746,10 @@ function createCompleteScheduleSearch(rawInput) {
   const snapshot=()=>{const shown=optimize?incumbent:solution;return {status,phase,nodes,steps,candidates:candidateCount,solution:shown?owns(shown):null,reasons:[...reasons],scope:owns(scope),
     ...(optimize?{optimization:{restarts,bestOvertime:incumbent?bound[2]:null,bestWithoutDayOff:incumbent?bound[1]:null,bestSupervisorExtensions:incumbent?bound[0]:null,
       seedOvertime:seedBound?.[2] ?? null,seedWithoutDayOff:seedBound?.[1] ?? null,seedSupervisorExtensions:seedBound?.[0] ?? null,floor,improvements,proven}}:{})};};
-  return {snapshot,advance({maxSteps=200,timeSliceMs=16}={}) {
+  return {snapshot,
+    // Better weeks found so far, from index `from` on (copies the caller owns).
+    foundWeeks(from=0){return found.slice(from).map(f=>({supervisorExtensions:f.value[0],withoutDayOff:f.value[1],overtime:f.value[2],nodes:f.nodes,solution:owns(f.solution)}));},
+    advance({maxSteps=200,timeSliceMs=16}={}) {
     if(status!=='searching')return snapshot();
     const deadline=Date.now()+Math.max(1,timeSliceMs);let n=0;
     try {do {steps++;n++;const r=iterator.next();if(r.done)break;}while(n<Math.max(1,maxSteps)&&Date.now()<deadline&&status==='searching');}
@@ -12338,7 +12343,7 @@ function CompletionDiagnosticsPanel({schedule,employees,cfg,options}) {
 
 // Live status of the overtime search: the best week so far, how close it is to
 // the overtime floor, and controls to pause, resume, cancel or take the best week now.
-function SearchProgressPanel({ progress: p, onPause, onResume, onUseBest, onCancel }) {
+function SearchProgressPanel({ progress: p, onPause, onResume, onUseBest, onCancel, weeks, weeksStale, appliedId, onView, onUse, pickDisabled }) {
   const o = p.optimization || {};
   const clock = ms => { const s = Math.max(0, Math.floor((ms || 0) / 1000)); return Math.floor(s / 60) + ":" + String(s % 60).padStart(2, "0"); };
   const hrs = h => (Math.round(h * 10) / 10) + "h";
@@ -12391,12 +12396,115 @@ function SearchProgressPanel({ progress: p, onPause, onResume, onUseBest, onCanc
         <button onClick={onUseBest} disabled={!p.hasBest} title={p.hasBest ? "" : "No week to apply yet"} className="ss-btn ss-btn-sm ss-btn-success">Use best now</button>
         <button onClick={onCancel} className="ss-btn ss-btn-sm ss-btn-ghost">Cancel search</button>
       </div>}
+      {weeks?.length > 0 && <FoundWeeksList weeks={weeks} appliedId={appliedId} onView={onView} onUse={onUse} disabled={pickDisabled} clock={clock}/>}
+      {weeksStale && <p style={{fontSize:11,color:"var(--ss-text-dim)"}}>The roster, rules or time off changed, so the weeks this search found are no longer listed.</p>}
       {p.status === "infeasible" && <p>Review staffing, qualifications, availability, PTO, locks and exclusions. The search did not relax your hard rules.</p>}
       {p.reasons?.map((reason, i) => <p key={i} style={{fontSize:12}}>{reason}</p>)}
+      {p.applied === "picked" && <p style={{fontSize:12}}>Applied {p.pickedLabel}. Overtime still requires approval, and publication requires its separate final review.</p>}
       {p.applied === "search" && <p style={{fontSize:12}}>Applied the search's week ({hrs(best ?? 0)} overtime). Overtime still requires approval, and publication requires its separate final review.</p>}
       {p.applied === "autofill" && (p.fallbackErrors
         ? <p style={{fontSize:12}}><strong>No complete week was found, so autofill applied its best draft instead.</strong> {`${p.fallbackErrors} issue${p.fallbackErrors === 1 ? "" : "s"} remain — see the issue list and "Why the draft is incomplete".`}</p>
         : <p style={{fontSize:12}}>Applied autofill's week. Overtime still requires approval, and publication requires its separate final review.</p>)}
+    </div>
+  );
+}
+
+// Short, comparable description of a found week.
+function weekSummaryText(s) {
+  const filled = s.gaps > 1e-8 ? `${Math.round(s.gaps * 10) / 10}h uncovered` : s.shortfall > 1e-8 ? `${s.shortfall}h under 40 for full-timers` : "All positions filled";
+  return { filled, daysOff: s.withoutDayOff === 0 ? "Everyone" : `${s.withoutDayOff} without`, overtime: (Math.round(s.overtime * 10) / 10) + "h",
+    supervisor: s.supervisorExtensions > 0 ? `${s.supervisorExtensions} supervisor 12h day${s.supervisorExtensions === 1 ? "" : "s"}` : "" };
+}
+
+// Every better week the search found (and autofill's), in the order found.
+function FoundWeeksList({ weeks, appliedId, onView, onUse, disabled, clock }) {
+  const best = weeks.reduce((b, w, i) => compareScheduleQuality(w.summary.quality, weeks[b].summary.quality) < 0 ? i : b, 0);
+  const th = { textAlign: "left", fontWeight: 600, fontSize: 10, letterSpacing: ".04em", textTransform: "uppercase", color: "var(--ss-text-dim)", padding: "4px 8px 4px 0" };
+  const td = { padding: "5px 8px 5px 0", borderTop: "1px solid var(--ss-border)", verticalAlign: "middle", fontVariantNumeric: "tabular-nums" };
+  return (
+    <div style={{ marginTop: 12 }}>
+      <div style={{ fontSize: 12, fontWeight: 700, marginBottom: 4 }}>Weeks found ({weeks.length})</div>
+      <div style={{ overflowX: "auto" }}>
+        <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12 }}>
+          <thead><tr><th style={th}>Week</th><th style={th}>Found at</th><th style={th}>Positions</th><th style={th}>Day off</th><th style={th}>Overtime</th><th style={th}></th></tr></thead>
+          <tbody>
+            {weeks.map((w, i) => { const t = weekSummaryText(w.summary); return (
+              <tr key={w.id}>
+                <td style={td}>{w.label}{i === best && <span style={{ marginLeft: 6, fontSize: 10, fontWeight: 700, color: "var(--ss-scale)" }}>BEST</span>}
+                  {w.id === appliedId && <span style={{ marginLeft: 6, fontSize: 10, fontWeight: 700, color: "var(--ss-accent)" }}>CHOSEN</span>}
+                  {t.supervisor && <div style={{ fontSize: 10, color: "var(--ss-warning-readable)" }}>{t.supervisor}</div>}</td>
+                <td style={td}>{w.id === "autofill" ? "—" : clock(w.foundAtMs)}</td>
+                <td style={td}>{t.filled}</td><td style={td}>{t.daysOff}</td><td style={td}>{t.overtime}</td>
+                <td style={{ ...td, whiteSpace: "nowrap", textAlign: "right" }}>
+                  <button onClick={() => onView(i)} className="ss-btn ss-btn-sm ss-btn-secondary">View</button>{" "}
+                  <button onClick={() => onUse(w)} disabled={disabled} className="ss-btn ss-btn-sm ss-btn-ghost">Use this week</button>
+                </td>
+              </tr>); })}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  );
+}
+
+// One found week, person by day, with the same duty codes as the Excel export.
+function WeekPreviewModal({ entries, index, onIndex, onClose, onUse, appliedId, pickDisabled, weekStart, employees, trainingBlocks, timeOffReqs }) {
+  const entry = entries[index], w = entry.week, t = weekSummaryText(entry.summary);
+  const model = useMemo(() => {
+    try { return buildScheduleExportModel({ weekStart, employees, schedule: w.ns, extShifts: w.autoExtShifts || [], handoffs: w.handoffs || [], trainingBlocks, timeOffReqs }); }
+    catch (e) { return null; }
+  }, [entry, weekStart, employees, trainingBlocks, timeOffReqs]);
+  const noDayOff = new Set(employeesWithoutDayOff(employees, w.ns, w.autoExtShifts || [], w.handoffs || []).map(e => e.id));
+  useEffect(() => {
+    const key = e => { if (e.key === "Escape") onClose(); else if (e.key === "ArrowLeft" && index > 0) onIndex(index - 1); else if (e.key === "ArrowRight" && index < entries.length - 1) onIndex(index + 1); };
+    document.addEventListener("keydown", key); return () => document.removeEventListener("keydown", key);
+  }, [index, entries.length]);
+  const C = SCHEDULE_EXPORT_COLORS;
+  const tint = fill => fill === C.overtime ? "var(--ss-warning-dim)" : fill === C.attention ? "var(--ss-danger-dim)" : "transparent";
+  const cellStyle = { padding: "5px 6px", borderTop: "1px solid var(--ss-border)", fontSize: 12, whiteSpace: "pre-line", textAlign: "center", fontVariantNumeric: "tabular-nums" };
+  return (
+    <div onClick={onClose} style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,0.7)", display: "flex", alignItems: "center", justifyContent: "center", zIndex: 1000, padding: 16 }}>
+      <div role="dialog" aria-modal="true" aria-label={entry.label} onClick={e => e.stopPropagation()}
+        style={{ background: "var(--ss-surface)", border: "1px solid var(--ss-border)", borderRadius: 10, width: "100%", maxWidth: 900, maxHeight: "90vh", display: "flex", flexDirection: "column", boxShadow: "0 20px 60px rgba(0,0,0,0.5)" }}>
+        <div style={{ padding: "16px 20px 10px", borderBottom: "1px solid var(--ss-border)" }}>
+          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", gap: 12, flexWrap: "wrap" }}>
+            <h2 style={{ margin: 0, fontSize: 16 }}>{entry.label} <span style={{ fontSize: 12, fontWeight: 400, color: "var(--ss-text-dim)" }}>({index + 1} of {entries.length})</span></h2>
+            {entry.id === appliedId && <span style={{ fontSize: 11, fontWeight: 700, color: "var(--ss-accent)" }}>CHOSEN</span>}
+          </div>
+          <p style={{ margin: "6px 0 0", fontSize: 12, color: "var(--ss-text-muted)" }}>
+            {t.filled} · Day off: {t.daysOff === "Everyone" ? "everyone" : t.daysOff} · Overtime {t.overtime}{t.supervisor ? " · " + t.supervisor : ""}
+          </p>
+        </div>
+        <div style={{ overflow: "auto", padding: "0 20px" }}>
+          {!model ? <p>This week could not be displayed.</p> :
+          <table style={{ width: "100%", borderCollapse: "collapse", margin: "8px 0" }}>
+            <thead><tr>
+              <th style={{ ...cellStyle, borderTop: "none", textAlign: "left", fontSize: 11 }}>Employee</th>
+              {DAYS.map(d => <th key={d} style={{ ...cellStyle, borderTop: "none", fontSize: 11 }}>{d.slice(0, 3)}</th>)}
+              <th style={{ ...cellStyle, borderTop: "none", fontSize: 11 }}>Hours</th>
+            </tr></thead>
+            <tbody>{model.employeeRows.map(r => (
+              <tr key={r.emp.id}>
+                <td style={{ ...cellStyle, textAlign: "left", whiteSpace: "nowrap" }}>{r.emp.name}
+                  {noDayOff.has(r.emp.id) && <span style={{ marginLeft: 6, fontSize: 10, fontWeight: 700, color: "var(--ss-danger-readable)" }}>NO DAY OFF</span>}</td>
+                {r.cells.map((c, i) => <td key={i} style={{ ...cellStyle, background: tint(c.fill), color: c.value === "x" ? "var(--ss-text-dim)" : "inherit" }}>{c.value === "x" ? "–" : c.value}</td>)}
+                <td style={{ ...cellStyle, fontWeight: 700, color: r.workedHours > FT_MIN_HOURS ? "var(--ss-warning-readable)" : "inherit" }}>{r.workedHours}</td>
+              </tr>))}
+            </tbody>
+          </table>}
+          <p style={{ fontSize: 11, color: "var(--ss-text-dim)", margin: "4px 0 12px" }}>1, 2, 3 = first, second, third shift · 12A / 12P = 12-hour day / night · amber = overtime · red = needs attention (unusual hours or a conflict).</p>
+        </div>
+        <div style={{ padding: "12px 20px", borderTop: "1px solid var(--ss-border)", display: "flex", gap: 8, justifyContent: "space-between", flexWrap: "wrap" }}>
+          <div style={{ display: "flex", gap: 8 }}>
+            <button onClick={() => onIndex(index - 1)} disabled={index === 0} className="ss-btn ss-btn-sm ss-btn-secondary">← Previous</button>
+            <button onClick={() => onIndex(index + 1)} disabled={index === entries.length - 1} className="ss-btn ss-btn-sm ss-btn-secondary">Next →</button>
+          </div>
+          <div style={{ display: "flex", gap: 8 }}>
+            <button onClick={onClose} className="ss-btn ss-btn-sm ss-btn-ghost">Close</button>
+            <button onClick={() => onUse(entry)} disabled={pickDisabled} className="ss-btn ss-btn-sm ss-btn-success">Use this week</button>
+          </div>
+        </div>
+      </div>
     </div>
   );
 }
@@ -12446,6 +12554,12 @@ function ScheduleGrid({ onOpenTestModal }) {
   const [showPublish,      setShowPublish]       = useState(false);
   const [autoFillRunning,  setAutoFillRunning]  = useState(false);
   const [autoFillProgress, setAutoFillProgress] = useState(null); // {attempt, bestErrors, bestWarns}
+  // Weeks the last search found (and autofill's week), for review one by one:
+  // {rulesStamp, roster, appliedId, weeks:[{id,label,foundAtMs,summary,week}]}.
+  // Shown only while the rules they were built for are unchanged; a chosen week
+  // is still revalidated against the current draft when it is applied.
+  const [foundWeeks, setFoundWeeks] = useState(null);
+  const [previewWeek, setPreviewWeek] = useState(null); // index into foundWeeks.weeks
   const autoFillCancelRef = useRef(false);
   const autoFillUseBestRef = useRef(false);
   const completeSearchRef = useRef(null);
@@ -12638,6 +12752,7 @@ function ScheduleGrid({ onOpenTestModal }) {
   const liveInputStamp = overtimeInputStamp({ weekStart, schedule, extShifts, handoffs, employees,
     cfg, empPatterns, timeOffReqs, history, afExclude, swingDesig, trainingBlocks, fairnessHistory });
   overtimeInputRef.current=liveInputStamp;
+  const liveRulesStamp = overtimeInputStamp({ weekStart, employees, cfg, timeOffReqs, history, afExclude, swingDesig, trainingBlocks });
   const manualInputIsCurrent=()=>{
     if(overtimeInputRef.current===liveInputStamp)return true;
     showAlert({title:"Schedule inputs changed",message:"The draft changed while this action was open. Review the current week and try the change again.",variant:"warning"});
@@ -12980,6 +13095,13 @@ function ScheduleGrid({ onOpenTestModal }) {
     const job={solver,baseStamp,paused:false,tick:null,useBest:null,lastProgressAt:0,activeMs:0,lastTickAt:Date.now(),improvedAtMs:0,improvements:0,
       firstOvertime:seed?.overtime ?? null,firstLevel:seed?[seed.supervisorExtensions ?? 0,seed.withoutDayOff ?? 0]:null};
     completeSearchRef.current=job;autoFillCancelRef.current=false;setAutoFillRunning(true);
+    const summarize=w=>{
+      const q=scheduleQuality(w,accountingRoster,cfg,{empTimeOffDays,ptoHoursByEmployee,empPatterns:boundaryPatterns(history,weekStart,empPatterns),fairnessHistory});
+      return {quality:q,gaps:q[QUALITY.coverage],shortfall:q[QUALITY.shortfall],supervisorExtensions:q[QUALITY.supervisorExtensions],withoutDayOff:q[QUALITY.noDayOff],overtime:q[QUALITY.overtime]};
+    };
+    job.foundCount=0;
+    setFoundWeeks({rulesStamp:liveRulesStamp,roster:accountingRoster,appliedId:null,
+      weeks:fallback?[{id:'autofill',label:"Autofill's week",foundAtMs:0,summary:summarize(fallback),week:fallback}]:[]});
     const progress=(result,extra={})=>setAutoFillProgress({...result,solution:undefined,engine:'complete',activeMs:job.activeMs,improvedAtMs:job.improvedAtMs,
       firstOvertime:job.firstOvertime,fallbackOvertime:fallback?.quality?.[QUALITY.overtime] ?? null,fallbackWithoutDayOff:fallback?.quality?.[QUALITY.noDayOff] ?? null,
       fallbackSupervisorExtensions:fallback?.quality?.[QUALITY.supervisorExtensions] ?? null,
@@ -12997,10 +13119,10 @@ function ScheduleGrid({ onOpenTestModal }) {
       const proposed=result.solution;
       if(proposed) {
         const errors=validateSchedule(proposed.ns,proposed.autoExtShifts,accountingRoster,proposed.handoffs).filter(i=>i.level==='error');
-        if(!errors.length)return propose(proposed,result,{...extra,applied:'search'});
+        if(!errors.length){setFoundWeeks(f=>f && {...f,appliedId:'search-'+job.foundCount});return propose(proposed,result,{...extra,applied:'search'});}
         extra={...extra,status:'invalid',reasons:['The independent schedule validator rejected the candidate.',...errors.map(i=>i.msg)]};
       }
-      if(fallback)return propose(fallback,result,{...extra,applied:'autofill',fallbackErrors:fallback.errors || 0});
+      if(fallback){setFoundWeeks(f=>f && {...f,appliedId:'autofill'});return propose(fallback,result,{...extra,applied:'autofill',fallbackErrors:fallback.errors || 0});}
       progress(result,extra);
     };
     job.useBest=()=>{
@@ -13017,6 +13139,12 @@ function ScheduleGrid({ onOpenTestModal }) {
       const now=Date.now();job.activeMs+=now-job.lastTickAt;job.lastTickAt=now;
       if(autoFillCancelRef.current){job.paused=true;setAutoFillRunning(false);progress(solver.snapshot(),{status:'paused'});return;}
       const result=solver.advance({maxSteps:150,timeSliceMs:12});
+      const fresh=solver.foundWeeks?.(job.foundCount) || [];
+      if(fresh.length) {
+        const first=job.foundCount;job.foundCount+=fresh.length;
+        setFoundWeeks(f=>f && {...f,weeks:[...f.weeks,...fresh.map((w,i)=>({id:'search-'+(first+i+1),label:'Search week '+(first+i+1),
+          foundAtMs:job.activeMs,summary:summarize(w.solution),week:w.solution}))]});
+      }
       const found=result.optimization?.improvements || 0;
       if(found>job.improvements) {
         job.improvements=found;job.improvedAtMs=job.activeMs;job.lastProgressAt=0;
@@ -13036,6 +13164,24 @@ function ScheduleGrid({ onOpenTestModal }) {
     };
     progress(solver.snapshot());setTimeout(job.tick,0);
   };
+  // Apply one of the found weeks. A running search stops first. The week goes
+  // through the same overtime approval and hard-rule commit checks as any
+  // proposal, against the current draft.
+  const applyFoundWeek = entry => {
+    if (isReadOnly || pendingProposal || !foundWeeks || foundWeeks.rulesStamp !== liveRulesStamp) return;
+    const job = completeSearchRef.current;
+    if (job) {
+      job.solver.cancel(); completeSearchRef.current = null; autoFillCancelRef.current = false; setAutoFillRunning(false);
+      setAutoFillProgress(p => p && ({ ...p, status: 'cancelled', stopReason: 'user' }));
+    }
+    setAutoFillProgress(p => p && ({ ...p, applied: 'picked', pickedLabel: entry.label }));
+    const w = entry.week, roster = foundWeeks.roster;
+    const reviewItems = overtimeReviewItems(roster, { schedule, extShifts, handoffs }, w, cfg, ptoHoursByEmployee);
+    const proposal = makeOvertimeProposal({ ...w, reviewItems }, overtimeInputRef.current);
+    setFoundWeeks(f => f && { ...f, appliedId: entry.id });
+    setPreviewWeek(null);
+    if (reviewItems.length) setPendingProposal(proposal); else commitScheduleProposal(proposal);
+  };
   const resumeCompleteSearch = () => {
     const job=completeSearchRef.current;if(!job?.paused || isReadOnly || pendingProposal || autoFillRunning || !generationInputsReady)return;
     job.paused=false;job.lastTickAt=Date.now();autoFillCancelRef.current=false;setAutoFillRunning(true);setTimeout(job.tick,0);
@@ -13050,6 +13196,7 @@ function ScheduleGrid({ onOpenTestModal }) {
     if(isReadOnly || autoFillRunning || pendingProposal || !generationInputsReady) return;
     completeSearchRef.current?.solver.cancel();completeSearchRef.current=null;
     const runBaseStamp = overtimeInputRef.current;
+    setFoundWeeks(null); setPreviewWeek(null);
     const allSource = empOverride || employees;
     const excludeSet = new Set(afExclude || []);
     const source = allSource.filter(e => !excludeSet.has(e.id));
@@ -14337,7 +14484,13 @@ function ScheduleGrid({ onOpenTestModal }) {
         {currentPublished ? `Published snapshot matches this draft — ${currentPublished.publishedAt}` : "DRAFT — not currently published"}
       </p>}
       {autoFillProgress?.engine==='complete' && <SearchProgressPanel progress={autoFillProgress} onPause={()=>{autoFillCancelRef.current=true;}}
-        onResume={resumeCompleteSearch} onUseBest={()=>completeSearchRef.current?.useBest?.()} onCancel={cancelCompleteSearch}/>}
+        onResume={resumeCompleteSearch} onUseBest={()=>completeSearchRef.current?.useBest?.()} onCancel={cancelCompleteSearch}
+        weeks={foundWeeks && foundWeeks.rulesStamp === liveRulesStamp ? foundWeeks.weeks : null} weeksStale={!!foundWeeks && foundWeeks.rulesStamp !== liveRulesStamp}
+        appliedId={foundWeeks?.appliedId} onView={setPreviewWeek} onUse={applyFoundWeek} pickDisabled={isReadOnly || !!pendingProposal}/>}
+      {previewWeek != null && foundWeeks?.weeks[previewWeek] && foundWeeks.rulesStamp === liveRulesStamp &&
+        <WeekPreviewModal entries={foundWeeks.weeks} index={previewWeek} onIndex={setPreviewWeek} onClose={()=>setPreviewWeek(null)}
+          onUse={applyFoundWeek} appliedId={foundWeeks.appliedId} pickDisabled={isReadOnly || !!pendingProposal}
+          weekStart={weekStart} employees={foundWeeks.roster} trainingBlocks={trainingBlocks || []} timeOffReqs={timeOffReqs || []}/>}
       {!isReadOnly && <WeeklyAccountingPanel/>}
       {autoFillProgress?.done && autoFillProgress.engine!=="complete" && <p style={{fontSize:12,color:"var(--ss-text-dim)"}}>
         Last autofill search: {autoFillProgress.stopReason === "optimal_candidate" ? "a complete week at the lowest possible overtime was found; any overtime still requires approval." :
