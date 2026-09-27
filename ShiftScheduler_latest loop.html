@@ -2815,8 +2815,7 @@ function scheduleExportDutyLabel(duty) {
   if (length === 8 && [6, 14, 22].includes(start)) return String([6, 14, 22].indexOf(start) + 1);
   if (length === 16 && start === 6) return '1+2';
   if (length === 16 && start === 14) return '2+3';
-  const extraDays = Math.floor(duty.end / 24) - Math.floor(duty.start / 24);
-  return `${scheduleExportClock(duty.start)}–${scheduleExportClock(duty.end)}${extraDays ? ` (+${extraDays}d)` : ''}`;
+  return `${scheduleExportClock(duty.start)}–${scheduleExportClock(duty.end)}`;
 }
 function buildScheduleExportModel(input, generatedOn = localISODate(new Date())) {
   const {employees = [], schedule = {}, extShifts = [], handoffs = [], trainingBlocks = [], timeOffReqs = [], weekStart} = input;

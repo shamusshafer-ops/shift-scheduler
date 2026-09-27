@@ -13,7 +13,7 @@ const text = (m,day,id='a') => person(m,id).cells[DAYS.indexOf(day)].value;
 
 test('standard codes describe actual hours, including doubles and unusual early arrivals', () => {
   for (const [start,end,code] of [[6,14,'1'],[14,22,'2'],[22,30,'3'],[6,18,'12A'],[18,30,'12P'],
-    [6,22,'1+2'],[14,30,'2+3'],[2,14,'2A–2P'],[10,22,'10A–10P'],[22,34,'10P–10A (+1d)'],[5.5,14,'5:30A–2P']]) {
+    [6,22,'1+2'],[14,30,'2+3'],[2,14,'2A–2P'],[10,22,'10A–10P'],[22,34,'10P–10A'],[5.5,14,'5:30A–2P']]) {
     assert.equal(label({start,end}),code);
   }
 });
