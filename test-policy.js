@@ -236,3 +236,23 @@ test("a handoff that works a swing's hours requires that swing to be selected", 
   // 0600–1800 is a 12-hour day, not a swing.
   assert(!types(check(emp(), s, {}, options({ handoffs: [late] }))).includes("swing_eligibility"));
 });
+
+test("a supervisor's early arrival for Friday's third shift is Saturday work, not a weekday duty", () => {
+  const sup = emp({ qualifications: ["Supervisor", "Scale", "Guard"], swingEligible: ["swing-2a-2p"] });
+  const early = day => ({ day, employeeId: "e", type: "early-arrival", sourceShiftId: "first", targetShiftId: "third", position: "Scale", hours: 4 });
+  // Friday night's 02:00–06:00 tail joined to Saturday first = a weekend 2A–2P.
+  assert(!types(check(sup, { Saturday__first: [a("e", "Scale")] }, {}, options({ handoffs: [early("Friday")] }))).includes("supervisor_slot"));
+  // Thursday night's tail falls on Friday morning, when the supervisor must supervise.
+  assert(types(check(sup, { Friday__first: [a("e", "Scale")] }, {}, options({ handoffs: [early("Thursday")] }))).includes("supervisor_slot"));
+});
+
+test("a weekday supervisor may stay 14:00–18:00 as regular staff after supervising, and nothing else", () => {
+  const sup = emp({ qualifications: ["Supervisor", "Medical", "Guard"], ext12hPref: "day" });
+  const late = position => ({ day: "Monday", employeeId: "e", type: "late-stay", sourceShiftId: "first", targetShiftId: "second", position, hours: 4 });
+  const s = { Monday__first: [a("e", "Supervisor")] };
+  assert.deepEqual(types(check(sup, s, {}, options({ handoffs: [late("Medical")] }))), []);
+  assert(types(check(sup, s, {}, options({ handoffs: [late("Supervisor")] }))).includes("supervisor_slot"));
+  assert(types(check(sup, { ...s, Monday__second: [a("e", "Medical")] })).includes("supervisor_slot"), "a full second shift is still not allowed");
+  assert.equal(core.supervisorExtensions([sup], [late("Medical")]), 1);
+  assert.equal(core.supervisorExtensions([emp({ qualifications: ["Medical"] })], [late("Medical")]), 0, "only supervisors are counted");
+});

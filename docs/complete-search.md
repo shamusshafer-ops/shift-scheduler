@@ -1,6 +1,6 @@
 # Complete schedule search
 
-Autofill no longer treats the fast search's attempt or plateau limit as the end of schedule generation. If that search leaves an incomplete candidate, it hands off to a resumable, exhaustive feasibility search. The **Complete search** button starts that search directly.
+Autofill no longer treats the fast search's first complete week, or its attempt or plateau limit, as the end of schedule generation. It hands off to a resumable, exhaustive search that looks for the complete week with the **least total overtime**. When the fast search's week is complete, the search only looks for weeks with strictly less overtime than it. The **Complete search** button starts that search directly.
 
 The implementation stays in the single HTML application. It adds no server, external solver package, account, or transmission of employee data.
 
@@ -8,13 +8,28 @@ The implementation stays in the single HTML application. It adds no server, exte
 
 1. Set the week, roster, leave, rules, locks and autofill exclusions as usual. Wait for saves to finish.
 2. Use **AUTOFILL** for the fast search followed automatically by complete search when necessary, or use **Complete search** directly.
-3. During complete search, **Pause** retains the current search frontier. **Resume complete search** continues that same search. Cancel ends it without a feasibility conclusion.
-4. A found candidate goes through the existing independent validator and proposal commit path. Overtime is staged for manager approval; the solver cannot approve it or publish a week.
-5. Publish only through the existing publication review, including prior-week verification and saved approvals for that exact schedule.
+3. During the search, a progress panel shows the best week so far, the overtime floor (see below), how much of the gap between the first complete week and the floor has been closed, elapsed search time, combinations checked and time since the last improvement. **Pause** retains the current search frontier and **Resume** continues that same search. **Use best now** stops the search at any time and applies the best week found so far (autofill's week if the search has not beaten it yet). **Cancel search** ends it without applying anything.
+4. The search applies its best week on its own when it finishes, or after 5 minutes of search time (paused time excluded) without finding a better week.
+5. A found candidate goes through the existing independent validator and proposal commit path. Overtime is staged for manager approval; the solver cannot approve it or publish a week.
+6. Publish only through the existing publication review, including prior-week verification and saved approvals for that exact schedule.
 
 The complete search tries schedules within 40 credited hours per employee first. If all those combinations fail, it searches reviewable overtime combinations for employees whose policy allows overtime. No OT remains absolute in both phases. PTO counts toward the ceiling and every full-time employee's 40-hour obligation. Excluded employees remain in the accounting roster, and their existing duties stay fixed.
 
-The first complete candidate is not necessarily the least expensive or fairest schedule. Candidate ordering favors less added overtime, then stated preferences and fewer added hours. A final cleanup removes duties that can be removed while preserving all hard rules, coverage, full-time hours, exclusions and locks. This is not proof of globally minimal overtime or optimal preferences.
+## Priorities and optimization
+
+Weeks are ranked in this order (`QUALITY` / `scheduleQuality`): no hard-rule violations; every position filled; every full-timer at 40 credited hours; **as few supervisor 12-hour weekdays as possible**; **everyone has at least one day off**; the least total overtime; then preferences.
+
+Monday to Friday the supervisor works 06:00–14:00 in the dedicated supervisor position only. As a last resort he may stay until 18:00 (a 4-hour late stay) as regular second-shift staff in a role he is qualified for, such as Medic. Because it ranks right after complete coverage, it is used only when no other combination completes the week; autofill's heuristic passes never add it. His profile must allow 12 continuous hours (a 12-hour preference), and any other weekday duty or handoff is still a rule violation. A day off is a day of the Sunday–Saturday week on which the employee starts no duty (a 22:00 duty belongs to the day it starts, as for the consecutive-days rule). The issue list warns about anyone without one. Unlike **Max consecutive any shifts = 6**, this is not a hard rule: a complete week always wins over a week with gaps.
+
+The search is branch and bound. Each complete week it finds (after the usual cleanup that removes duties not needed for any hard rule, coverage, full-time hours, exclusions or locks) becomes the incumbent, and the search continues for a strictly better week: fewer supervisor 12-hour weekdays, then more people with a day off, then less total overtime. Total overtime is the sum of every employee's credited hours above 40, the same measure autofill ranks by.
+
+A branch is pruned when it already has more seven-day weeks than the incumbent, or the same number and its overtime so far (which only grows as work is added) plus the uncovered hours that cannot fit in anyone's remaining room under 40 already reaches the incumbent's overtime. When the search exhausts its tree, no week in the duty menu beats the incumbent, and the panel reports it.
+
+Depth-first search tends to stay deep in its first subtree, so the optimizing search restarts on a Luby schedule (base 600 nodes), breaking ties in a new random order each time and keeping the incumbent. Restart lengths grow without bound, so a restart eventually exhausts the tree and the proof above still holds.
+
+The **overtime floor** shown in the panel (`overtimeLowerBound`) is a quick lower bound: the person-hours the week requires minus every employee's generous capacity under 40 credited hours. It ignores rest, streak and pairing rules, so the real minimum is often higher; it is a floor, not a target. A week that reaches it is proven optimal immediately.
+
+Only overtime is optimized. Among weeks with equal overtime, candidate ordering still favors stated preferences and fewer added hours, but this is not an optimal preference balance.
 
 ## What “complete” means
 
@@ -38,6 +53,9 @@ The solver may rearrange any unlocked duty belonging to an included employee. It
 | Searching | Work remains in the frontier; there is no infeasibility conclusion. |
 | Paused | The frontier is retained in memory and can be resumed with unchanged inputs. |
 | Complete candidate found | The supported staffing and employee-hour constraints have a solution. Approval and publication review still apply. |
+| Finished — least overtime possible | The search exhausted its tree; no week in the duty menu has less overtime than the applied one. |
+| Finished — autofill's week already has the least overtime | The search found nothing with less overtime than autofill's complete week, so that week was applied. |
+| Stopped — best week applied | You chose **Use best now**, or 5 minutes passed without a better week. Less overtime may still be possible. |
 | No feasible combination in the current duty menu | Every remaining branch was exhausted or rejected by a necessary constraint/bound. |
 | Input or validation error | Data could not be modeled or a candidate failed the independent validator; correct the input or investigate the error. |
 | Cancelled | No feasibility conclusion was reached. |
@@ -76,6 +94,6 @@ node --test test-coverage.js test-policy.js test-pto.js test-overtime.js test-av
 
 Exhaustive search can still take substantial time and memory on difficult inputs. This change removes arbitrary termination of feasibility search; it does not make every scheduling problem quick. Cancellation, reload, browser termination or resource exhaustion does not establish infeasibility.
 
-The small **Repair current draft** and **Improve preferences** actions remain local improvement tools with limited budgets. Complete search handles feasibility when those local moves are insufficient. Global overtime minimization, global preference optimization, persistent checkpoints and a solver service for very large rosters are separate enhancements.
+The small **Repair current draft** and **Improve preferences** actions remain local improvement tools with limited budgets. Complete search handles feasibility and overtime when those local moves are insufficient. Global preference optimization, persistent checkpoints and a solver service for very large rosters are separate enhancements. On hard rosters the overtime search may not finish; the best week so far is always available.
 
 Rendered browser interaction and print layout remain unverified in this environment. Browser acceptance is still required before merging the draft PR for operational use.

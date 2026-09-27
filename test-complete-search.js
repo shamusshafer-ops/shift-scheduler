@@ -150,11 +150,20 @@ test('production complete candidates use ordinary proposal commit and overtime s
 test('production infeasibility leaves the current draft untouched',()=>{
  const h=uiHarness({status:'infeasible',phase:'regular-hours',solution:null,reasons:['exhausted']});h.ui.startCompleteSearch();h.queue.shift()();assert(!h.events.some(e=>['commit','pending'].includes(e[0])));assert.equal(h.events.at(-1)[1].status,'infeasible');
 });
+function handOff(best,complete,attemptNum=10) {
+ const start=html.indexOf('      if (complete || attemptNum >= MAX_ATTEMPTS || plateauCount >= PLATEAU_LIMIT) {'),end=html.indexOf('      setTimeout(tick, 0);',start);const calls=[];
+ new Function('complete','q','QUALITY','attemptNum','MAX_ATTEMPTS','plateauCount','PLATEAU_LIMIT','proposalIsCurrent','runBaseStamp','startCompleteSearch','accountingRoster','discardStaleProposal','setAutoFillRunning','best',html.slice(start,end))(complete,best.quality,c.QUALITY,attemptNum,10,attemptNum>=10?3:0,3,()=>true,'base',(...args)=>calls.push(args),[],()=>assert.fail('stale'),()=>{},best);
+ return calls;
+}
 test('a heuristic plateau hands off to complete search without committing the incomplete candidate',()=>{
- const start=html.indexOf('      if (attemptNum >= MAX_ATTEMPTS || plateauCount >= PLATEAU_LIMIT) {'),end=html.indexOf('      setTimeout(tick, 0);',start);const calls=[];const best={ns:{},errors:2};
- new Function('attemptNum','MAX_ATTEMPTS','plateauCount','PLATEAU_LIMIT','proposalIsCurrent','runBaseStamp','startCompleteSearch','accountingRoster','discardStaleProposal','setAutoFillRunning','best',html.slice(start,end))(10,10,3,3,()=>true,'base',(...args)=>calls.push(args),[],()=>assert.fail('stale'),()=>{},best);
+ const best={ns:{},errors:2,quality:[0,8,8,0,0,0,0,0,0]},calls=handOff(best,false);
  assert.equal(calls.length,1);
  assert.equal(calls[0][1],best,'the best heuristic draft is handed over as the fallback, not committed here');
+ assert.equal(calls[0][2],undefined,'an incomplete draft does not bound the overtime search');
+});
+test('a complete autofill week hands off to the search, bounded by its own days off and overtime',()=>{
+ const best={ns:{},errors:0,quality:[0,0,0,0,0,2,104,24,0]},calls=handOff(best,true,1);
+ assert.equal(calls.length,1);assert.equal(calls[0][1],best);assert.deepEqual(calls[0][2],{supervisorExtensions:0,withoutDayOff:2,overtime:104});
 });
 const fallbackDraft=()=>({ns:{Sunday__second:oneDay(['a','b','c']).map(v=>a(v.id,'Guard',false))},autoExtShifts:[],handoffs:[],usedPatterns:{},errors:1});
 test('an infeasible complete search applies the heuristic fallback draft instead of leaving the grid empty',()=>{
@@ -163,7 +172,7 @@ test('an infeasible complete search applies the heuristic fallback draft instead
  const commit=h.events.find(e=>e[0]==='commit');
  assert(commit,'fallback committed');assert.deepEqual(commit[1].ns,fb.ns);
  const last=h.events.filter(e=>e[0]==='progress').at(-1)[1];
- assert.equal(last.status,'infeasible');assert.equal(last.fallbackApplied,true);assert.equal(last.fallbackErrors,1);
+ assert.equal(last.status,'infeasible');assert.equal(last.applied,'autofill');assert.equal(last.fallbackErrors,1);
 });
 test('a fallback draft that needs overtime goes through the approval step, not straight to the grid',()=>{
  const fb=fallbackDraft();fb.ns=Object.fromEntries(c.DAYS.slice(0,6).map(day=>[day+'__second',[a('a','Guard',false)]]));
@@ -258,4 +267,82 @@ test('the relaxed review phase never overrides a No OT employee',()=>{
  const days=c.DAYS.slice(0,6),roster=[e('scale',{qualifications:['Scale'],overtimePref:'neutral'}),e('guard',{qualifications:['Guard'],overtimePref:'neutral'}),e('med',{qualifications:['Medical'],requiredShift:'second'})];
  const schedule=Object.fromEntries(days.map(day=>[day+'__second',[a('scale','Scale'),a('guard')]]));
  const i=input(roster,{schedule,targetSlots:days.map(d=>d+'__second'),cfg:{minRestHours:12,maxConsecutiveShifts:7,maxConsecutiveNights:7}}),r=solve(i);assert.equal(r.status,'infeasible');assert.equal(r.phase,'overtime-review');
+});
+// ── Overtime optimization (branch and bound) ────────────────────────────────
+function overtimeWeek() {
+ const i=fullWeek();i.employees=i.employees.filter(v=>!v.id.startsWith('third-1'));
+ for(const v of i.employees.filter(v=>v.id.startsWith('third-0'))){v.availableDaysOfWeek=c.DAYS;v.maxShiftsPerWeek=7;v.overtimePref='preferred';}
+ i.cfg.maxConsecutiveNights=7;i.cfg.maxConsecutiveShifts=7;return i;
+}
+const totalOvertime=(i,s)=>i.employees.reduce((n,v)=>n+Math.max(0,c.weeklyEmployeeHours(v,s.ns,s.autoExtShifts,s.handoffs).creditedHours-40),0);
+test('optimizing finds less overtime than the first complete week, proves it, and its week passes policy',()=>{
+ const i=overtimeWeek(),plain=solve(i),best=finish(c.createCompleteScheduleSearch({...i,optimizeOvertime:true}),60000);
+ assert.equal(best.status,'feasible');assert(best.optimization.proven);
+ // The first complete week on this fixture carries 32h; the minimum is 8h.
+ assert(totalOvertime(i,best.solution)<totalOvertime(i,plain.solution));
+ assert.equal(best.optimization.bestOvertime,totalOvertime(i,best.solution));
+ assert.deepEqual(policy(best,i),[]);
+ const again=finish(c.createCompleteScheduleSearch({...i,optimizeOvertime:true,overtimeBudget:best.optimization.bestOvertime,withoutDayOffBudget:best.optimization.bestWithoutDayOff}),60000);
+ assert.equal(again.status,'no-better','a proven minimum cannot be beaten');assert.equal(again.solution,null);
+});
+test('the overtime floor counts every coverage hour and each person\'s room under 40',()=>{
+ const guards=Array.from({length:12},(_,n)=>e('g'+n,{employmentType:'full-time',qualifications:['Guard']}));
+ assert.equal(c.overtimeLowerBound(guards),544-12*40);
+ const pt=e('pt',{requiredShift:'second',maxShiftsPerWeek:2,qualifications:['Guard']});
+ assert.equal(c.overtimeLowerBound([...guards.slice(0,11),pt]),544-11*40-16,'a second-shift-only part-timer without swings adds 16h');
+ assert.equal(c.overtimeLowerBound(guards,{ptoHoursByEmployee:{g0:16}}),544-11*40-24,'PTO uses up room under 40');
+});
+const incumbent=()=>({ns:{Sunday__second:oneDay(['a','b','c']).map(v=>a(v.id,'Guard',false))},autoExtShifts:[],handoffs:[],usedPatterns:{}});
+test('"Use best now" applies the search\'s best week, or autofill\'s draft before one exists',()=>{
+ const found=incumbent(),h=uiHarness({status:'searching',phase:'overtime-review',nodes:9,reasons:[],solution:found,optimization:{bestOvertime:0,improvements:1,floor:0}});
+ h.ui.startCompleteSearch(undefined,fallbackDraft());h.queue.shift()();h.ref.current.useBest();
+ const commit=h.events.find(e=>e[0]==='commit');assert.deepEqual(commit[1].ns,found.ns);assert.equal(h.ref.current,null);
+ assert.equal(h.events.filter(e=>e[0]==='progress').at(-1)[1].applied,'search');
+ const early=uiHarness(),fb=fallbackDraft();early.ui.startCompleteSearch(undefined,fb);early.ref.current.useBest();
+ assert.deepEqual(early.events.find(e=>e[0]==='commit')[1].ns,fb.ns);
+ while(early.queue.length)early.queue.shift()();assert.equal(early.advances,0,'the search stops once a week is applied');
+});
+test('the search applies its best week after the idle limit without improvement',()=>{
+ const found=incumbent(),h=uiHarness({status:'searching',phase:'overtime-review',nodes:9,reasons:[],solution:found,optimization:{bestOvertime:0,improvements:0,floor:0}});
+ h.ui.startCompleteSearch(undefined,fallbackDraft());h.queue.shift()();assert(!h.events.some(e=>e[0]==='commit'));
+ h.ref.current.improvedAtMs=h.ref.current.activeMs-c.SEARCH_IDLE_LIMIT_MS;h.queue.shift()();
+ assert.deepEqual(h.events.find(e=>e[0]==='commit')[1].ns,found.ns);assert.equal(h.events.filter(e=>e[0]==='progress').at(-1)[1].stopReason,'idle');
+});
+test('when no week beats autofill\'s overtime, autofill\'s week is applied',()=>{
+ const fb=fallbackDraft();fb.errors=0;const h=uiHarness({status:'no-better',phase:'overtime-review',nodes:9,reasons:['none'],solution:null,optimization:{bestOvertime:null,seedOvertime:8,improvements:0,floor:0}});
+ h.ui.startCompleteSearch(undefined,fb,8);h.queue.shift()();
+ assert.deepEqual(h.events.find(e=>e[0]==='commit')[1].ns,fb.ns);assert.equal(h.events.filter(e=>e[0]==='progress').at(-1)[1].applied,'autofill');
+});
+test('a day off for everyone outranks overtime savings in the search',()=>{
+ const i=overtimeWeek(),plain=solve(i),w=r=>c.employeesWithoutDayOff(i.employees,r.solution.ns,r.solution.autoExtShifts,r.solution.handoffs).length;
+ assert.equal(w(plain),1,'the first complete week has someone working all seven days');
+ // Seed with a (hypothetical) week that has no overtime but one person without a
+ // day off: a week where everyone gets a day off must still count as better.
+ const r=finish(c.createCompleteScheduleSearch({...i,optimizeOvertime:true,overtimeBudget:0,withoutDayOffBudget:1}),60000);
+ assert.equal(r.status,'feasible');assert.equal(w(r),0);assert.equal(r.optimization.bestWithoutDayOff,0);
+ assert(r.optimization.bestOvertime>0,'the day-off week is accepted despite more overtime than the seed');
+});
+test('the ranking and the issue list count seven-day weeks by the day each duty starts',()=>{
+ const roster=[e('x')],ns=Object.fromEntries(c.DAYS.map(day=>[day+'__third',[a('x','Guard',false)]]));
+ assert.deepEqual(c.employeesWithoutDayOff(roster,ns).map(v=>v.id),['x']);
+ assert.equal(c.scheduleQuality({ns},roster)[c.QUALITY.noDayOff],1);
+ delete ns.Wednesday__third;assert.equal(c.employeesWithoutDayOff(roster,ns).length,0,'Tuesday night ends Wednesday morning, but Wednesday is still a day off');
+ assert(html.includes('has no day off this week'),'the issue list warns about it');
+});
+test('the supervisor stays late only when second shift cannot be completed without him',()=>{
+ const p=(id,extra)=>e(id,{qualifications:['Guard'],availableDaysOfWeek:['Monday'],...extra});
+ const roster=[p('sup',{qualifications:['Supervisor','Medical','Guard'],requiredShift:'first',canWorkOtherShifts:true,ext12hPref:'day'}),
+  p('f1',{qualifications:['Scale','Medical'],requiredShift:'first'}),p('f2',{requiredShift:'first'}),p('f3',{requiredShift:'first'}),
+  p('g1',{qualifications:['Scale','Guard'],requiredShift:'second'}),p('g2',{requiredShift:'second'}),
+  // The only other Medic is needed on third shift and works one duty a week, so he
+  // can cover second shift from 18:00 (early arrival) but not from 14:00.
+  p('night',{qualifications:['Medical','Guard'],requiredShift:'third',canWorkOtherShifts:true,ext12hPref:'night',maxShiftsPerWeek:1}),
+  p('n2',{qualifications:['Scale','Guard'],requiredShift:'third'}),p('n3',{requiredShift:'third'})];
+ const i=input(roster,{targetSlots:['Monday__first','Monday__second','Monday__third'],cfg:{minRestHours:8,maxConsecutiveShifts:5,maxConsecutiveNights:4}});
+ const r=finish(c.createCompleteScheduleSearch({...i,optimizeOvertime:true}),60000);
+ assert.equal(r.status,'feasible');assert.equal(r.optimization.bestSupervisorExtensions,1,'no other Medic can cover 14:00-18:00');
+ assert(r.solution.handoffs.some(h=>h.employeeId==='sup' && c.isSupervisorExtension(h)));assert.deepEqual(policy(r,i),[]);
+ const withMedic=[...roster,p('m2',{qualifications:['Medical','Guard'],requiredShift:'second'})];
+ const r2=finish(c.createCompleteScheduleSearch({...i,employees:withMedic,optimizeOvertime:true}),60000);
+ assert.equal(r2.status,'feasible');assert.equal(r2.optimization.bestSupervisorExtensions,0,'a second-shift Medic is used instead');
 });

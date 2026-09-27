@@ -19,10 +19,14 @@ function persistence({asyncStorage=true,raw=null,read=async()=>({value:raw}),wri
  const result=hook('key',[]),cleanups=effects.map(f=>f());return {states,result,cleanups,refs};
 }
 
-test('a supervisor handoff cannot supply weekday regular coverage',()=>{
+test('a weekday supervisor handoff supplies regular coverage only as the 14:00-18:00 late stay',()=>{
  const e=employee('s',{qualifications:['Supervisor','Medical'],canWorkOtherShifts:true});
- const issues=c.employeePolicyIssues(e,{Friday__first:[assignment('s','Supervisor')]},{},{handoffs:[handoff({employeeId:'s',day:'Friday',sourceShiftId:'first',targetShiftId:'second',position:'Medical'})]});
- assert(issues.some(i=>i.type==='supervisor_slot'));
+ // Last resort: after supervising 06:00-14:00 he may stay until 18:00 as regular staff.
+ const late=c.employeePolicyIssues(e,{Friday__first:[assignment('s','Supervisor')]},{},{handoffs:[handoff({employeeId:'s',day:'Friday',sourceShiftId:'first',targetShiftId:'second',position:'Medical'})]});
+ assert(!late.some(i=>i.type==='supervisor_slot'));
+ // Any other weekday handoff (here arriving early for first shift) still conflicts with supervising.
+ const early=c.employeePolicyIssues(e,{Thursday__third:[assignment('s','Medical')]},{},{handoffs:[handoff({employeeId:'s',day:'Friday',sourceShiftId:'third',targetShiftId:'first',type:'late-stay',position:'Medical'})]});
+ assert(early.some(i=>i.type==='supervisor_slot'));
 });
 test('a handoff onto a sixth day counts against working-day and weekend caps',()=>{
  const schedule=Object.fromEntries(c.DAYS.slice(1,6).map(d=>[d+'__third',[assignment()]]));

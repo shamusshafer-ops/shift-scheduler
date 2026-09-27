@@ -123,8 +123,8 @@ test('preference search limits are reported without changing the draft',()=>{
  assert(result.preferenceInfo.limited);assert.equal(result.preferenceInfo.transactions,0);assert.deepEqual(result.ns,s.schedule);
 });
 test('hard rules, coverage and full-time hours outrank any historical preference cost',()=>{
- assert(c.compareScheduleQuality([0,0,0,0,0,10000,0],[0,8,0,0,0,0,0])<0);
- assert(c.compareScheduleQuality([0,0,0,0,0,10000,0],[0,0,0,8,0,0,0])<0);
+ assert(c.compareScheduleQuality([0,0,0,0,0,0,0,10000,0],[0,8,0,0,0,0,0,0,0])<0);
+ assert(c.compareScheduleQuality([0,0,0,0,0,0,0,10000,0],[0,0,0,8,0,0,0,0,0])<0);
  const {s,ctx}=fairnessFixture();ctx.source[1].qualifications=['Scale'];
  const result=improveSchedulePreferences(proposal(s),ctx);assert.equal(result.preferenceInfo.transactions,0);
 });

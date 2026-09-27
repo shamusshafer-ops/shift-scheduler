@@ -3,7 +3,7 @@
 // Fixture: anonymized 15-person roster plus two intermediate drafts captured from
 // the browser autofill pipeline (see fixtures/autofill-real-roster-drafts.json).
 const test=require('node:test'),assert=require('node:assert/strict'),fs=require('node:fs'),path=require('node:path'),core=require('./load-core');
-const {repairScheduleCompletion,repairScheduleGaps,scheduleQuality,compareScheduleQuality,validateCoverage,validateAssignmentPolicy,weeklyEmployeeHours,cellKey}=core;
+const {QUALITY,repairScheduleCompletion,repairScheduleGaps,scheduleQuality,compareScheduleQuality,validateCoverage,validateAssignmentPolicy,weeklyEmployeeHours,cellKey}=core;
 const fx=JSON.parse(fs.readFileSync(path.join(__dirname,'fixtures/autofill-real-roster-drafts.json'),'utf8'));
 const roster=fx.roster,cfg=fx.cfg;
 const clone=v=>JSON.parse(JSON.stringify(v));
@@ -17,7 +17,7 @@ test('fixture: the captured draft is fully covered but leaves a full-timer short
  const d=draft(fx.completionDraft),q=scheduleQuality(d,roster,cfg,options(d));
  assert.equal(q[1],0,'no coverage gap hours');
  assert(q[3]>0,'someone is short of 40h');
- assert(q[4]>0,'others are over 40h');
+ assert(q[QUALITY.overtime]>0,'others are over 40h');
  assert(validateAssignmentPolicy(d.ns,roster,cfg,options(d)).some(i=>i.type==='overstaffed'),'Friday first is overstaffed by a handoff');
 });
 
@@ -29,7 +29,7 @@ test('completion repair closes the weekly-hours shortfall within its default bud
  assert.equal(shortfall(out),0,'every full-timer reaches 40h');
  assert(after[0]<=before[0],'no new hard-rule violations');
  assert.equal(after[1],0,'coverage is still complete');
- assert(after[4]<before[4],'overtime goes down because the short employee takes over overtime hours');
+ assert(after[QUALITY.overtime]<before[QUALITY.overtime],'overtime goes down because the short employee takes over overtime hours');
 });
 
 test('completion repair tries one-step swaps on every target before multi-step chains',()=>{

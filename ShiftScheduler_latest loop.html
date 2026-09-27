@@ -328,6 +328,7 @@ body{font-variant-numeric:tabular-nums}
 .ss-empty-icon{font-size:32px;margin-bottom:12px}
 
 /* ── Animations ───────────────────────────────────────────────────────── */
+@keyframes ss-search-sweep{from{transform:translateX(-100%)}to{transform:translateX(250%)}}
 @keyframes ss-dialog-in{from{opacity:0;transform:scale(0.96) translateY(8px)}to{opacity:1;transform:scale(1) translateY(0)}}
 </style>
 </head>
@@ -1190,6 +1191,17 @@ function getFatigueIssues(empId, schedule, cfg, employees, extShifts, handoffs =
       hours: i.type === "continuous_hours" ? empMaxConsec(emp) + i.amount : undefined, cap: empMaxConsec(emp) }));
 }
 
+// The weekday supervisor's only permitted extra work: a late stay from his
+// 06:00–14:00 supervisor shift into 14:00–18:00 as regular second-shift staff.
+function isSupervisorExtension(h) {
+  return h.type === "late-stay" && h.sourceShiftId === "first" && h.targetShiftId === "second" &&
+    h.position !== "Supervisor" && isWeekday(h.day);
+}
+function supervisorExtensions(employees, handoffs = []) {
+  const supervisors = new Set(employees.filter(e => (e.qualifications || []).includes("Supervisor")).map(e => e.id));
+  return handoffs.filter(h => supervisors.has(h.employeeId) && isSupervisorExtension(h)).length;
+}
+
 // Shared hard rules. Preferences are ranked elsewhere; they cannot waive these checks.
 function employeePolicyIssues(emp, schedule, cfg = {}, options = {}) {
   const { extShifts = [], handoffs = [], empTimeOffDays, empPatterns = {} } = options;
@@ -1225,9 +1237,16 @@ function employeePolicyIssues(emp, schedule, cfg = {}, options = {}) {
     const swingId = HANDOFF_SWING_IDS[h.sourceShiftId + ":" + h.type];
     if (swingId && !(emp.swingEligible || []).includes(swingId))
       add("swing_eligibility", `${h.type === "late-stay" ? "late stay" : "early arrival"} on ${h.day} works the ${EXT_PAIRS_BY_ID.get(swingId).label.split(" / ")[0]} swing, which is not selected`);
+    // The weekday test uses the calendar day the handoff's hours fall on: arriving
+    // early for Friday's third shift is 02:00–06:00 Saturday (a weekend 2A–2P).
+    const span = intervals.find(i => i.handoff === h);
+    const workDay = span ? DAYS[((Math.floor(span.start / 24) % 7) + 7) % 7] : h.day;
+    // Last resort (ranked by scheduleQuality): after supervising 06:00–14:00, a
+    // weekday supervisor may stay until 18:00 as regular second-shift staff.
     if ((h.position === "Supervisor" && !SUP_SLOT_DAY(h.day,h.targetShiftId)) ||
-        ((emp.qualifications || []).includes("Supervisor") && isWeekday(h.day) && (h.position !== "Supervisor" || h.targetShiftId !== "first")))
-      add("supervisor_slot", `weekday supervisor handoff must fill the separate first-shift supervisor position (${h.day})`);
+        ((emp.qualifications || []).includes("Supervisor") && isWeekday(workDay) && !isSupervisorExtension(h) &&
+          (h.position !== "Supervisor" || h.targetShiftId !== "first")))
+      add("supervisor_slot", `weekday supervisor handoff must fill the separate first-shift supervisor position (${workDay})`);
   }
   if (intervals.length && emp.inTraining) add("training", "trainee cannot fill an independent staffing position");
   for (const message of unavailableWindowErrors(emp.unavailableWindows)) add("availability_data", message);
@@ -2155,7 +2174,7 @@ function improveSchedulePreferences(input,context) {
         [b.key]:old[b.key].map(v=>v.employeeId===b.employeeId?{...v,employeeId:a.employeeId}:v)};
       const candidate={...result,ns};
       const score=scheduleQuality(candidate,accountingRoster,cfg,options,baseline);
-      if(compareScheduleQuality(score,oldScore)>=0 || score[5]>=oldScore[5]-1e-8) continue;
+      if(compareScheduleQuality(score,oldScore)>=0 || score[QUALITY.preferences]>=oldScore[QUALITY.preferences]-1e-8) continue;
       if(scheduleChangeIssues(old,ns,accountingRoster,cfg,options).length) continue;
       if(ALL_SLOTS.some(slot=>{
         const before=analyzeShiftCoverage(slot.day,slot.shiftId,old,accountingRoster,options.extShifts,options.handoffs);
@@ -2173,9 +2192,40 @@ function improveSchedulePreferences(input,context) {
     for(const [key,a] of Object.entries(result.ns)) for(const v of a) if(!(baseline[key] || []).some(n=>n.employeeId===v.employeeId))
       result.assignLog[key+'__'+v.employeeId]={phase:'Preference fairness',reason:'Qualified swap to reduce stated preference conflicts, weighted by prior published weeks'};
   }
-  result.preferenceInfo={nodes,transactions,limited,elapsedMs:Date.now()-started,weeks:fairnessHistory.weeks || [],before:beforeScore[5],after:scheduleQuality(result,accountingRoster,cfg,options,baseline)[5]};
+  result.preferenceInfo={nodes,transactions,limited,elapsedMs:Date.now()-started,weeks:fairnessHistory.weeks || [],before:beforeScore[QUALITY.preferences],after:scheduleQuality(result,accountingRoster,cfg,options,baseline)[QUALITY.preferences]};
   return result;
 }
+
+// Floor for total overtime. Coverage needs a fixed number of person-hours; what
+// the roster cannot supply within 40 credited hours each must be overtime. Each
+// person's capacity is deliberately generous (rest, streak and pairing rules are
+// ignored), so this is a true lower bound, never an estimate.
+function overtimeLowerBound(employees, options = {}) {
+  const {empTimeOffDays, ptoHoursByEmployee = {}} = options;
+  const required = ALL_SLOTS.reduce((n, s) => n + getSlotCount(s.day, s.shiftId) * SHIFT_HOURS, 0);
+  let room = 0;
+  for (const emp of employees) {
+    if (emp.inTraining) continue;
+    const slots = ALL_SLOTS.filter(({day, shiftId}) =>
+      !(emp.unavailableDays || []).includes(day) &&
+      !(emp.availableDaysOfWeek?.length && !emp.availableDaysOfWeek.includes(day)) &&
+      !empTimeOffDays?.has(emp.id + "__" + day) &&
+      !(emp.blockedShifts || []).includes(shiftId) &&
+      !(emp.requiredShift && emp.requiredShift !== shiftId && !canWorkOtherShifts(emp)));
+    const days = new Set(slots.map(s => s.day)).size;
+    const duties = Math.min(emp.willing16h ? slots.length : days, emp.maxShiftsPerWeek ?? Infinity);
+    // A handoff or 12-hour duty can add up to 4h to a working day. Second-shift
+    // extensions are swings, which need an opt-in; first/third ones do not.
+    const canExtend = emp.willing16h || emp.ext12hPref || (emp.swingEligible || []).length || slots.some(s => s.shiftId !== "second");
+    const hours = duties * SHIFT_HOURS + (canExtend ? Math.min(days, duties) * HANDOFF_HOURS : 0);
+    room += Math.min(hours, Math.max(0, FT_MIN_HOURS - (ptoHoursByEmployee[emp.id] || 0)));
+  }
+  return Math.max(0, required - room);
+}
+
+// The overtime search stops and applies its best week after this long (excluding
+// paused time) without finding a better one. "Use best now" can stop it sooner.
+const SEARCH_IDLE_LIMIT_MS = 5 * 60 * 1000;
 
 function buildLockedAutoFill(source,cfg,empTimeOffDays,empPatterns,extShifts,weeklyOptions) {
   const roster=weeklyOptions.roster || source,pto=weeklyOptions.ptoHoursByEmployee || {},handoffs=weeklyOptions.seedHandoffs || [];
@@ -2198,10 +2248,31 @@ function compareScheduleQuality(a, b) {
   }
   return 0;
 }
+// Days (0-6) on which an employee starts work this week: the same attribution
+// the consecutive-days rule uses (a 22:00 duty belongs to the day it starts).
+function employeeDutyDays(empId, intervals) {
+  const days = new Set();
+  for (const i of intervals) if (i.employeeId === empId) {
+    const day = i.source === "handoff" ? DAYS.indexOf(i.handoff.day) : Math.floor(i.start / 24);
+    if (day >= 0 && day < 7) days.add(day);
+  }
+  return days;
+}
+function employeesWithoutDayOff(employees, schedule, extShifts = [], handoffs = [], intervals) {
+  const spans = intervals || collectCoverageIntervals(schedule, extShifts, handoffs);
+  return employees.filter(e => employeeDutyDays(e.id, spans).size >= DAYS.length);
+}
+
+// Positions in the scheduleQuality vector, most important first. Comparison is
+// lexicographic: a complete week always beats one with gaps; the supervisor's
+// weekday 12-hour days are a last resort used only to complete the week; then
+// everyone getting a day off beats overtime savings; preferences break ties.
+const QUALITY = { hard: 0, coverage: 1, body: 2, shortfall: 3, supervisorExtensions: 4, noDayOff: 5, overtime: 6, preferences: 7, changes: 8 };
 function scheduleQuality(result, employees, cfg = {}, options = {}, baseline) {
   const ns=result.ns || result.schedule || {}, exts=result.autoExtShifts || [], handoffs=result.handoffs || [];
   const intervals=collectCoverageIntervals(ns,exts,handoffs);
   let body=0,roles=0,shortfall=0,overtime=0,preferences=0,changes=0;
+  const noDayOff=employeesWithoutDayOff(employees,ns,exts,handoffs,intervals).length,supervisorExtra=supervisorExtensions(employees,handoffs);
   for (const slot of ALL_SLOTS) {
     const c=analyzeShiftCoverage(slot.day,slot.shiftId,ns,employees,exts,handoffs,intervals);
     body+=c.bodyGapHours;roles+=c.roleGapHours;
@@ -2217,7 +2288,7 @@ function scheduleQuality(result, employees, cfg = {}, options = {}, baseline) {
     changes=[...before].filter(k=>!after.has(k)).length+[...after].filter(k=>!before.has(k)).length;
   }
   const hard=options.skipPolicy ? validateStaffing(ns,exts,handoffs,intervals).length : validateAssignmentPolicy(ns,employees,cfg,{...options,extShifts:exts,handoffs}).length;
-  return [hard,body+roles,body,shortfall,overtime,preferences,changes];
+  return [hard,body+roles,body,shortfall,supervisorExtra,noDayOff,overtime,preferences,changes];
 }
 
 // Bounded atomic repair: move a qualified employee, then backfill the vacated duty.
@@ -2406,6 +2477,24 @@ function completeSearchWorkUpperBound(spans,emp,cfg) {
 function createCompleteScheduleSearch(rawInput) {
   const input=JSON.parse(canonicalJSON(rawInput));
   let status='searching',phase='regular-hours',solution=null,reasons=[],nodes=0,steps=0,candidateCount=0;
+  // Optimization (branch and bound): each complete week found becomes the
+  // incumbent and the search continues for a better one. The objective is
+  // compared in order: supervisor weekday 12-hour days (last resort), people
+  // without a day off, total overtime. overtimeBudget (with withoutDayOffBudget
+  // and supervisorExtensionBudget, default 0) seeds the bound with a week found
+  // elsewhere, so only strictly better weeks count.
+  const optimize=rawInput.optimizeOvertime===true,seeded=optimize && Number.isFinite(rawInput.overtimeBudget);
+  const seedBound=seeded?[rawInput.supervisorExtensionBudget ?? 0,rawInput.withoutDayOffBudget ?? 0,rawInput.overtimeBudget]:null;
+  let bound=seedBound || [Infinity,Infinity,Infinity],incumbent=null,improvements=0,proven=false;
+  const lexLess=(a,b)=>{for(let i=0;i<a.length;i++){if(a[i]<b[i]-1e-8)return true;if(a[i]>b[i]+1e-8)return false;}return false;};
+  // Restarts (optimizing only): depth-first search spends its time deep in the
+  // first subtree and rarely revisits early choices. Each restart gets a node
+  // budget, breaks ties in a different random order and keeps the incumbent, so
+  // its bound prunes harder. Budgets follow the Luby sequence, which grows
+  // without bound, so one restart eventually exhausts the tree, which still
+  // proves the incumbent is the best.
+  let restarts=0,restartNodes=0,nodeLimit=Infinity,aborted=false,random=()=>0;
+  const RESTART_BASE_NODES=Number.isFinite(rawInput.restartBaseNodes)?rawInput.restartBaseNodes:600;
   const scope={dutyMenu:'8-hour regular duties, eligible 12-hour halves and 4-hour adjoining handoffs; existing fixed duties retained',
     targetSlots:input.targetSlots || ALL_SLOTS.map(s=>cellKey(s.day,s.shiftId)),excludedIds:input.excludedIds || [],preferenceOptimal:false};
   const roster=input.employees || [],cfg=input.cfg || {},excluded=new Set(scope.excludedIds);
@@ -2415,6 +2504,10 @@ function createCompleteScheduleSearch(rawInput) {
   const slots=scope.targetSlots.map(key=>{const [day,shiftId]=key.split('__');return {day,shiftId};});
   const owns=value=>JSON.parse(canonicalJSON(value));
   const hours=(emp,state)=>weeklyEmployeeHours(emp,state.ns,state.autoExtShifts,state.handoffs,pto.hoursByEmployee);
+  const overtime=state=>roster.reduce((n,e)=>n+Math.max(0,hours(e,state).creditedHours-FT_MIN_HOURS),0);
+  const withoutDayOff=state=>employeesWithoutDayOff(roster,state.ns,state.autoExtShifts,state.handoffs).length;
+  // The whole-week floor does not apply to a search over selected slots only.
+  const floor=input.targetSlots?0:overtimeLowerBound(roster,{empTimeOffDays:availability,ptoHoursByEmployee:pto.hoursByEmployee});
   const fixed=completeSearchSeed(input);
   function* run() {
     if(!validISODate(input.weekStart) || new Date(input.weekStart+'T12:00:00Z').getUTCDay()!==0 || !roster.length ||
@@ -2443,14 +2536,19 @@ function createCompleteScheduleSearch(rawInput) {
         const base=extendedWorkIntervals(ext)[0];if(base)bases.push({employeeId:emp.id,base,ext,position:POSITIONS.find(p=>emp.qualifications?.includes(p))});
       }
       for(const base of bases) {
-        const adjoining=[];
+        const late=[],early=[];
         for(const {day,shiftId} of ALL_SLOTS) {
           const span=shiftInterval(day,shiftId),si=SHIFTS.findIndex(s=>s.id===shiftId);
           const handoffPosition=SUP_SLOT_DAY(day,shiftId) && emp.qualifications?.includes('Supervisor')?'Supervisor':base.position;
-          if(base.base.end===span.start)adjoining.push({day,employeeId:emp.id,type:'late-stay',sourceShiftId:SHIFTS[(si+2)%3].id,targetShiftId:shiftId,position:handoffPosition,hours:HANDOFF_HOURS});
-          if(base.base.start===span.end)adjoining.push({day,employeeId:emp.id,type:'early-arrival',sourceShiftId:SHIFTS[(si+1)%3].id,targetShiftId:shiftId,position:handoffPosition,hours:HANDOFF_HOURS});
+          // A supervisor staying late after supervising covers second shift as
+          // regular staff, in any role he is qualified for.
+          const positions=handoffPosition==='Supervisor' && !SUP_SLOT_DAY(day,shiftId)?POSITIONS.filter(p=>emp.qualifications?.includes(p)):[handoffPosition];
+          for(const position of positions) {
+            if(base.base.end===span.start)late.push({day,employeeId:emp.id,type:'late-stay',sourceShiftId:SHIFTS[(si+2)%3].id,targetShiftId:shiftId,position,hours:HANDOFF_HOURS});
+            if(base.base.start===span.end)early.push({day,employeeId:emp.id,type:'early-arrival',sourceShiftId:SHIFTS[(si+1)%3].id,targetShiftId:shiftId,position,hours:HANDOFF_HOURS});
+          }
         }
-        const variants=[[],...adjoining.map(h=>[h]),...(adjoining.length===2?[adjoining]:[])];
+        const variants=[[],...late.map(h=>[h]),...early.map(h=>[h]),...late.flatMap(l=>early.map(e=>[l,e]))];
         for(const hs of variants) {
           const candidate={...base,handoffs:hs};
           const own=completeSearchApply({ns:{},autoExtShifts:[],handoffs:[]},candidate);
@@ -2473,6 +2571,7 @@ function createCompleteScheduleSearch(rawInput) {
     let lastFailure=null;
     function* visit(state,available,options) {
       nodes++;yield;
+      if(aborted || ++restartNodes>nodeLimit){aborted=true;return false;}
       const spans=collectCoverageIntervals(state.ns,state.autoExtShifts,state.handoffs),needs=[];let bodyDemand=0;
       for(const slot of slots) {
         const coverage=analyzeShiftCoverage(slot.day,slot.shiftId,state.ns,roster,state.autoExtShifts,state.handoffs,spans);
@@ -2489,7 +2588,14 @@ function createCompleteScheduleSearch(rawInput) {
           ...lockedDutyIssues(input.schedule || {},state.ns,{extShifts:input.extShifts || [],handoffs:input.handoffs || []},{extShifts:state.autoExtShifts,handoffs:state.handoffs})];
         if(!hard.length) {
           solution=owns({...state,usedPatterns:patterns,assignLog:{},trainingBlocks:input.trainingBlocks || [],
-            ...(options.creditHourLimits?{creditHourLimits:options.creditHourLimits}:{})});return true;
+            ...(options.creditHourLimits?{creditHourLimits:options.creditHourLimits}:{})});
+          if(!optimize)return true;
+          yield* trimSurplus(options);
+          const value=[supervisorExtensions(roster,solution.handoffs),withoutDayOff(solution),overtime(solution)];
+          if(lexLess(value,bound)){incumbent=solution;bound=value;improvements++;}
+          solution=incumbent;
+          if(incumbent && bound[0]===0 && bound[1]===0 && bound[2]<=floor+1e-8){proven=true;return true;}
+          return false;
         }
         // A remaining short rest/orphan fixed handoff might still be repaired by
         // an adjoining extension/source. Enumerate further additions before failing.
@@ -2501,21 +2607,30 @@ function createCompleteScheduleSearch(rawInput) {
         if(next && !completeSearchHardIssues(emp,next,cfg,options).length) {
           const nextSpans=collectCoverageIntervals(next.ns,next.autoExtShifts,next.handoffs).filter(i=>i.employeeId===emp.id);
           const beforeHours=hours(emp,state),afterHours=hours(emp,next);
-          viable.push({index,candidate,next,nextSpans,added:afterHours.workedHours-beforeHours.workedHours,
+          const seventh=employeeDutyDays(emp.id,spans).size<DAYS.length && employeeDutyDays(emp.id,nextSpans).size>=DAYS.length;
+          const supExt=supervisorExtensions([emp],candidate.handoffs)>0;
+          viable.push({index,candidate,next,nextSpans,added:afterHours.workedHours-beforeHours.workedHours,seventh,supExt,
             shortfall:beforeHours.shortfallHours, extraOT:Math.max(0,afterHours.creditedHours-40)-Math.max(0,beforeHours.creditedHours-40)});
         }
         yield;
       }
-      let capacity=0;
+      let capacity=0,overtimeNow=0,regularRoom=0,noDayOffNow=0;
       for(const emp of roster) {
         const spansPossible=[...spans.filter(i=>i.employeeId===emp.id),...viable.filter(v=>v.candidate.employeeId===emp.id).flatMap(v=>v.nextSpans)].sort((a,b)=>a.start-b.start);
         const total=completeSearchWorkUpperBound(spansPossible,emp,cfg);
         const current=hours(emp,state),ot=emp.overtimePref && emp.overtimePref!=='neutral'?emp.overtimePref:cfg.defaultOvertimePref;
         const ceiling=ot==='blocked'?40:(options.creditHourLimits?.[emp.id] ?? Infinity);
         capacity+=Math.max(0,Math.min(total-current.workedHours,ceiling-current.creditedHours));
+        overtimeNow+=Math.max(0,current.creditedHours-FT_MIN_HOURS);
+        regularRoom+=Math.max(0,Math.min(total-current.workedHours,FT_MIN_HOURS-current.creditedHours));
+        if(employeeDutyDays(emp.id,spans).size>=DAYS.length)noDayOffNow++;
         if(emp.employmentType==='full-time' && total+(pto.hoursByEmployee[emp.id] || 0)<40)return false;
       }
       if(capacity+1e-8<bodyDemand){lastFailure='Remaining legal employee-hour capacity is less than uncovered staffing hours.';return false;}
+      // Bound: the search only adds work, so supervisor extensions and seven-day
+      // weeks stay, and hours past 40 stay overtime; uncovered hours beyond
+      // everyone's remaining room under 40 must add more overtime.
+      if(!lexLess([supervisorExtensions(roster,state.handoffs),noDayOffNow,overtimeNow+Math.max(0,bodyDemand-regularRoom)],bound))return false;
       let branch=null;
       for(const need of needs) {
         const choices=viable.filter(v=>{
@@ -2546,13 +2661,15 @@ function createCompleteScheduleSearch(rawInput) {
       // scarce slots with already-satisfied staff can strand another employee
       // below forty now that same-day split doubles cannot supply extra hours.
       // This changes exploration order only; every legal branch remains available.
-      branch.sort((a,b)=>a.extraOT-b.extraOT || b.shortfall-a.shortfall || a.candidate.cost-b.candidate.cost || a.added-b.added || a.index-b.index);
+      branch.sort((a,b)=>a.supExt-b.supExt || a.seventh-b.seventh || a.extraOT-b.extraOT || b.shortfall-a.shortfall || a.candidate.jitter-b.candidate.jitter ||
+        a.candidate.cost-b.candidate.cost || a.added-b.added || a.index-b.index);
       const remaining=new Set(available);
       for(const choice of branch) {
         // Partition by the first included contributor. Earlier alternatives stay
         // excluded only in later sibling branches; every feasible set is covered.
         remaining.delete(choice.index);
         if(yield* visit(choice.next,[...remaining],options))return true;
+        if(aborted)return false;
       }
       return false;
     }
@@ -2596,12 +2713,37 @@ function createCompleteScheduleSearch(rawInput) {
     for(const p of phases) {
       phase=p.name;yield;
       if(roster.some(e=>completeSearchHardIssues(e,fixed,cfg,p.options).length))continue;
-      if(yield* visit(fixed,candidates.map(c=>c.index),p.options)){yield* trimSurplus(p.options);status='feasible';return;}
+      if(!optimize) {
+        for(const v of candidates)v.jitter=0;
+        if(yield* visit(fixed,candidates.map(c=>c.index),p.options)){yield* trimSurplus(p.options);status='feasible';return;}
+      } else {
+        let seed=0x9e3779b9;
+        // Luby restart schedule (1,1,2,1,1,2,4,...) x base: mostly short restarts,
+        // with occasional ones of unbounded growing length.
+        const luby=i=>{let k=1;while((1<<k)-1<i+1)k++;return (1<<k)-1===i+1?1<<(k-1):luby(i+1-(1<<(k-1)));};
+        for(let limit=RESTART_BASE_NODES;;limit=RESTART_BASE_NODES*luby(restarts)) {
+          // The first pass keeps the deterministic order; later ones shuffle ties.
+          for(const v of candidates)v.jitter=restarts?random():0;
+          restartNodes=0;nodeLimit=limit;aborted=false;
+          if(yield* visit(fixed,candidates.map(c=>c.index),p.options)){status='feasible';return;}
+          if(!aborted)break;
+          restarts++;random=()=>{seed=(seed+0x6D2B79F5)|0;let t=Math.imul(seed^(seed>>>15),1|seed);t=(t+Math.imul(t^(t>>>7),61|t))^t;return ((t^(t>>>14))>>>0)/4294967296;};
+        }
+        nodeLimit=Infinity;
+      }
+      // Optimizing: an exhausted tree proves the incumbent has the least overtime.
+      if(incumbent){proven=true;solution=incumbent;status='feasible';return;}
+    }
+    if(optimize && Number.isFinite(rawInput.overtimeBudget)) {
+      const who=seedBound[1]===0?'everyone with a day off':`${seedBound[1]} without a day off`;
+      status='no-better';reasons=[`No complete week beats autofill's (${who}, ${seedBound[2]}h overtime) in the search's duty menu.`];return;
     }
     status='infeasible';reasons=['All combinations in the stated duty menu were exhausted with the current rules, locked duties and exclusions.',...(lastFailure?['Example rejected branch: '+lastFailure]:[])];
   }
   const iterator=run();
-  const snapshot=()=>({status,phase,nodes,steps,candidates:candidateCount,solution:solution?owns(solution):null,reasons:[...reasons],scope:owns(scope)});
+  const snapshot=()=>{const shown=optimize?incumbent:solution;return {status,phase,nodes,steps,candidates:candidateCount,solution:shown?owns(shown):null,reasons:[...reasons],scope:owns(scope),
+    ...(optimize?{optimization:{restarts,bestOvertime:incumbent?bound[2]:null,bestWithoutDayOff:incumbent?bound[1]:null,bestSupervisorExtensions:incumbent?bound[0]:null,
+      seedOvertime:seedBound?.[2] ?? null,seedWithoutDayOff:seedBound?.[1] ?? null,seedSupervisorExtensions:seedBound?.[0] ?? null,floor,improvements,proven}}:{})};};
   return {snapshot,advance({maxSteps=200,timeSliceMs=16}={}) {
     if(status!=='searching')return snapshot();
     const deadline=Date.now()+Math.max(1,timeSliceMs);let n=0;
@@ -12194,6 +12336,71 @@ function CompletionDiagnosticsPanel({schedule,employees,cfg,options}) {
   </details>;
 }
 
+// Live status of the overtime search: the best week so far, how close it is to
+// the overtime floor, and controls to pause, resume, cancel or take the best week now.
+function SearchProgressPanel({ progress: p, onPause, onResume, onUseBest, onCancel }) {
+  const o = p.optimization || {};
+  const clock = ms => { const s = Math.max(0, Math.floor((ms || 0) / 1000)); return Math.floor(s / 60) + ":" + String(s % 60).padStart(2, "0"); };
+  const hrs = h => (Math.round(h * 10) / 10) + "h";
+  const live = p.status === "searching" || p.status === "paused";
+  const floor = o.floor ?? 0, best = o.bestOvertime ?? o.seedOvertime ?? null, first = p.firstOvertime;
+  const noDayOff = o.bestWithoutDayOff ?? o.seedWithoutDayOff ?? null;
+  const supervisorDays = o.bestSupervisorExtensions ?? o.seedSupervisorExtensions ?? null;
+  const dayOffText = n => n === 0 ? "everyone has a day off" : `${n} without a day off`;
+  // Share of the gap between the first complete week and the floor closed so far.
+  const closed = best == null || first == null ? null : first - floor < 1e-8 ? 1 : Math.min(1, Math.max(0, (first - best) / (first - floor)));
+  const title = p.stopReason === "user" ? "Stopped — best week applied"
+    : p.stopReason === "idle" ? `Stopped after ${clock(p.idleLimitMs)} without a better week — best week applied`
+    : ({ searching: "Searching for a better week: days off first, then least overtime", paused: "Search paused",
+        feasible: o.proven ? "Finished — no week gives more people a day off or has less overtime" : "Complete week found",
+        "no-better": "Finished — autofill's week was already the best possible",
+        infeasible: "No complete week fits the current rules", invalid: "Search input or validation error",
+        cancelled: "Search cancelled", stale: "Inputs changed — start a new search" })[p.status];
+  const stat = (label, value) => (
+    <div><div style={{fontSize:10,letterSpacing:".04em",color:"var(--ss-text-dim)",textTransform:"uppercase"}}>{label}</div>
+      <div style={{fontSize:18,fontWeight:700,fontVariantNumeric:"tabular-nums"}}>{value}</div></div>);
+  return (
+    <div role="status" style={{padding:14,marginBottom:12,border:"1px solid var(--ss-border)",borderRadius:8,background:"var(--ss-surface)"}}>
+      <div style={{display:"flex",justifyContent:"space-between",alignItems:"baseline",gap:12,flexWrap:"wrap"}}>
+        <strong style={{fontSize:13}}>{title}</strong>
+        {live && <span style={{fontSize:11,color:"var(--ss-text-dim)",fontVariantNumeric:"tabular-nums"}}>{p.status === "paused" ? "Paused at " : "Running "}{clock(p.activeMs)}</span>}
+      </div>
+      <div style={{display:"flex",gap:28,margin:"10px 0",flexWrap:"wrap"}}>
+        {stat("Best week so far", best == null ? "none yet" : hrs(best) + " OT")}
+        {noDayOff != null && stat("Days off", dayOffText(noDayOff))}
+        {supervisorDays > 0 && stat("Supervisor 12h days", supervisorDays + " (last resort)")}
+        {p.fallbackOvertime != null && o.seedOvertime != null && stat("Autofill's week", hrs(p.fallbackOvertime) + " OT, " + dayOffText(p.fallbackWithoutDayOff ?? 0))}
+        {stat("Lowest possible", "≥ " + hrs(floor) + " OT")}
+      </div>
+      <div aria-hidden="true" style={{position:"relative",height:8,borderRadius:4,overflow:"hidden",background:"var(--ss-surface-alt)"}}>
+        {closed == null
+          ? (p.status === "searching" && <div style={{position:"absolute",inset:0,width:"40%",background:"var(--ss-accent)",opacity:.6,animation:"ss-search-sweep 1.4s linear infinite"}}/>)
+          : <div style={{height:"100%",width:(closed * 100) + "%",minWidth:4,background:o.proven || p.status === "no-better" ? "var(--ss-scale)" : "var(--ss-accent)",transition:"width .3s"}}/>}
+      </div>
+      <div style={{display:"flex",justifyContent:"space-between",fontSize:10,color:"var(--ss-text-dim)",marginTop:3}}>
+        <span>{first != null ? "Started at " + hrs(first) : "Looking for a first complete week"}</span><span>Floor {hrs(floor)}</span>
+      </div>
+      <p style={{fontSize:11,color:"var(--ss-text-dim)",margin:"8px 0 0"}}>
+        {(p.nodes || 0).toLocaleString()} combinations checked · {o.improvements || 0} better week{o.improvements === 1 ? "" : "s"} found
+        {live && best != null && ` · ${clock(p.activeMs - p.improvedAtMs)} since the last improvement (applies the best week after ${clock(p.idleLimitMs)} without one)`}
+      </p>
+      {live && <div style={{display:"flex",gap:8,marginTop:10,flexWrap:"wrap"}}>
+        {p.status === "paused"
+          ? <button onClick={onResume} className="ss-btn ss-btn-sm ss-btn-secondary">Resume</button>
+          : <button onClick={onPause} className="ss-btn ss-btn-sm ss-btn-secondary">Pause</button>}
+        <button onClick={onUseBest} disabled={!p.hasBest} title={p.hasBest ? "" : "No week to apply yet"} className="ss-btn ss-btn-sm ss-btn-success">Use best now</button>
+        <button onClick={onCancel} className="ss-btn ss-btn-sm ss-btn-ghost">Cancel search</button>
+      </div>}
+      {p.status === "infeasible" && <p>Review staffing, qualifications, availability, PTO, locks and exclusions. The search did not relax your hard rules.</p>}
+      {p.reasons?.map((reason, i) => <p key={i} style={{fontSize:12}}>{reason}</p>)}
+      {p.applied === "search" && <p style={{fontSize:12}}>Applied the search's week ({hrs(best ?? 0)} overtime). Overtime still requires approval, and publication requires its separate final review.</p>}
+      {p.applied === "autofill" && (p.fallbackErrors
+        ? <p style={{fontSize:12}}><strong>No complete week was found, so autofill applied its best draft instead.</strong> {`${p.fallbackErrors} issue${p.fallbackErrors === 1 ? "" : "s"} remain — see the issue list and "Why the draft is incomplete".`}</p>
+        : <p style={{fontSize:12}}>Applied autofill's week. Overtime still requires approval, and publication requires its separate final review.</p>)}
+    </div>
+  );
+}
+
 function ScheduleGrid({ onOpenTestModal }) {
   const rosterState = useRoster();
   const { afExclude, setAfExclude, swingDesig, empPatterns, setEmpPatterns } = rosterState;
@@ -12240,6 +12447,7 @@ function ScheduleGrid({ onOpenTestModal }) {
   const [autoFillRunning,  setAutoFillRunning]  = useState(false);
   const [autoFillProgress, setAutoFillProgress] = useState(null); // {attempt, bestErrors, bestWarns}
   const autoFillCancelRef = useRef(false);
+  const autoFillUseBestRef = useRef(false);
   const completeSearchRef = useRef(null);
   useEffect(()=>()=>{completeSearchRef.current?.solver.cancel();completeSearchRef.current=null;},[]);
 
@@ -12739,7 +12947,9 @@ function ScheduleGrid({ onOpenTestModal }) {
     const options = { extShifts: allExts, handoffs: allHandoffs, empTimeOffDays, ptoHoursByEmployee: accounting.pto.hoursByEmployee,
       empPatterns: boundaryPatterns(history, weekStart, empPatterns) };
     const issues = [...validateCoverage(sched, allRoster, allExts, allHandoffs).filter(i=>i.type!=='overstaffed'),
-      ...validateAssignmentPolicy(sched, allRoster, cfg, options), ...accounting.issues];
+      ...validateAssignmentPolicy(sched, allRoster, cfg, options), ...accounting.issues,
+      ...employeesWithoutDayOff(allRoster, sched, allExts, allHandoffs).map(e => ({ level: "warn", type: "no_day_off", employeeId: e.id,
+        msg: `${e.name} has no day off this week` }))];
     return issues;
   }, [employees, extShifts, cfg, empTimeOffDays, empPatterns, history, weekStart, timeOffReqs, afExclude, ptoHoursByEmployee]);
 
@@ -12747,29 +12957,56 @@ function ScheduleGrid({ onOpenTestModal }) {
     setScheduleIssues(validateSchedule(schedule, extShifts, employees, handoffs));
   }, [validateSchedule, schedule, extShifts, employees, handoffs]);
 
-  // fallback: the fast autofill's best draft. If the complete search cannot
-  // produce a valid week, that draft is applied (through the normal overtime
-  // approval path) so the grid is never left empty with the problems hidden.
-  const startCompleteSearch = (rosterOverride, fallback) => {
+  // fallback: autofill's best draft. The search then looks for a better complete
+  // week: fewer people without a day off, then less overtime. seed = the draft's
+  // {withoutDayOff, overtime} when the draft is complete, so only better weeks
+  // count. The end of the search, "Use best now", or an idle stop applies the
+  // better week through the normal overtime approval path, so the grid is never
+  // left empty with the problems hidden.
+  const startCompleteSearch = (rosterOverride, fallback, seed) => {
     if(isReadOnly || !generationInputsReady || pendingProposal)return;
     completeSearchRef.current?.solver.cancel();
     const accountingRoster=Array.isArray(rosterOverride)?rosterOverride:employees;
     const baseStamp=overtimeInputRef.current;
     let solver;
     try {solver=createCompleteScheduleSearch({weekStart,employees:accountingRoster,cfg,schedule,extShifts:extShifts || [],handoffs:handoffs || [],
-      trainingBlocks:trainingBlocks || [],timeOffReqs,history,empPatterns,excludedIds:afExclude || [],fairnessHistory});}
+      trainingBlocks:trainingBlocks || [],timeOffReqs,history,empPatterns,excludedIds:afExclude || [],fairnessHistory,
+      optimizeOvertime:true,overtimeBudget:seed?.overtime,withoutDayOffBudget:seed?.withoutDayOff,supervisorExtensionBudget:seed?.supervisorExtensions});}
     catch(e){showAlert({title:'Search inputs need correction',message:e.message,variant:'danger'});setAutoFillRunning(false);return;}
-    const job={solver,baseStamp,paused:false,tick:null,lastProgressAt:0};
+    // activeMs excludes paused time; improvedAtMs is the activeMs of the last better week.
+    // firstOvertime/firstLevel: where the progress bar starts. It measures
+    // overtime saved at the current level [supervisor 12h days, people without a
+    // day off], so it restarts when a week improves either of those.
+    const job={solver,baseStamp,paused:false,tick:null,useBest:null,lastProgressAt:0,activeMs:0,lastTickAt:Date.now(),improvedAtMs:0,improvements:0,
+      firstOvertime:seed?.overtime ?? null,firstLevel:seed?[seed.supervisorExtensions ?? 0,seed.withoutDayOff ?? 0]:null};
     completeSearchRef.current=job;autoFillCancelRef.current=false;setAutoFillRunning(true);
-    const progress=(result,extra={})=>setAutoFillProgress({...result,solution:undefined,engine:'complete',...extra});
-    const applyFallback=(result,extra={})=>{
-      if(!fallback) return false;
-      const reviewItems=overtimeReviewItems(accountingRoster,{schedule,extShifts,handoffs},fallback,cfg,ptoHoursByEmployee);
-      const proposal=makeOvertimeProposal({...fallback,reviewItems},baseStamp);
-      if(!proposalIsCurrent(proposal)){discardStaleProposal();return true;}
-      progress(result,{...extra,fallbackApplied:true,fallbackErrors:fallback.errors || 0});
+    const progress=(result,extra={})=>setAutoFillProgress({...result,solution:undefined,engine:'complete',activeMs:job.activeMs,improvedAtMs:job.improvedAtMs,
+      firstOvertime:job.firstOvertime,fallbackOvertime:fallback?.quality?.[QUALITY.overtime] ?? null,fallbackWithoutDayOff:fallback?.quality?.[QUALITY.noDayOff] ?? null,
+      fallbackSupervisorExtensions:fallback?.quality?.[QUALITY.supervisorExtensions] ?? null,
+      hasBest:!!(result.solution || fallback),idleLimitMs:SEARCH_IDLE_LIMIT_MS,...extra});
+    const propose=(candidate,result,extra)=>{
+      const reviewItems=overtimeReviewItems(accountingRoster,{schedule,extShifts,handoffs},candidate,cfg,ptoHoursByEmployee);
+      const proposal=makeOvertimeProposal({...candidate,reviewItems},baseStamp);
+      if(!proposalIsCurrent(proposal)){discardStaleProposal();return;}
+      progress(result,extra);
       if(reviewItems.length)setPendingProposal(proposal);else commitScheduleProposal(proposal);
-      return true;
+    };
+    // A solver candidate is still a draft: it must pass the independent validator,
+    // otherwise autofill's draft is used instead.
+    const applyBest=(result,extra={})=>{
+      const proposed=result.solution;
+      if(proposed) {
+        const errors=validateSchedule(proposed.ns,proposed.autoExtShifts,accountingRoster,proposed.handoffs).filter(i=>i.level==='error');
+        if(!errors.length)return propose(proposed,result,{...extra,applied:'search'});
+        extra={...extra,status:'invalid',reasons:['The independent schedule validator rejected the candidate.',...errors.map(i=>i.msg)]};
+      }
+      if(fallback)return propose(fallback,result,{...extra,applied:'autofill',fallbackErrors:fallback.errors || 0});
+      progress(result,extra);
+    };
+    job.useBest=()=>{
+      if(completeSearchRef.current!==job)return;
+      const result=solver.cancel();completeSearchRef.current=null;autoFillCancelRef.current=false;setAutoFillRunning(false);
+      applyBest(result,{stopReason:'user'});
     };
     job.tick=()=>{
       if(completeSearchRef.current!==job)return;
@@ -12777,35 +13014,31 @@ function ScheduleGrid({ onOpenTestModal }) {
         solver.cancel();completeSearchRef.current=null;setAutoFillRunning(false);
         progress(solver.snapshot(),{status:'stale',reasons:['Inputs changed. Start a fresh search for the current draft.']});return;
       }
+      const now=Date.now();job.activeMs+=now-job.lastTickAt;job.lastTickAt=now;
       if(autoFillCancelRef.current){job.paused=true;setAutoFillRunning(false);progress(solver.snapshot(),{status:'paused'});return;}
       const result=solver.advance({maxSteps:150,timeSliceMs:12});
+      const found=result.optimization?.improvements || 0;
+      if(found>job.improvements) {
+        job.improvements=found;job.improvedAtMs=job.activeMs;job.lastProgressAt=0;
+        const o=result.optimization;
+        const level=[o.bestSupervisorExtensions,o.bestWithoutDayOff],first=job.firstLevel;
+        if(!first || level[0]<first[0] || (level[0]===first[0] && level[1]<first[1])){job.firstOvertime=o.bestOvertime;job.firstLevel=level;}
+      }
       if(result.status==='searching') {
+        if((result.solution || fallback) && job.activeMs-job.improvedAtMs>=SEARCH_IDLE_LIMIT_MS) {
+          solver.cancel();completeSearchRef.current=null;setAutoFillRunning(false);applyBest(result,{stopReason:'idle'});return;
+        }
         if(Date.now()-job.lastProgressAt>=100){progress(result);job.lastProgressAt=Date.now();}
         setTimeout(job.tick,0);return;
       }
-      completeSearchRef.current=null;setAutoFillRunning(false);progress(result);
-      if(result.status==='infeasible') {applyFallback(result);return;}
-      if(result.status==='feasible') {
-        const proposed=result.solution;
-        // A solver candidate is still a draft: use the normal validation and
-        // exact-schedule overtime approval path before replacing live records.
-        const issues=validateSchedule(proposed.ns,proposed.autoExtShifts,accountingRoster,proposed.handoffs);
-        if(issues.some(i=>i.level==='error')) {
-          const extra={status:'invalid',reasons:['The independent schedule validator rejected the candidate.',...issues.filter(i=>i.level==='error').map(i=>i.msg)]};
-          if(!applyFallback(result,extra)) progress(result,extra);
-          return;
-        }
-        const reviewItems=overtimeReviewItems(accountingRoster,{schedule,extShifts,handoffs},proposed,cfg,ptoHoursByEmployee);
-        const proposal=makeOvertimeProposal({...proposed,reviewItems},baseStamp);
-        if(!proposalIsCurrent(proposal)){discardStaleProposal();return;}
-        if(reviewItems.length)setPendingProposal(proposal);else commitScheduleProposal(proposal);
-      }
+      completeSearchRef.current=null;setAutoFillRunning(false);
+      if(['feasible','no-better','infeasible'].includes(result.status))applyBest(result);else progress(result);
     };
     progress(solver.snapshot());setTimeout(job.tick,0);
   };
   const resumeCompleteSearch = () => {
     const job=completeSearchRef.current;if(!job?.paused || isReadOnly || pendingProposal || autoFillRunning || !generationInputsReady)return;
-    job.paused=false;autoFillCancelRef.current=false;setAutoFillRunning(true);setTimeout(job.tick,0);
+    job.paused=false;job.lastTickAt=Date.now();autoFillCancelRef.current=false;setAutoFillRunning(true);setTimeout(job.tick,0);
   };
   const cancelCompleteSearch = () => {
     const job=completeSearchRef.current;if(!job)return;
@@ -13051,7 +13284,9 @@ function ScheduleGrid({ onOpenTestModal }) {
     const MAX_ATTEMPTS = 10;
     const PLATEAU_LIMIT = 3;
     autoFillCancelRef.current = false;
+    autoFillUseBestRef.current = false;
     setAutoFillRunning(true);
+    const overtimeFloor = overtimeLowerBound(accountingRoster, { empTimeOffDays, ptoHoursByEmployee });
 
     let best = null;
     let attemptNum = 0;
@@ -13062,6 +13297,13 @@ function ScheduleGrid({ onOpenTestModal }) {
       if (autoFillCancelRef.current) {
         setAutoFillRunning(false);
         setAutoFillProgress(null);
+        return;
+      }
+      if (autoFillUseBestRef.current && best) {
+        autoFillUseBestRef.current = false;
+        commit(best);
+        setAutoFillRunning(false);
+        setAutoFillProgress({attempt:attemptNum,done:true,stopReason:"user",quality:best.quality,searchInfo:best.searchInfo});
         return;
       }
 
@@ -13078,18 +13320,22 @@ function ScheduleGrid({ onOpenTestModal }) {
       else plateauCount=0;
       prevBestQuality=[...best.quality];
 
-      setAutoFillProgress({ attempt: attemptNum, bestErrors: best.errors, bestWarns: best.warns });
+      setAutoFillProgress({ attempt: attemptNum, bestErrors: best.errors, bestWarns: best.warns, bestOvertime: best.quality[QUALITY.overtime] });
 
-      if (best.quality.slice(0,4).every(v=>v===0) && best.errors === 0) {
+      // A complete week (every position filled, no hard errors, full-timers at
+      // 40h) is not the end: unless everyone already has a day off and overtime
+      // is at the floor, the branch-and-bound search looks for a better week.
+      const q = best.quality, complete = [QUALITY.hard,QUALITY.coverage,QUALITY.body,QUALITY.shortfall].every(i=>q[i]===0) && best.errors === 0;
+      if (complete && q[QUALITY.supervisorExtensions] === 0 && q[QUALITY.noDayOff] === 0 && q[QUALITY.overtime] <= overtimeFloor + 1e-8) {
         commit(best);
         setAutoFillRunning(false);
-        setAutoFillProgress({attempt:attemptNum,done:true,stopReason:"complete_candidate",quality:best.quality,searchInfo:best.searchInfo});
+        setAutoFillProgress({attempt:attemptNum,done:true,stopReason:"optimal_candidate",quality:best.quality,searchInfo:best.searchInfo});
         return;
       }
 
-      if (attemptNum >= MAX_ATTEMPTS || plateauCount >= PLATEAU_LIMIT) {
+      if (complete || attemptNum >= MAX_ATTEMPTS || plateauCount >= PLATEAU_LIMIT) {
         if(!proposalIsCurrent({baseStamp:runBaseStamp})){discardStaleProposal();setAutoFillRunning(false);return;}
-        startCompleteSearch(accountingRoster, best);
+        startCompleteSearch(accountingRoster, best, complete ? { supervisorExtensions: q[QUALITY.supervisorExtensions], withoutDayOff: q[QUALITY.noDayOff], overtime: q[QUALITY.overtime] } : undefined);
         return;
       }
 
@@ -14090,19 +14336,13 @@ function ScheduleGrid({ onOpenTestModal }) {
       {!isReadOnly && <p style={{fontWeight:700,color:currentPublished ? "var(--ss-scale)" : "var(--ss-warning)"}}>
         {currentPublished ? `Published snapshot matches this draft — ${currentPublished.publishedAt}` : "DRAFT — not currently published"}
       </p>}
-      {autoFillProgress?.engine==='complete' && <div role="status" style={{padding:12,marginBottom:12,border:'1px solid var(--ss-border)',borderRadius:6}}>
-        <strong>Complete schedule search: {({searching:'searching',paused:'paused',feasible:'complete candidate found',infeasible:'no feasible combination in the current duty menu',invalid:'input or validation error',cancelled:'cancelled — feasibility unknown',stale:'inputs changed — restart required'})[autoFillProgress.status]}</strong>
-        <p>{autoFillProgress.nodes || 0} branches explored · {autoFillProgress.candidates || 0} duty options · {autoFillProgress.phase==='overtime-review'?'checking combinations that may require overtime approval':'checking combinations within 40 credited hours'}</p>
-        <p>The search includes regular shifts, eligible 12-hour duties, and 4-hour handoffs. Locked duties and autofill exclusions stay fixed. Preferences guide the order; this does not prove the best preference balance.</p>
-        {autoFillProgress.status==='infeasible' && <p>Review staffing, qualifications, availability, PTO, locks and exclusions. The search did not relax your hard rules.</p>}
-        {autoFillProgress.reasons?.map((reason,i)=><p key={i}>{reason}</p>)}
-        {autoFillProgress.status==='paused' && <><p>The search has not reached a conclusion. Resume continues from the saved branch.</p><button onClick={resumeCompleteSearch}>Resume complete search</button> <button onClick={cancelCompleteSearch}>Cancel search</button></>}
-        {autoFillProgress.status==='feasible' && <p>The candidate passed the solver checks. Overtime still requires approval, and publication requires its separate final review.</p>}
-        {autoFillProgress.fallbackApplied && <p><strong>No complete week was found, so autofill applied its best draft instead.</strong> {autoFillProgress.fallbackErrors ? `${autoFillProgress.fallbackErrors} issue${autoFillProgress.fallbackErrors===1?"":"s"} remain — see the issue list and "Why the draft is incomplete".` : "Review the issue list before publishing."}</p>}
-      </div>}
+      {autoFillProgress?.engine==='complete' && <SearchProgressPanel progress={autoFillProgress} onPause={()=>{autoFillCancelRef.current=true;}}
+        onResume={resumeCompleteSearch} onUseBest={()=>completeSearchRef.current?.useBest?.()} onCancel={cancelCompleteSearch}/>}
       {!isReadOnly && <WeeklyAccountingPanel/>}
       {autoFillProgress?.done && autoFillProgress.engine!=="complete" && <p style={{fontSize:12,color:"var(--ss-text-dim)"}}>
-        Last autofill search: {autoFillProgress.stopReason === "complete_candidate" ? "a complete candidate was found; any overtime still requires approval." :
+        Last autofill search: {autoFillProgress.stopReason === "optimal_candidate" ? "a complete week at the lowest possible overtime was found; any overtime still requires approval." :
+          autoFillProgress.stopReason === "user" ? "stopped by you; the best draft so far was applied." :
+          autoFillProgress.stopReason === "complete_candidate" ? "a complete candidate was found; any overtime still requires approval." :
           `stopped after ${autoFillProgress.attempt} attempts ${autoFillProgress.stopReason === "no_improvement" ? "without further improvement" : "at its attempt limit"}. This does not prove the week is impossible.`}
         {autoFillProgress.searchInfo?.termination === "limit_reached" ? " The assignment search reached its time or node limit." : ""}
       </p>}
@@ -14285,13 +14525,17 @@ function ScheduleGrid({ onOpenTestModal }) {
                 <span style={{display:"inline-block",width:10,height:10,background:"#fff",borderRadius:2}}/>
                 {autoFillProgress?.engine==='complete'?'Pause':'Stop'}
               </button>
+              {autoFillProgress && (autoFillProgress.engine==='complete' ? autoFillProgress.hasBest : autoFillProgress.attempt > 0) && (
+                <button onClick={()=>{ if(autoFillProgress.engine==='complete') completeSearchRef.current?.useBest?.(); else autoFillUseBestRef.current = true; }}
+                  className="ss-btn ss-btn-md ss-btn-success">Use best now</button>
+              )}
               {autoFillProgress && autoFillProgress.engine!=='complete' && (
                 <span style={{fontSize:11,color:"var(--ss-text-dim)"}}>
                   Attempt {autoFillProgress.attempt}
                   {autoFillProgress.bestErrors > 0
                     ? ` — best: ${autoFillProgress.bestErrors} error${autoFillProgress.bestErrors!==1?"s":""}`
                     + (autoFillProgress.bestWarns > 0 ? `, ${autoFillProgress.bestWarns} warn${autoFillProgress.bestWarns!==1?"s":""}` : "")
-                    : " — ✓ valid schedule found"}
+                    : ` — ✓ complete week (${autoFillProgress.bestOvertime}h overtime); next: searching for a better one`}
                 </span>
               )}
             </div>

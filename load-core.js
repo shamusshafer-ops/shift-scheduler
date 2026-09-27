@@ -66,6 +66,7 @@ const exportsList = [
   "hasDutyLocks", "lockedDutyIssues", "preferenceBurden", "buildPreferenceHistory", "preferenceFairnessCost", "improveSchedulePreferences", "buildLockedAutoFill",
   "remainingSlotCapacity", "buildCallOffList", "callOffNeeds", "callOffPosition", "compareScheduleQuality", "scheduleQuality", "repairScheduleCompletion", "buildCompletionDiagnostics",
   "overtimeCreditLimits", "trimOvertimeProposal", "resolveOvertimeProposal", "repairScheduleGaps",
+  "overtimeLowerBound", "SEARCH_IDLE_LIMIT_MS", "QUALITY", "employeesWithoutDayOff", "employeeDutyDays", "supervisorExtensions", "isSupervisorExtension",
 ];
 const wrapped = src + "\n;module.exports = {" +
   exportsList.map(n => `${n}: (typeof ${n} !== "undefined" ? ${n} : undefined)`).join(",") + "};";

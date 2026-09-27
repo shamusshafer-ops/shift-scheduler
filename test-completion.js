@@ -36,7 +36,14 @@ test('quality compares uncovered hours instead of the number of error messages',
 });
 test('hard violations cannot be bought with coverage or preference improvements',()=>{
  assert(compareScheduleQuality([1,0,0,0,0,0,0],[0,40,24,8,0,999,0])>0);
- assert(compareScheduleQuality([0,0,0,8,0,0,0],[0,0,0,0,8,100,5])>0);
+ const Q=core.QUALITY,v=o=>{const q=Array(9).fill(0);for(const [k,x] of Object.entries(o))q[Q[k]]=x;return q;};
+ assert(compareScheduleQuality(v({shortfall:8}),v({overtime:8,preferences:100,changes:5}))>0);
+ // Everyone getting a day off outranks any overtime saving; coverage outranks both.
+ assert(compareScheduleQuality(v({noDayOff:1}),v({overtime:80}))>0);
+ assert(compareScheduleQuality(v({coverage:8,body:8}),v({noDayOff:3,overtime:80}))>0);
+ // The supervisor's weekday 12-hour day is a last resort: only coverage outranks avoiding it.
+ assert(compareScheduleQuality(v({supervisorExtensions:1}),v({noDayOff:3,overtime:80}))>0);
+ assert(compareScheduleQuality(v({coverage:4}),v({supervisorExtensions:1}))>0);
 });
 test('dual qualifications and the separate supervisor are retained in completeness metrics',()=>{
  const roster=[emp('dual',{qualifications:['Guard','Medical','Scale']}),emp('g1',{qualifications:['Guard']}),emp('g2',{qualifications:['Guard']}),emp('sup',{qualifications:['Supervisor']})];
