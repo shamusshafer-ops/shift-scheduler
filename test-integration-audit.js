@@ -114,6 +114,9 @@ test('weekly structure validation allows incomplete drafts but rejects corrupt c
 test('missing storage keys are distinct from denied or unavailable storage',async()=>{
  assert(c.isMissingStorageError(new Error('Key not found: key')));
  assert(c.isMissingStorageError({code:'NOT_FOUND'}));assert(!c.isMissingStorageError(new Error('Permission denied')));
+ // Claude app preview storage prefixes the reason; a fresh device must load as empty, not fail.
+ assert(c.isMissingStorageError(new Error('Storage get failed: Key not found')));assert(c.isMissingStorageError('Key not found'));
+ assert(!c.isMissingStorageError(new Error('Storage get failed: quota exceeded')));assert(!c.isMissingStorageError(new Error('Monkey not foundational')));
  const fresh=persistence({read:async()=>{throw {code:'NOT_FOUND'};}}),denied=persistence({read:async()=>{throw new Error('Permission denied');}});
  await tick();assert.equal(fresh.states[1],true);assert.equal(denied.states[1],false);assert.match(denied.states[2],/denied/);
 });
