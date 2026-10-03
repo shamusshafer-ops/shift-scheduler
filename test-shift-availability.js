@@ -125,3 +125,25 @@ test('autofill never assigns a "no" cell',()=>{
   assert.equal(on('a','Tuesday','third'),false);
   for (const sid of ['first','second','third']) assert.equal(on('b','Wednesday',sid),false);
 });
+
+// Phase 2: candidate filters inside autofill screen "no" cells themselves, so
+// the final policy filter never has to discard their picks (which left gaps).
+test('autofill plans around "no" cells instead of having assignments rejected',()=>{
+  const fx = require('./fixtures/autofill-real-roster-drafts.json');
+  const grid = {'psi-2':{Monday:{first:'no'},Tuesday:{first:'no'}}};
+  const emps = JSON.parse(JSON.stringify(fx.roster)).map(e=>grid[e.id]?{...e,shiftAvailability:grid[e.id]}:e);
+  const timeOff = availability([],week);
+  const log = console.log, warn = console.warn; console.log = console.warn = () => {};
+  let result; try { result = buildAutoFill(emps,{...fx.cfg,maxSearchNodes:3000},timeOff,fx.enrichedPatterns,[],false,{roster:emps}); }
+  finally { console.log = log; console.warn = warn; }
+  assert.deepEqual((result.policyRejected || []).map(r=>r.employeeId+' '+r.day+' '+r.shiftId),[]);
+  for (const day of ['Monday','Tuesday']) assert(!(result.schedule[cellKey(day,'first')] || []).some(a=>a.employeeId==='psi-2'));
+});
+test('the overtime lower bound counts "no" cells as unavailable',()=>{
+  const roster = [emp({id:'a',employmentType:'full-time',requiredShift:'first'})];
+  const all = Object.fromEntries(DAYS.map(d=>[d,{first:'no'}]));
+  const open = core.overtimeLowerBound(roster,{empTimeOffDays:availability([],week)});
+  const closedStanding = core.overtimeLowerBound([{...roster[0],shiftAvailability:all}],{empTimeOffDays:availability([],week)});
+  const closedWeek = core.overtimeLowerBound(roster,{empTimeOffDays:availability([],week,{a:all})});
+  assert(closedStanding > open); assert.equal(closedWeek,closedStanding);
+});

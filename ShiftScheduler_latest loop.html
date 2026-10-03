@@ -1973,6 +1973,11 @@ function shiftAvailabilityState(emp, day, shiftId, timeOff) {
   const override = week?.[day]?.[shiftId];
   return SHIFT_AVAILABILITY_STATES.includes(override) ? override : shiftAvailabilityCell(emp.shiftAvailability, day, shiftId);
 }
+// Cell-level lookup for candidate filters that already screen days and shifts
+// themselves; the hour-based availabilityConflicts remains the authority.
+function shiftMarkedOff(emp, day, shiftId, timeOff) {
+  return shiftAvailabilityState(emp, day, shiftId, timeOff) === "no";
+}
 function shiftAvailabilityBlocks(emp, timeOff) {
   const spans = [];
   for (const day of DAYS) for (const s of SHIFTS) {
@@ -2272,6 +2277,7 @@ function overtimeLowerBound(employees, options = {}) {
       !(emp.availableDaysOfWeek?.length && !emp.availableDaysOfWeek.includes(day)) &&
       !empTimeOffDays?.has(emp.id + "__" + day) &&
       !(emp.blockedShifts || []).includes(shiftId) &&
+      !shiftMarkedOff(emp, day, shiftId, empTimeOffDays) &&
       !(emp.requiredShift && emp.requiredShift !== shiftId && !canWorkOtherShifts(emp)));
     const days = new Set(slots.map(s => s.day)).size;
     const duties = Math.min(emp.willing16h ? slots.length : days, emp.maxShiftsPerWeek ?? Infinity);
@@ -3335,6 +3341,7 @@ function repairScheduleGaps(result, context) {
           if ((emp.unavailableDays || []).includes(gap.day)) continue;
           if (empTimeOffDays && empTimeOffDays.has(emp.id + "__" + gap.day)) continue;
           if ((emp.blockedShifts || []).includes(gap.shiftId)) continue;
+          if (shiftMarkedOff(emp, gap.day, gap.shiftId, empTimeOffDays)) continue;
           if (emp.requiredShift && emp.requiredShift !== gap.shiftId && !canWorkOtherShifts(emp)) continue;
           const onThisDay = SHIFTS.some(s =>
             s.id !== gap.shiftId && (ns[cellKey(gap.day, s.id)] || []).some(a => a.employeeId === emp.id)
@@ -3370,6 +3377,7 @@ function repairScheduleGaps(result, context) {
             const emp = source.find(e => e.id === a.employeeId);
             if (!emp) continue;
             if ((emp.blockedShifts || []).includes(gap.shiftId)) continue;
+            if (shiftMarkedOff(emp, gap.day, gap.shiftId, empTimeOffDays)) continue;
             if (emp.requiredShift && emp.requiredShift !== gap.shiftId && !canWorkOtherShifts(emp)) continue;
             if (assignedIds.has(emp.id)) continue;
             const pos = pickPosition(emp, ns[gapKey] || []);
@@ -3406,6 +3414,7 @@ function repairScheduleGaps(result, context) {
             if (!emp) continue;
             if (emp.inTraining) continue;
             if ((emp.blockedShifts || []).includes(gap.shiftId)) continue;
+            if (shiftMarkedOff(emp, gap.day, gap.shiftId, empTimeOffDays)) continue;
 
             const hoType = shiftOrder[adjShiftId] < shiftOrder[gap.shiftId] ? "late-stay" : "early-arrival";
             // Build current bodies including previously-added handoffs for role check
@@ -4057,7 +4066,7 @@ function buildAutoFill(sourceEmps, cfg, empTimeOffDays, empPatterns, extShiftsAr
       let placed = 0;
       for (let offset = 0; offset < 7 && placed < maxShifts; offset++) {
         const d = DAYS[(blockStart + offset) % 7];
-        if (!preferredOff.has(d) && !(emp.unavailableDays || []).includes(d)) {
+        if (!preferredOff.has(d) && !(emp.unavailableDays || []).includes(d) && !shiftMarkedOff(emp, d, shift.id, empTimeOffDays)) {
           workDays.add(d);
           placed++;
         }
@@ -4066,7 +4075,7 @@ function buildAutoFill(sourceEmps, cfg, empTimeOffDays, empPatterns, extShiftsAr
       if (placed < maxShifts) {
         for (let offset = 0; offset < 7 && placed < maxShifts; offset++) {
           const d = DAYS[(blockStart + offset) % 7];
-          if (!workDays.has(d) && !(emp.unavailableDays || []).includes(d)) {
+          if (!workDays.has(d) && !(emp.unavailableDays || []).includes(d) && !shiftMarkedOff(emp, d, shift.id, empTimeOffDays)) {
             workDays.add(d);
             placed++;
           }
@@ -4079,24 +4088,25 @@ function buildAutoFill(sourceEmps, cfg, empTimeOffDays, empPatterns, extShiftsAr
         const ptAvail = new Set(
           DAYS.filter(d =>
             !(emp.unavailableDays||[]).includes(d) &&
+            !shiftMarkedOff(emp, d, shift.id, empTimeOffDays) &&
             !(emp.preferredDaysOff||[]).includes(d)
           )
         );
         // If they've blocked everything, fall back to just non-unavailable days
         const ptWorkDays = ptAvail.size > 0 ? ptAvail
-          : new Set(DAYS.filter(d => !(emp.unavailableDays||[]).includes(d)));
+          : new Set(DAYS.filter(d => !(emp.unavailableDays||[]).includes(d) && !shiftMarkedOff(emp, d, shift.id, empTimeOffDays)));
         plan[emp.id] = { shiftId: shift.id, workDays: ptWorkDays, isPT: true, maxShiftsPerWeek: emp.maxShiftsPerWeek ?? null };
       } else if ((emp.qualifications||[]).includes("Supervisor")) {
         // Supervisors must be scheduled every weekday on 1st shift — enforce it
         const supWorkDays = new Set(
-          DAYS.filter(d => isWeekday(d) && !(emp.unavailableDays||[]).includes(d))
+          DAYS.filter(d => isWeekday(d) && !(emp.unavailableDays||[]).includes(d) && !shiftMarkedOff(emp, d, "first", empTimeOffDays))
         );
         // Also allow weekend days from the regular work-block so they can still reach 40h
         // if a weekday is unavailable — add remaining non-unavail days up to maxShifts
         let supPlaced = supWorkDays.size;
         for (let offset = 0; offset < 7 && supPlaced < maxShifts; offset++) {
           const d = DAYS[(blockStart + offset) % 7];
-          if (!supWorkDays.has(d) && !(emp.unavailableDays||[]).includes(d)) {
+          if (!supWorkDays.has(d) && !(emp.unavailableDays||[]).includes(d) && !shiftMarkedOff(emp, d, "first", empTimeOffDays)) {
             supWorkDays.add(d);
             supPlaced++;
           }
@@ -4141,7 +4151,7 @@ function buildAutoFill(sourceEmps, cfg, empTimeOffDays, empPatterns, extShiftsAr
         const empPlan = plan[emp.id];
         if (!empPlan) return;
         const preferredOff = new Set(emp.preferredDaysOff || []);
-        const unavail = new Set(emp.unavailableDays || []);
+        const unavail = new Set([...(emp.unavailableDays || []), ...DAYS.filter(d => shiftMarkedOff(emp, d, empPlan.shiftId, empTimeOffDays))]);
         const restDays = new Set();
 
         // Try preferred days off first if no overlap with other essentials
@@ -4351,6 +4361,7 @@ function buildAutoFill(sourceEmps, cfg, empTimeOffDays, empPatterns, extShiftsAr
         if ((hourTracker[id] || 0) >= workTarget(id)) return false;
         if ((peer.unavailableDays || []).includes(day)) return false;
         if ((peer.blockedShifts || []).includes(shiftId)) return false;
+        if (shiftMarkedOff(peer, day, shiftId, empTimeOffDays)) return false;
         if (peer.requiredShift && peer.requiredShift !== shiftId && !canWorkOtherShifts(peer)) return false;
         if (!getAvailPos(day, shiftId).some(p => peer.qualifications.includes(p))) return false;
         const peerPlan = plan[id];
@@ -4378,6 +4389,7 @@ function buildAutoFill(sourceEmps, cfg, empTimeOffDays, empPatterns, extShiftsAr
         // Must not be unavailable or blocked for this day/shift
         if ((peer.unavailableDays || []).includes(day)) return false;
         if ((peer.blockedShifts || []).includes(shiftId)) return false;
+        if (shiftMarkedOff(peer, day, shiftId, empTimeOffDays)) return false;
         if (peer.requiredShift && peer.requiredShift !== shiftId && !canWorkOtherShifts(peer)) return false;
         // Must prefer or be willing to work this shift (no extreme mismatch)
         const peerPrefs = peer.preferredShifts || [];
@@ -4946,6 +4958,7 @@ function buildAutoFill(sourceEmps, cfg, empTimeOffDays, empPatterns, extShiftsAr
       const supEmp = sourceEmps.find(e =>
         (e.qualifications||[]).includes("Supervisor") &&
         !(e.unavailableDays||[]).includes(day) &&
+        !shiftMarkedOff(e, day, shiftId, empTimeOffDays) &&
         !(empTimeOffDays && empTimeOffDays.has(e.id + "__" + day))
       );
       if (supEmp && initialState.canAssign(supEmp.id, i)) {
@@ -5607,6 +5620,7 @@ function buildAutoFill(sourceEmps, cfg, empTimeOffDays, empPatterns, extShiftsAr
             if ((e.unavailableDays||[]).includes(day)) return false;
             if (empTimeOffDays && empTimeOffDays.has(e.id + "__" + day)) return false;
             if ((e.blockedShifts||[]).includes(shift.id)) return false;
+            if (shiftMarkedOff(e, day, shift.id, empTimeOffDays)) return false;
             if (e.requiredShift && e.requiredShift !== shift.id && !canWorkOtherShifts(e)) return false;
             if (isRestViolation(e, rg(e.id, ns, day, shift.id), minRest)) return false;
             if (calcConsecutiveHours(e.id, ns, day, shift.id, extShiftsArg) > empMaxConsec(e)) return false;
@@ -5680,6 +5694,7 @@ function buildAutoFill(sourceEmps, cfg, empTimeOffDays, empPatterns, extShiftsAr
           if ((hourTracker[emp.id] || 0) >= workTarget(emp)) break;
           if (emp.maxShiftsPerWeek != null && (shiftsWorked[emp.id] || 0) >= emp.maxShiftsPerWeek) break;
           if ((emp.blockedShifts || []).includes(adjShift)) continue;
+          if (shiftMarkedOff(emp, day, adjShift, empTimeOffDays)) continue;
           const adjKey = cellKey(day, adjShift);
           const adjAsgn = ns[adjKey] || [];
           const cap = slotCap(day, adjShift);
@@ -5726,6 +5741,7 @@ function buildAutoFill(sourceEmps, cfg, empTimeOffDays, empPatterns, extShiftsAr
           if ((e.unavailableDays || []).includes(day)) return false;
           if (empTimeOffDays && empTimeOffDays.has(e.id + "__" + day)) return false;
           if ((e.blockedShifts || []).includes(shift.id)) return false;
+          if (shiftMarkedOff(e, day, shift.id, empTimeOffDays)) return false;
           if (e.requiredShift && e.requiredShift !== shift.id && !canWorkOtherShifts(e)) return false;
           if (!e.qualifications.includes("Guard")) return false;
           if (isRestViolation(e, rg(e.id, ns, day, shift.id), minRest)) return false;
@@ -5794,6 +5810,7 @@ function buildAutoFill(sourceEmps, cfg, empTimeOffDays, empPatterns, extShiftsAr
             if (ftEmp.maxShiftsPerWeek != null && (shiftsWorked[ftEmp.id] || 0) >= ftEmp.maxShiftsPerWeek) continue;
             if ((ftEmp.unavailableDays||[]).includes(day)) continue;
             if (empTimeOffDays && empTimeOffDays.has(ftEmp.id + "__" + day)) continue;
+            if (shiftMarkedOff(ftEmp, day, shift.id, empTimeOffDays)) continue;
             if (isRestViolation(ftEmp, rg(ftEmp.id, ns, day, shift.id), minRest)) continue;
             if (calcConsecutiveHours(ftEmp.id, ns, day, shift.id, extShiftsArg) > empMaxConsec(ftEmp)) continue;
             if (shift.id === "third" && calcConsecutiveNights(ftEmp.id, ns, day, shift.id) >= maxNights) continue;
@@ -5830,6 +5847,7 @@ function buildAutoFill(sourceEmps, cfg, empTimeOffDays, empPatterns, extShiftsAr
                 if ((displacedEmp.unavailableDays||[]).includes(rDay)) continue;
                 if (empTimeOffDays && empTimeOffDays.has(displacedEmp.id + "__" + rDay)) continue;
                 if ((displacedEmp.blockedShifts||[]).includes(rShift.id)) continue;
+                if (shiftMarkedOff(displacedEmp, rDay, rShift.id, empTimeOffDays)) continue;
                 if (displacedEmp.requiredShift && displacedEmp.requiredShift !== rShift.id && !canWorkOtherShifts(displacedEmp)) continue;
                 if (isRestViolation(displacedEmp, rg(displacedEmp.id, ns, rDay, rShift.id), minRest)) continue;
                 if (calcConsecutiveHours(displacedEmp.id, ns, rDay, rShift.id, extShiftsArg) > empMaxConsec(displacedEmp)) continue;
@@ -5925,6 +5943,7 @@ function buildAutoFill(sourceEmps, cfg, empTimeOffDays, empPatterns, extShiftsAr
           if ((e.unavailableDays||[]).includes(day)) return false;
           if (empTimeOffDays && empTimeOffDays.has(e.id + "__" + day)) return false;
           if ((e.blockedShifts||[]).includes(shift.id)) return false;
+          if (shiftMarkedOff(e, day, shift.id, empTimeOffDays)) return false;
           if (e.requiredShift && e.requiredShift !== shift.id && !canWorkOtherShifts(e)) return false;
           if (e.maxShiftsPerWeek != null && (shiftsWorked[e.id] || 0) >= e.maxShiftsPerWeek) return false;
           if (isRestViolation(e, rg(e.id, ns, day, shift.id), minRest)) return false;
@@ -6010,6 +6029,7 @@ function buildAutoFill(sourceEmps, cfg, empTimeOffDays, empPatterns, extShiftsAr
           if ((donor.unavailableDays||[]).includes(gapDay)) continue;
           if (empTimeOffDays && empTimeOffDays.has(donor.id + "__" + gapDay)) continue;
           if ((donor.blockedShifts||[]).includes(gapShift.id)) continue;
+          if (shiftMarkedOff(donor, gapDay, gapShift.id, empTimeOffDays)) continue;
           if (donor.requiredShift && donor.requiredShift !== gapShift.id && !canWorkOtherShifts(donor)) continue;
           if (isRestViolation(donor, rg(donor.id, ns, gapDay, gapShift.id), minRest)) continue;
           if (calcConsecutiveHours(donor.id, ns, gapDay, gapShift.id, extShiftsArg) > empMaxConsec(donor)) continue;
@@ -6052,6 +6072,7 @@ function buildAutoFill(sourceEmps, cfg, empTimeOffDays, empPatterns, extShiftsAr
             if ((sub.unavailableDays||[]).includes(donorSourceDay)) return false;
             if (empTimeOffDays && empTimeOffDays.has(sub.id + "__" + donorSourceDay)) return false;
             if ((sub.blockedShifts||[]).includes(donorSourceShift.id)) return false;
+            if (shiftMarkedOff(sub, donorSourceDay, donorSourceShift.id, empTimeOffDays)) return false;
             if (sub.requiredShift && sub.requiredShift !== donorSourceShift.id && !canWorkOtherShifts(sub)) return false;
             // Check the sub can fill the vacated role (or at least Guard)
             const subAp = getAvailPos(donorSourceDay, donorSourceShift.id).filter(p => canFillPos(sub, p, donorSourceDay));
@@ -6229,6 +6250,7 @@ function violationMinimizerPass(ns, sourceEmps, cfg, empTimeOffDays, extShiftsAr
     const allowedDOW = emp.availableDaysOfWeek && emp.availableDaysOfWeek.length > 0 ? emp.availableDaysOfWeek : null;
     if (allowedDOW && !allowedDOW.includes(day)) return false;
     if ((emp.blockedShifts||[]).includes(shiftId)) return false;
+    if (shiftMarkedOff(emp, day, shiftId, empTimeOffDays)) return false;
     if (emp.requiredShift && emp.requiredShift !== shiftId && !canWorkOtherShifts(emp)) return false;
     if (isFT(emp) && !isSup(emp)) {
       const p = plan[emp.id];
@@ -6266,6 +6288,7 @@ function violationMinimizerPass(ns, sourceEmps, cfg, empTimeOffDays, extShiftsAr
     if (empTimeOffDays && empTimeOffDays.has(emp.id + "__" + day)) return 95;
     const allowedDOW2 = emp.availableDaysOfWeek && emp.availableDaysOfWeek.length > 0 ? emp.availableDaysOfWeek : null;
     if (allowedDOW2 && !allowedDOW2.includes(day)) return 93;
+    if (shiftMarkedOff(emp, day, shiftId, empTimeOffDays)) return 92;
     if ((emp.blockedShifts||[]).includes(shiftId)) return 90;
     if (emp.requiredShift && emp.requiredShift !== shiftId && !canWorkOtherShifts(emp)) return 80;
     if (isFT(emp) && !isSup(emp)) {
