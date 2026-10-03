@@ -195,3 +195,39 @@ test('autofill follows a grid preference that differs from the weekly one',()=>{
   assert(shifts.length > 0);
   assert(shifts.every(s=>s==='second'),shifts.join(','));
 });
+
+// Phase 4: editing helpers behind the grid screens.
+const {withShiftAvailabilityCell,withWeekAvailabilityCell,withoutWeekAvailability,ruleBlockedShiftReason,shiftAvailabilityCounts} = core;
+test('editing the standing grid stores only non-OK cells and collapses to nothing',()=>{
+  let g = withShiftAvailabilityCell(null,'Monday','first','prefer');
+  assert.deepEqual(g,{Monday:{first:'prefer'}});
+  g = withShiftAvailabilityCell(g,'Monday','second','no');
+  assert.deepEqual(g,{Monday:{first:'prefer',second:'no'}});
+  g = withShiftAvailabilityCell(g,'Monday','first','ok');
+  assert.deepEqual(g,{Monday:{second:'no'}});
+  assert.equal(withShiftAvailabilityCell(g,'Monday','second','ok'),null);
+  assert.deepEqual(shiftAvailabilityCounts({Monday:{first:'prefer',second:'no'},Friday:{third:'no'}}),{prefer:1,no:2});
+  assert.deepEqual(shiftAvailabilityCounts({Monday:{first:'bogus'}}),{prefer:0,no:0});
+});
+test('week cells set back to the standing value are removed, and empty weeks disappear',()=>{
+  const e = emp({shiftAvailability:{Monday:{first:'no'}}});
+  let store = withWeekAvailabilityCell({},week,e,'Monday','first','ok');
+  assert.deepEqual(store,{[week]:{e:{Monday:{first:'ok'}}}},'reopening a standing "no" is stored as an explicit ok');
+  store = withWeekAvailabilityCell(store,week,e,'Monday','first','no');
+  assert.deepEqual(store,{},'back to the standing value: nothing stored');
+  store = withWeekAvailabilityCell({other:1},week,e,'Tuesday','second','prefer');
+  assert.deepEqual(store,{other:1,[week]:{e:{Tuesday:{second:'prefer'}}}});
+  assert.deepEqual(withoutWeekAvailability(store,week,'e'),{other:1});
+  assert.deepEqual(withWeekAvailabilityCell('corrupt',week,e,'Tuesday','second','prefer'),{[week]:{e:{Tuesday:{second:'prefer'}}}});
+});
+test('cells already ruled out by other settings are locked with a reason',()=>{
+  assert.equal(ruleBlockedShiftReason(emp(),'Monday','first'),null);
+  assert.match(ruleBlockedShiftReason(emp({unavailableDays:['Monday']}),'Monday','first'),/Unavailable/);
+  assert.match(ruleBlockedShiftReason(emp({availableDaysOfWeek:['Tuesday']}),'Monday','first'),/available days/);
+  assert.match(ruleBlockedShiftReason(emp({blockedShifts:['third']}),'Monday','third'),/blocked/);
+  assert.match(ruleBlockedShiftReason(emp({requiredShift:'second'}),'Monday','first'),/Required shift is 2nd/);
+  assert.equal(ruleBlockedShiftReason(emp({requiredShift:'second',canWorkOtherShifts:true}),'Monday','first'),null);
+  assert.equal(ruleBlockedShiftReason(emp({requiredShift:'second',crossShiftOT:true}),'Monday','first'),null);
+  assert.match(ruleBlockedShiftReason(emp({qualifications:['Supervisor','Guard']}),'Saturday','first'),/Supervisor/);
+  assert.equal(ruleBlockedShiftReason(emp({qualifications:['Supervisor','Guard']}),'Monday','first'),null);
+});

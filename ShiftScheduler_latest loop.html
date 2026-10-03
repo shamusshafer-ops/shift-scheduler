@@ -1978,6 +1978,51 @@ function shiftAvailabilityState(emp, day, shiftId, timeOff) {
 function shiftMarkedOff(emp, day, shiftId, timeOff) {
   return shiftAvailabilityState(emp, day, shiftId, timeOff) === "no";
 }
+// Returns the grid with one cell set. A cell equal to `base` (the value it
+// would inherit) is dropped, and empty days or grids collapse, so untouched
+// employees and weeks never store availability data.
+function withShiftAvailabilityCell(grid, day, shiftId, state, base = "ok") {
+  const next = {...(grid && typeof grid === "object" && !Array.isArray(grid) ? grid : {})};
+  const cells = {...(next[day] && typeof next[day] === "object" ? next[day] : {})};
+  if (state === base) delete cells[shiftId]; else cells[shiftId] = state;
+  if (Object.keys(cells).length) next[day] = cells; else delete next[day];
+  return Object.keys(next).length ? next : null;
+}
+// Sets one week-override cell in the store keyed by week start. A cell set back
+// to the employee's standing value is removed rather than stored.
+function withWeekAvailabilityCell(store, weekStart, emp, day, shiftId, state) {
+  const weeks = store && typeof store === "object" && !Array.isArray(store) ? {...store} : {};
+  const week = {...(weeks[weekStart] && typeof weeks[weekStart] === "object" ? weeks[weekStart] : {})};
+  const grid = withShiftAvailabilityCell(week[emp.id], day, shiftId, state, shiftAvailabilityCell(emp.shiftAvailability, day, shiftId));
+  if (grid) week[emp.id] = grid; else delete week[emp.id];
+  if (Object.keys(week).length) weeks[weekStart] = week; else delete weeks[weekStart];
+  return weeks;
+}
+function withoutWeekAvailability(store, weekStart, empId) {
+  const weeks = store && typeof store === "object" && !Array.isArray(store) ? {...store} : {};
+  const week = {...(weeks[weekStart] || {})};
+  delete week[empId];
+  if (Object.keys(week).length) weeks[weekStart] = week; else delete weeks[weekStart];
+  return weeks;
+}
+// Why the employee's existing rules already rule out this day and shift, or
+// null. The grid can only narrow those rules, so such cells are locked.
+function ruleBlockedShiftReason(emp, day, shiftId) {
+  if ((emp.unavailableDays || []).includes(day)) return "Unavailable all day";
+  if (emp.availableDaysOfWeek?.length && !emp.availableDaysOfWeek.includes(day)) return "Not one of their available days";
+  if ((emp.blockedShifts || []).includes(shiftId)) return "Shift is blocked";
+  if (emp.requiredShift && emp.requiredShift !== shiftId && !canWorkOtherShifts(emp))
+    return "Required shift is " + (SHIFTS.find(s => s.id === emp.requiredShift)?.label || emp.requiredShift);
+  if ((emp.qualifications || []).includes("Supervisor") && !SUP_SLOT_DAY(day, shiftId)) return "Supervisor works weekday 1st shift only";
+  return null;
+}
+function shiftAvailabilityCounts(grid) {
+  const counts = {prefer:0, no:0};
+  if (shiftAvailabilityErrors(grid).length) return counts;
+  for (const cells of Object.values(grid || {})) for (const state of Object.values(cells || {}))
+    if (state in counts) counts[state]++;
+  return counts;
+}
 // Shifts the employee prefers on this day. Grid "prefer" cells for the day win;
 // a day without any falls back to the weekly preferredShifts list.
 function dayPreferredShifts(emp, day, timeOff) {
@@ -9410,6 +9455,144 @@ function AvailableDaysOfWeekToggle({ val, set }) {
   );
 }
 
+const SHIFT_AVAILABILITY_LOOK = {
+  ok:     {label:"OK",     color:"var(--ss-text-dim)", bg:"var(--ss-surface-alt)", border:"var(--ss-border)"},
+  prefer: {label:"Prefer", color:"var(--ss-accent)",   bg:"var(--ss-accent-22)",   border:"var(--ss-accent)"},
+  no:     {label:"No",     color:"var(--ss-danger)",   bg:"var(--ss-danger-18)",   border:"var(--ss-danger)"},
+};
+const NEXT_SHIFT_AVAILABILITY = {ok:"prefer", prefer:"no", no:"ok"};
+const SHIFT_AVAILABILITY_ROWS = [["first","1st","06–14"],["second","2nd","14–22"],["third","3rd","22–06"]];
+const SHIFT_AVAILABILITY_BUTTON = {background:"var(--ss-surface-alt)",border:"1.5px solid var(--ss-border)",color:"var(--ss-text-dim)",
+  padding:"4px 10px",borderRadius:6,cursor:"pointer",fontSize:11,fontWeight:600,fontFamily:"inherit"};
+
+// Day-by-shift grid. Tapping a cell cycles OK → Prefer → No. Cells the
+// employee's other rules already exclude are locked; `changed` outlines cells
+// that differ from what they would otherwise inherit.
+function ShiftAvailabilityGrid({ stateOf, onCycle, lockedReason, changed = () => false }) {
+  const cell = {padding:2,textAlign:"center"};
+  return (
+    <div style={{overflowX:"auto",maxWidth:"100%"}}>
+      <table style={{borderCollapse:"separate",borderSpacing:0,fontSize:10}}>
+        <thead><tr>
+          <th style={cell}></th>
+          {DAYS.map(d => <th key={d} style={{...cell,color:"var(--ss-text-dim)",fontWeight:600}}>{d.slice(0,3)}</th>)}
+        </tr></thead>
+        <tbody>
+          {SHIFT_AVAILABILITY_ROWS.map(([sid,label,hours]) => (
+            <tr key={sid}>
+              <th style={{...cell,textAlign:"left",paddingRight:6,whiteSpace:"nowrap",color:"var(--ss-text-dim)",fontWeight:600}}>
+                {label} <span style={{fontWeight:400}}>{hours}</span>
+              </th>
+              {DAYS.map(day => {
+                const reason = lockedReason(day, sid), state = stateOf(day, sid), look = SHIFT_AVAILABILITY_LOOK[state];
+                const isChanged = !reason && changed(day, sid);
+                return (
+                  <td key={day} style={cell}>
+                    <button type="button" disabled={!!reason} onClick={() => onCycle(day, sid, NEXT_SHIFT_AVAILABILITY[state])}
+                      aria-label={`${day} ${label} shift: ${reason ? reason : look.label}${isChanged ? " (changed this week)" : ""}`}
+                      title={reason || (look.label + (isChanged ? " · changed for this week only" : ""))}
+                      style={{width:44,height:26,borderRadius:5,fontFamily:"inherit",fontSize:10,fontWeight:state==="ok"?500:700,
+                        cursor:reason?"not-allowed":"pointer",
+                        background:reason?"transparent":look.bg,color:reason?"var(--ss-text-dim)":look.color,
+                        border:(isChanged?"2px dashed ":"1.5px solid ")+(reason?"var(--ss-border)":isChanged?"var(--ss-warning)":look.border),
+                        opacity:reason?0.45:1}}>
+                      {reason ? "—" : look.label}
+                    </button>
+                  </td>
+                );
+              })}
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </div>
+  );
+}
+
+// Standing pattern in the employee editor. `rules` carries the form's current
+// availability settings so locked cells follow edits before saving.
+function ShiftAvailabilityEditor({ value, onChange, rules }) {
+  const errors = shiftAvailabilityErrors(value);
+  const counts = shiftAvailabilityCounts(value);
+  return (
+    <div style={{marginTop:12}}>
+      <div style={{fontSize:11,color:"var(--ss-text-dim)",fontWeight:600,letterSpacing:".04em",marginBottom:6}}>
+        SHIFT AVAILABILITY BY DAY
+      </div>
+      {errors.length ? (
+        <div style={{fontSize:10,color:"var(--ss-danger)",lineHeight:1.5,marginBottom:6}}>
+          {errors.join(" ")} This employee is treated as unavailable until it is cleared.
+          <button type="button" onClick={()=>onChange(null)} style={{...SHIFT_AVAILABILITY_BUTTON,marginLeft:6}}>Clear</button>
+        </div>
+      ) : (
+        <ShiftAvailabilityGrid
+          stateOf={(day, sid) => shiftAvailabilityCell(value, day, sid)}
+          onCycle={(day, sid, next) => onChange(withShiftAvailabilityCell(value, day, sid, next))}
+          lockedReason={(day, sid) => ruleBlockedShiftReason(rules, day, sid)}/>
+      )}
+      <div style={{fontSize:10,color:"var(--ss-text-dim)",lineHeight:1.5,marginTop:4,display:"flex",gap:8,flexWrap:"wrap",alignItems:"center"}}>
+        <span>Tap a cell: OK → Prefer → No. <b>No</b> is a hard block; <b>Prefer</b> steers autofill on that day. Applies every week — change a single week on the Time Off tab.</span>
+        {(counts.prefer + counts.no > 0) && !errors.length &&
+          <button type="button" onClick={()=>onChange(null)} style={SHIFT_AVAILABILITY_BUTTON}>Reset all to OK</button>}
+      </div>
+    </div>
+  );
+}
+
+// One week's overrides, shown on the Time Off tab for the week being scheduled.
+function WeekAvailabilityPanel() {
+  const { employees } = useRoster();
+  const { weekStart } = useSchedule();
+  const { weekAvailability: store, setWeekAvailability } = useTimeOff();
+  const [empId, setEmpId] = useState("");
+  const week = weekAvailabilityFor(store, weekStart);
+  const timeOff = useMemo(() => buildTimeOffAvailability([], weekStart, week), [weekStart, week]);
+  const emp = employees.find(e => e.id === empId) || null;
+  const changedIds = new Set(week && typeof week === "object" && !Array.isArray(week) ? Object.keys(week) : []);
+  const override = emp && changedIds.has(emp.id) ? week[emp.id] : null;
+  const empIssues = timeOff.issues.filter(i => !emp || !i.employeeId || i.employeeId === emp.id);
+  if (!validISODate(weekStart)) return null;
+  return (
+    <div style={{background:"var(--ss-surface)",border:"1px solid var(--ss-border)",borderRadius:8,padding:"18px 20px",marginBottom:20}}>
+      <div style={{fontSize:12,fontWeight:700,color:"var(--ss-text-dim)",letterSpacing:".06em",marginBottom:6}}>
+        SHIFT AVAILABILITY — WEEK OF {weekStart}
+      </div>
+      <div style={{fontSize:11,color:"var(--ss-text-dim)",lineHeight:1.5,marginBottom:10}}>
+        Changes here apply to this week only and replace the employee's standing pattern for the cells you change.
+        Setting a cell back to its standing value removes the change.
+      </div>
+      <div style={{display:"flex",gap:8,alignItems:"center",flexWrap:"wrap",marginBottom:10}}>
+        <select aria-label="Employee" value={empId} onChange={e=>setEmpId(e.target.value)}
+          style={{background:"var(--ss-surface-alt)",border:"1px solid var(--ss-border)",color:"var(--ss-text)",
+            padding:"6px 10px",borderRadius:6,fontFamily:"inherit",fontSize:12}}>
+          <option value="">Select employee…</option>
+          {employees.map(e => <option key={e.id} value={e.id}>{e.name}{changedIds.has(e.id) ? "  • changed this week" : ""}</option>)}
+        </select>
+        {override && (
+          <button type="button" onClick={()=>setWeekAvailability(prev=>withoutWeekAvailability(prev, weekStart, emp.id))}
+            style={SHIFT_AVAILABILITY_BUTTON}>Reset this week to standing pattern</button>
+        )}
+      </div>
+      {empIssues.map((i, n) => <div key={n} style={{fontSize:11,color:"var(--ss-danger)",marginBottom:6}}>{i.msg}</div>)}
+      {emp && !empIssues.length && (
+        <>
+          <ShiftAvailabilityGrid
+            stateOf={(day, sid) => shiftAvailabilityState(emp, day, sid, timeOff)}
+            onCycle={(day, sid, next) => setWeekAvailability(prev => withWeekAvailabilityCell(prev, weekStart, emp, day, sid, next))}
+            lockedReason={(day, sid) => ruleBlockedShiftReason(emp, day, sid)}
+            changed={(day, sid) => override?.[day]?.[sid] != null}/>
+          <div style={{fontSize:10,color:"var(--ss-text-dim)",marginTop:4}}>Dashed outline = changed for this week only.</div>
+        </>
+      )}
+      {!emp && changedIds.size > 0 && (
+        <div style={{fontSize:11,color:"var(--ss-text-dim)"}}>
+          Changed this week: {employees.filter(e=>changedIds.has(e.id)).map(e=>e.name).join(", ") || "none"}
+        </div>
+      )}
+    </div>
+  );
+}
+
 function InTrainingToggle({ val, set }) {
   const active = val === true;
   return (
@@ -9913,9 +10096,10 @@ function EmployeeManager({ onOpenTestModal }) {
     if (!name) return;
     if (!newQuals.length) { setErrors(["Select at least one position."]); setTimeout(()=>setErrors([]),3000); return; }
     if (employees.some(e=>e.name.toLowerCase()===name.toLowerCase())) { setErrors(["Name already exists."]); setTimeout(()=>setErrors([]),3000); return; }
-    const availabilityErrors = unavailableWindowErrors(newForm.unavailableWindows);
+    const availabilityErrors = [...unavailableWindowErrors(newForm.unavailableWindows), ...shiftAvailabilityErrors(newForm.shiftAvailability)];
     if (availabilityErrors.length) { setErrors(availabilityErrors); return; }
-    setEmployees(p=>[...p,{id:Date.now().toString(),name,qualifications:[...newQuals],employmentType:newType,unavailableDays:[...newUnavail],unavailableWindows:JSON.parse(JSON.stringify(newForm.unavailableWindows || [])),preferredShifts:[...(newPrefShifts||[])],blockedShifts:[...(newBlockedShifts||[])],requiredShift:newRequiredShift||null,preferredDaysOff:[...newPrefDaysOff],overtimePref:newForm.overtimePref||"neutral",willing16h:newForm.willing16h||false,maxShiftsPerWeek:newForm.maxShiftsPerWeek??null,ext12hPref:newForm.ext12hPref??null,availableDaysOfWeek:newForm.availableDaysOfWeek||null,inTraining:newForm.inTraining||false,swingEligible:[...(newForm.swingEligible||[])],canWorkOtherShifts:canWorkOtherShifts(newForm)||false,splitShiftEligible:newForm.splitShiftEligible||false}]);
+    setEmployees(p=>[...p,{id:Date.now().toString(),name,qualifications:[...newQuals],employmentType:newType,unavailableDays:[...newUnavail],unavailableWindows:JSON.parse(JSON.stringify(newForm.unavailableWindows || [])),preferredShifts:[...(newPrefShifts||[])],blockedShifts:[...(newBlockedShifts||[])],requiredShift:newRequiredShift||null,preferredDaysOff:[...newPrefDaysOff],overtimePref:newForm.overtimePref||"neutral",willing16h:newForm.willing16h||false,maxShiftsPerWeek:newForm.maxShiftsPerWeek??null,ext12hPref:newForm.ext12hPref??null,availableDaysOfWeek:newForm.availableDaysOfWeek||null,inTraining:newForm.inTraining||false,swingEligible:[...(newForm.swingEligible||[])],canWorkOtherShifts:canWorkOtherShifts(newForm)||false,splitShiftEligible:newForm.splitShiftEligible||false,
+      ...(newForm.shiftAvailability ? {shiftAvailability:JSON.parse(JSON.stringify(newForm.shiftAvailability))} : {})}]);
     setNewForm(EMPTY_NEW); setErrors([]);
   };
 
@@ -9936,10 +10120,12 @@ function EmployeeManager({ onOpenTestModal }) {
     if (!s) return;
     const name = (s.name||"").trim();
     if (!name || !(s.quals||[]).length) return;
-    const availabilityErrors = unavailableWindowErrors(s.unavailableWindows);
+    const availabilityErrors = [...unavailableWindowErrors(s.unavailableWindows), ...shiftAvailabilityErrors(s.shiftAvailability)];
     if (availabilityErrors.length) { setErrors(availabilityErrors); return; }
+    // Rebuilt without shiftAvailability so a grid reset to all-OK leaves no key behind.
     setEmployees(p=>p.map(e=>e.id===s.id ? {
-      ...e,
+      ...Object.fromEntries(Object.entries(e).filter(([k])=>k!=="shiftAvailability")),
+      ...(s.shiftAvailability ? {shiftAvailability:JSON.parse(JSON.stringify(s.shiftAvailability))} : {}),
       name,
       qualifications:    [...(s.quals||[])],
       employmentType:    s.type||"full-time",
@@ -10063,6 +10249,9 @@ function EmployeeManager({ onOpenTestModal }) {
                 <SplitShiftEligibleToggle val={newForm.splitShiftEligible||false} set={v=>setNewForm(f=>({...f,splitShiftEligible:v}))}/>
                 <MaxShiftsPerWeekToggle val={newForm.maxShiftsPerWeek??null} set={v=>setNewForm(f=>({...f,maxShiftsPerWeek:v}))}/>
                 <AvailableDaysOfWeekToggle val={newForm.availableDaysOfWeek||null} set={v=>setNewForm(f=>({...f,availableDaysOfWeek:v}))}/>
+                <ShiftAvailabilityEditor value={newForm.shiftAvailability||null} onChange={v=>setNewForm(f=>({...f,shiftAvailability:v}))}
+                  rules={{unavailableDays:newUnavail,availableDaysOfWeek:newForm.availableDaysOfWeek,blockedShifts:newBlockedShifts,
+                    requiredShift:newRequiredShift,canWorkOtherShifts:canWorkOtherShifts(newForm),crossShiftOT:newForm.crossShiftOT,qualifications:newQuals}}/>
                 <InTrainingToggle val={newForm.inTraining||false} set={v=>setNewForm(f=>({...f,inTraining:v}))}/>
                 <SwingEligibleToggle val={newForm.swingEligible||[]} set={v=>setNewForm(f=>({...f,swingEligible:v}))}/>
                 <CrossShiftPermissionToggle val={canWorkOtherShifts(newForm)||false} set={v=>setNewForm(f=>({...f,canWorkOtherShifts:v}))}/>
@@ -10127,6 +10316,9 @@ function EmployeeManager({ onOpenTestModal }) {
                 <SplitShiftEligibleToggle val={editState?.splitShiftEligible||false} set={v=>setEditState(s=>({...s,splitShiftEligible:v}))}/>
                 <MaxShiftsPerWeekToggle val={editState?.maxShiftsPerWeek??null} set={v=>setEditState(s=>({...s,maxShiftsPerWeek:v}))}/>
                 <AvailableDaysOfWeekToggle val={editState?.availableDaysOfWeek||null} set={v=>setEditState(s=>({...s,availableDaysOfWeek:v}))}/>
+                <ShiftAvailabilityEditor value={editState?.shiftAvailability||null} onChange={v=>setEditState(s=>({...s,shiftAvailability:v}))}
+                  rules={{unavailableDays:editUnavail,availableDaysOfWeek:editState?.availableDaysOfWeek,blockedShifts:editBlockedShifts,
+                    requiredShift:editRequiredShift,canWorkOtherShifts:canWorkOtherShifts(editState),crossShiftOT:editState?.crossShiftOT,qualifications:editQuals}}/>
                 <InTrainingToggle val={editState?.inTraining||false} set={v=>setEditState(s=>({...s,inTraining:v}))}/>
                 <SwingEligibleToggle val={editState?.swingEligible||[]} set={v=>setEditState(s=>({...s,swingEligible:v}))}/>
                 <CrossShiftPermissionToggle val={canWorkOtherShifts(editState)||false} set={v=>setEditState(s=>({...s,canWorkOtherShifts:v}))}/>
@@ -10167,6 +10359,7 @@ function EmployeeManager({ onOpenTestModal }) {
                 ext12hPref:emp.ext12hPref??null,
                 maxWeekendDays:emp.maxWeekendDays??null,
                 availableDaysOfWeek:emp.availableDaysOfWeek||null,
+                shiftAvailability:emp.shiftAvailability||null,
                 inTraining:emp.inTraining||false,
                 swingEligible:emp.swingEligible||[],
                 canWorkOtherShifts:canWorkOtherShifts(emp)||false,
@@ -10199,6 +10392,8 @@ function EmployeeManager({ onOpenTestModal }) {
                     <span style={{color:"var(--ss-accent)",fontSize:10}}>★ {(emp.preferredShifts||[]).map(s=>SHIFTS.find(x=>x.id===s)?.label||s).join("/")}</span>}
                   {!emp.requiredShift&&!(emp.preferredShifts||[]).length&&
                     <span style={{color:"var(--ss-text-dim)",fontSize:10}}>Any</span>}
+                  {(()=>{const c=shiftAvailabilityCounts(emp.shiftAvailability);return c.prefer+c.no>0&&
+                    <div style={{fontSize:9,color:"var(--ss-text-dim)"}} title="Per-day shift availability is set">▦ {[c.prefer&&c.prefer+" prefer",c.no&&c.no+" no"].filter(Boolean).join(" · ")}</div>;})()}
                 </td>
                 <td style={{padding:"9px 10px"}}>
                   <span style={{display:"flex",gap:3,alignItems:"center",flexShrink:0}}>
@@ -11881,7 +12076,7 @@ function EmpPicker({emp,day,sid,st,assign,getPos,subSource,onSub,onHover}) {
 
   const currentHours  = calcHours(emp.id, schedule, extShifts||[]);
   const wouldBeOver   = emp.employmentType==="full-time" && currentHours>=40;
-  const isUnavailable = (emp.unavailableDays||[]).includes(day);
+  const isUnavailable = (emp.unavailableDays||[]).includes(day) || shiftMarkedOff(emp, day, sid, empTimeOffDays);
   const restGap       = calcRestGap(emp.id, schedule, day, sid);
   const consecH       = calcConsecutiveHours(emp.id, schedule, day, sid, extShifts);
   const shortRest     = restGap < (cfg?.minRestHours??MIN_REST_HOURS) && restGap !== Infinity;
@@ -11901,7 +12096,7 @@ function EmpPicker({emp,day,sid,st,assign,getPos,subSource,onSub,onHover}) {
     const empOtPref = emp.overtimePref && emp.overtimePref !== "neutral" ? emp.overtimePref : (cfg?.defaultOvertimePref || "neutral");
     const otPref    = emp.employmentType === "full-time" ? empOtPref : "neutral";
     const warns = [];
-    if (isUnavailable) warns.push(`${emp.name} is marked unavailable on ${day}.`);
+    if (isUnavailable) warns.push(`${emp.name} is marked unavailable on ${day}${shiftMarkedOff(emp, day, sid, empTimeOffDays) ? " for this shift" : ""}.`);
     if (availabilityConflicts(emp, [shiftInterval(day,sid)], empTimeOffDays).length) {
       showAlert({title:"Assignment blocked",message:`${emp.name} has approved leave, unavailable hours or shift availability overlapping this shift.`,variant:"danger"});
       return;
@@ -13144,7 +13339,7 @@ function ScheduleGrid({ onOpenTestModal }) {
     else pos=ap[0];
 
     const warns = [];
-    const isUnavailable = (dragEmp.unavailableDays||[]).includes(d);
+    const isUnavailable = (dragEmp.unavailableDays||[]).includes(d) || shiftMarkedOff(dragEmp, d, s, empTimeOffDays);
     const rest        = calcRestGap(dragEmp.id, schedule, d, s);
     const consecHDrag = calcConsecutiveHours(dragEmp.id, schedule, d, s, extShifts);
     const shortRest = rest < (cfg?.minRestHours??MIN_REST_HOURS) && rest !== Infinity;
@@ -15229,6 +15424,8 @@ function TimeOffManager() {
 
       {}
       <TimeOffCalendar/>
+
+      <WeekAvailabilityPanel/>
 
       {}
       <div style={{background:"var(--ss-surface)",border:"1px solid var(--ss-border)",borderRadius:8,
