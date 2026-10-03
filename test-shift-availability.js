@@ -158,8 +158,9 @@ test('day preference: grid "prefer" cells win for their day, other days use the 
   assert.deepEqual(dayPreferredShifts(e,'Tuesday',null),['third'],'a day with only "no" cells keeps the weekly list');
   assert.deepEqual(dayPreferredShifts(e,'Friday',null),['third']);
   assert.deepEqual(dayPreferredShifts(emp(),'Friday',availability([],week,{e:{Friday:{second:'prefer'}}})),['second']);
-  assert.deepEqual(dayPreferredShifts(e,'Monday',availability([],week,{e:{Monday:{first:'ok',second:'ok'}}})),['third'],
-    'a week override can clear a standing preference');
+  assert.deepEqual(dayPreferredShifts(e,'Monday',availability([],week,{e:{Monday:{first:'ok',second:'ok'}}})),[],
+    'a day set to "ok" on purpose prefers nothing, rather than falling back to the weekly list');
+  assert.deepEqual(dayPreferredShifts(emp({preferredShifts:['third'],shiftAvailability:{Monday:{third:'ok'}}}),'Monday',null),[]);
 });
 test('week preference: each day votes, the most-preferred shift wins',()=>{
   const weekly = emp({preferredShifts:['third','first']});
@@ -197,28 +198,10 @@ test('autofill follows a grid preference that differs from the weekly one',()=>{
 });
 
 // Phase 4: editing helpers behind the grid screens.
-const {withShiftAvailabilityCell,withWeekAvailabilityCell,withoutWeekAvailability,ruleBlockedShiftReason,shiftAvailabilityCounts} = core;
-test('editing the standing grid stores only non-OK cells and collapses to nothing',()=>{
-  let g = withShiftAvailabilityCell(null,'Monday','first','prefer');
-  assert.deepEqual(g,{Monday:{first:'prefer'}});
-  g = withShiftAvailabilityCell(g,'Monday','second','no');
-  assert.deepEqual(g,{Monday:{first:'prefer',second:'no'}});
-  g = withShiftAvailabilityCell(g,'Monday','first','ok');
-  assert.deepEqual(g,{Monday:{second:'no'}});
-  assert.equal(withShiftAvailabilityCell(g,'Monday','second','ok'),null);
-  assert.deepEqual(shiftAvailabilityCounts({Monday:{first:'prefer',second:'no'},Friday:{third:'no'}}),{prefer:1,no:2});
+const {withoutWeekAvailability,ruleBlockedShiftReason,shiftAvailabilityCounts} = core;
+test('summary counts only prefer and no cells',()=>{
+  assert.deepEqual(shiftAvailabilityCounts({Monday:{first:'prefer',second:'no',third:'ok'},Friday:{third:'no'}}),{prefer:1,no:2});
   assert.deepEqual(shiftAvailabilityCounts({Monday:{first:'bogus'}}),{prefer:0,no:0});
-});
-test('week cells set back to the standing value are removed, and empty weeks disappear',()=>{
-  const e = emp({shiftAvailability:{Monday:{first:'no'}}});
-  let store = withWeekAvailabilityCell({},week,e,'Monday','first','ok');
-  assert.deepEqual(store,{[week]:{e:{Monday:{first:'ok'}}}},'reopening a standing "no" is stored as an explicit ok');
-  store = withWeekAvailabilityCell(store,week,e,'Monday','first','no');
-  assert.deepEqual(store,{},'back to the standing value: nothing stored');
-  store = withWeekAvailabilityCell({other:1},week,e,'Tuesday','second','prefer');
-  assert.deepEqual(store,{other:1,[week]:{e:{Tuesday:{second:'prefer'}}}});
-  assert.deepEqual(withoutWeekAvailability(store,week,'e'),{other:1});
-  assert.deepEqual(withWeekAvailabilityCell('corrupt',week,e,'Tuesday','second','prefer'),{[week]:{e:{Tuesday:{second:'prefer'}}}});
 });
 test('cells already ruled out by other settings are locked with a reason',()=>{
   assert.equal(ruleBlockedShiftReason(emp(),'Monday','first'),null);
@@ -291,4 +274,73 @@ test('autofill moves a required-shift full-timer to a preferred other shift with
   const other = Object.entries(result.schedule).filter(([k,a])=>a.some(x=>x.employeeId==='psi-4') && !k.endsWith('__first')).map(([k])=>k);
   assert(other.every(k=>['Tuesday__second','Wednesday__second'].includes(k)),other.join(','));
   assert.equal(core.validateAssignmentPolicy(result.schedule,emps,fx.cfg,{empTimeOffDays:timeOff,empPatterns:fx.enrichedPatterns}).filter(i=>i.type==='required_shift').length,0);
+});
+
+// One editor grid: compose the effective grid from the stored fields and split
+// edits back into those same fields.
+const {composeAvailabilityGrid,decomposeAvailabilityGrid,effectiveShiftState,withWeekAvailabilityDay} = core;
+test('splitting any grid back into fields reproduces it exactly',()=>{
+  let seed=11;const r=()=>{seed=(seed*1664525+1013904223)>>>0;return seed/4294967296;};
+  const states=['ok','prefer','no'];
+  for (let t=0;t<1500;t++) {
+    const g=Object.fromEntries(DAYS.map(d=>[d,Object.fromEntries(SHIFTS.map(x=>[x.id,states[Math.floor(r()*(r()<.5?2:3))]]))]));
+    if (r()<.3) { const d=DAYS[Math.floor(r()*7)]; SHIFTS.forEach(x=>g[d][x.id]='no'); }
+    if (r()<.3) { const x=SHIFTS[Math.floor(r()*3)].id; DAYS.forEach(d=>g[d][x]=r()<.5?'no':'prefer'); }
+    const orig={requiredShift:r()<.3?SHIFTS[Math.floor(r()*3)].id:null,availableDaysOfWeek:r()<.3?DAYS.filter(()=>r()<.6):null,
+      unavailableDays:r()<.3?DAYS.filter(()=>r()<.3):[]};
+    const f=decomposeAvailabilityGrid(g,orig);
+    assert.deepEqual(shiftAvailabilityErrors(f.shiftAvailability),[]);
+    assert.deepEqual(composeAvailabilityGrid({...f,requiredShift:orig.requiredShift}),g,'trial '+t);
+  }
+});
+test('opening and re-saving every real employee changes no stored field',()=>{
+  const fx=require('./fixtures/autofill-real-roster-drafts.json');
+  const backup=require('./roster-backup-current.json').data.shift_employees;
+  const norm=v=>JSON.stringify(v==null||(Array.isArray(v)&&!v.length)?null:v);
+  for (const e of [...fx.roster,...backup]) {
+    const f=decomposeAvailabilityGrid(composeAvailabilityGrid(e),e);
+    for (const k of ['unavailableDays','availableDaysOfWeek','blockedShifts','preferredShifts','shiftAvailability'])
+      assert.equal(norm(f[k]),norm(e[k]),e.name+' '+k);
+  }
+});
+test('whole days and rows map to the classic fields; exceptions stay per-day',()=>{
+  const g=composeAvailabilityGrid(emp());
+  SHIFTS.forEach(x=>g.Monday[x.id]='no');
+  DAYS.forEach(d=>{ if (d!=='Monday') { g[d].third='no'; g[d].first='prefer'; } });
+  g.Saturday.first='ok'; g.Saturday.second='prefer';
+  const f=decomposeAvailabilityGrid(g,{});
+  assert.deepEqual(f.unavailableDays,['Monday']);
+  assert.deepEqual(f.blockedShifts,['third']);
+  assert.deepEqual(f.preferredShifts,['first']);
+  assert.deepEqual(f.shiftAvailability,{Saturday:{second:'prefer'}});
+  assert.equal(f.availableDaysOfWeek,null);
+  const ray={unavailableDays:['Sunday','Monday'],availableDaysOfWeek:['Tuesday','Wednesday','Thursday','Friday','Saturday']};
+  const kept=decomposeAvailabilityGrid(composeAvailabilityGrid({...ray,availableDaysOfWeek:['Tuesday','Wednesday']}),{...ray,availableDaysOfWeek:['Tuesday','Wednesday']});
+  assert.deepEqual(kept.availableDaysOfWeek,['Tuesday','Wednesday'],'days keep the field they came from');
+  assert.deepEqual(kept.unavailableDays,['Sunday','Monday']);
+  const req=decomposeAvailabilityGrid(Object.fromEntries(DAYS.map(d=>[d,{first:'no',second:'ok',third:'ok'}])),{requiredShift:'first'});
+  assert(!req.blockedShifts.includes('first'),'a required shift is never stored as blocked');
+});
+test('a day with no preference beside a weekly preference is stored as explicit ok',()=>{
+  const g=composeAvailabilityGrid(emp({preferredShifts:['third']}));
+  g.Tuesday.third='ok';
+  const f=decomposeAvailabilityGrid(g,{preferredShifts:['third']});
+  assert.deepEqual(f.preferredShifts,['third']);
+  assert.deepEqual(f.shiftAvailability,{Tuesday:{third:'ok'}});
+  assert.equal(effectiveShiftState({...emp(),...f},'Tuesday','third',null),'ok');
+  assert.equal(effectiveShiftState({...emp(),...f},'Wednesday','third',null),'prefer');
+});
+test('week changes are saved a whole day at a time and vanish when they match the standing pattern',()=>{
+  const e=emp({preferredShifts:['third'],blockedShifts:['first']});
+  let store=withWeekAvailabilityDay({},week,e,'Monday',{first:'no',second:'prefer',third:'prefer'},['first']);
+  assert.deepEqual(store,{[week]:{e:{Monday:{second:'prefer',third:'prefer'}}}});
+  const t=availability([],week,store[week]);
+  assert.equal(effectiveShiftState(e,'Monday','second',t),'prefer');
+  assert.equal(effectiveShiftState(e,'Monday','third',t),'prefer','the weekly preference stays visible after the change');
+  assert.equal(effectiveShiftState(e,'Monday','first',t),'no','locked cells keep their rule');
+  store=withWeekAvailabilityDay(store,week,e,'Monday',{first:'no',second:'ok',third:'prefer'},['first']);
+  assert.deepEqual(store,{},'back to the standing pattern: nothing stored');
+  store=withWeekAvailabilityDay({other:1},week,e,'Tuesday',{second:'ok',third:'ok'},['first']);
+  assert.equal(effectiveShiftState(e,'Tuesday','third',availability([],week,store[week])),'ok','a week can drop the weekly preference for a day');
+  assert.deepEqual(withoutWeekAvailability(store,week,'e'),{other:1});
 });
