@@ -1998,6 +1998,31 @@ function withWeekAvailabilityCell(store, weekStart, emp, day, shiftId, state) {
   if (Object.keys(week).length) weeks[weekStart] = week; else delete weeks[weekStart];
   return weeks;
 }
+// Problems with a whole stored week-override map ({[weekStart]: {[empId]: grid}}).
+function weekAvailabilityStoreErrors(store) {
+  if (store == null) return [];
+  if (typeof store !== "object" || Array.isArray(store)) return ["Week shift availability must be a set of weeks."];
+  const errors = [];
+  for (const [week, byEmp] of Object.entries(store)) {
+    if (!byEmp || typeof byEmp !== "object" || Array.isArray(byEmp)) { errors.push(`Week ${week}: shift availability must list employees.`); continue; }
+    for (const [empId, grid] of Object.entries(byEmp))
+      for (const msg of shiftAvailabilityErrors(grid)) errors.push(`Week ${week}, employee ${empId}: ${msg}`);
+  }
+  return errors;
+}
+// Drops week overrides more than `keepWeeks` weeks before `weekStart`. Saved
+// history and published weeks keep their own copies, so only the live store
+// shrinks. Future weeks and unrecognised keys are kept. Returns the same
+// object when nothing is old enough to drop.
+function pruneWeekAvailability(store, weekStart, keepWeeks = 26) {
+  if (!store || typeof store !== "object" || Array.isArray(store) || !validISODate(weekStart)) return store;
+  const cutoff = Date.parse(weekStart + "T12:00:00Z") - keepWeeks * 7 * 86400000;
+  const old = Object.keys(store).filter(k => validISODate(k) && Date.parse(k + "T12:00:00Z") < cutoff);
+  if (!old.length) return store;
+  const next = {...store};
+  for (const k of old) delete next[k];
+  return next;
+}
 function withoutWeekAvailability(store, weekStart, empId) {
   const weeks = store && typeof store === "object" && !Array.isArray(store) ? {...store} : {};
   const week = {...(weeks[weekStart] || {})};
@@ -13821,6 +13846,7 @@ function ScheduleGrid({ onOpenTestModal }) {
         JSON.stringify(emp.preferredDaysOff||[]) !== JSON.stringify(prev.preferredDaysOff||[]) ||
         JSON.stringify(emp.unavailableDays||[]) !== JSON.stringify(prev.unavailableDays||[]) ||
         JSON.stringify(emp.unavailableWindows||[]) !== JSON.stringify(prev.unavailableWindows||[]) ||
+        JSON.stringify(emp.shiftAvailability||null) !== JSON.stringify(prev.shiftAvailability||null) ||
         JSON.stringify(emp.qualifications) !== JSON.stringify(prev.qualifications)
       );
     });
@@ -15828,14 +15854,14 @@ const ALL_BACKUP_KEYS = [
   "shift_employees","shift_settings","shift_schedule","shift_ext_shifts",
   "shift_saved_weeks","shift_history","shift_timeoff","shift_patterns",
   "shift_handoffs","shift_training_blocks","shift_active_week","shift_publication_records",
-  "shift_week_start","shift_saved_rosters","shift_custom_theme","shift_theme",
+  "shift_week_start","shift_saved_rosters","shift_custom_theme","shift_theme","shift_week_availability",
 ];
 
 function RosterBackup() {
   const { employees, setEmployees, setEmpPatterns, setSavedRosters } = useRoster();
   const { setSchedule, setExtShifts, setWeekStart, setHandoffs, setTrainingBlocks, publicationStore, setWeekDraft } = useSchedule();
   const { setHistory, setSavedWeeks } = useHistory();
-  const { setTimeOffReqs } = useTimeOff();
+  const { setTimeOffReqs, setWeekAvailability } = useTimeOff();
   const { setSettings } = useSettings();
   const t = useTheme();
   const [msg,  setMsg]  = useState(null);
@@ -15985,6 +16011,8 @@ function RosterBackup() {
         }
         for(const key of ['shift_timeoff','shift_saved_weeks','shift_history','shift_saved_rosters'])
           if(snapshot[key]!=null && !Array.isArray(snapshot[key]))throw new Error('Invalid backup field: '+key);
+        const weekAvailabilityProblems=weekAvailabilityStoreErrors(snapshot.shift_week_availability);
+        if(weekAvailabilityProblems.length)throw new Error('Invalid backup field: shift_week_availability ('+weekAvailabilityProblems[0]+')');
         const writes = [
           { key:ACTIVE_WEEK_KEY, val:restoredWeek, setter:setWeekDraft },
           { key:"shift_employees",     val: emps,                              setter: setEmployees     },
@@ -15992,6 +16020,7 @@ function RosterBackup() {
           { key:"shift_custom_theme",  val: snapshot.shift_custom_theme,       setter: ()=>{}  },
           { key:"shift_settings",      val: snapshot.shift_settings,           setter: setSettings      },
           { key:"shift_timeoff",       val: snapshot.shift_timeoff,            setter: setTimeOffReqs   },
+          { key:"shift_week_availability", val: snapshot.shift_week_availability, setter: setWeekAvailability },
           { key:"shift_saved_weeks",   val: snapshot.shift_saved_weeks,        setter: setSavedWeeks    },
           { key:"shift_history",       val: snapshot.shift_history,            setter: setHistory       },
           { key:"shift_patterns",      val: snapshot.shift_patterns,           setter: setEmpPatterns   },
@@ -17370,6 +17399,22 @@ function ShiftSchedulerApp() {
 
   const baseTheme = themeName==="dark" ? dark : light;
   const t = useMemo(() => ({ ...baseTheme, ...(customTheme||{}) }), [baseTheme, customTheme]);
+
+  // Editing this week's shift availability makes an existing draft stale.
+  // Switching weeks changes the overrides too, so only same-week edits count.
+  const prevWeekAvailRef = useRef(null);
+  useEffect(() => {
+    const stamp = canonicalJSON(weekAvailability ?? null), prev = prevWeekAvailRef.current;
+    if (weekAvailLoaded && prev && prev.weekStart === weekStart && prev.stamp !== stamp && Object.keys(schedule).length > 0)
+      setScheduleStale(true);
+    if (weekAvailLoaded) prevWeekAvailRef.current = {weekStart, stamp};
+  }, [weekAvailability, weekStart, weekAvailLoaded]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  useEffect(() => {
+    if (!weekAvailLoaded || !validISODate(weekStart)) return;
+    const pruned = pruneWeekAvailability(weekAvailabilityStore, weekStart);
+    if (pruned !== weekAvailabilityStore) setWeekAvailabilityStore(pruned);
+  }, [weekAvailLoaded, weekStart]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const prevCfgFatigueRef = useRef(null);
   useEffect(() => {

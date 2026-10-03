@@ -231,3 +231,26 @@ test('cells already ruled out by other settings are locked with a reason',()=>{
   assert.match(ruleBlockedShiftReason(emp({qualifications:['Supervisor','Guard']}),'Saturday','first'),/Supervisor/);
   assert.equal(ruleBlockedShiftReason(emp({qualifications:['Supervisor','Guard']}),'Monday','first'),null);
 });
+
+// Phase 5: storage, backups and housekeeping.
+const {weekAvailabilityStoreErrors,pruneWeekAvailability} = core;
+test('a stored week-override map is validated as a whole',()=>{
+  assert.deepEqual(weekAvailabilityStoreErrors(undefined),[]);
+  assert.deepEqual(weekAvailabilityStoreErrors({[week]:{e:{Monday:{first:'no'}}}}),[]);
+  for (const bad of [[],'x',{[week]:[]},{[week]:{e:{Monday:{first:'maybe'}}}}]) assert(weekAvailabilityStoreErrors(bad).length,JSON.stringify(bad));
+});
+test('pruning drops only weeks older than the window and keeps the same object when nothing is old',()=>{
+  const store = {'2026-01-04':{e:{}},'2026-03-15':{e:{}},[week]:{e:{}},'2026-12-27':{e:{}},odd:{e:{}}};
+  const pruned = pruneWeekAvailability(store,week);
+  assert.deepEqual(Object.keys(pruned).sort(),['2026-03-15','2026-09-06','2026-12-27','odd'].sort());
+  assert.equal(pruneWeekAvailability(pruned,week),pruned);
+  assert.equal(pruneWeekAvailability(store,'not-a-date'),store);
+  assert.equal(pruneWeekAvailability('corrupt',week),'corrupt');
+});
+test('full backups include week overrides and restore validates them',()=>{
+  const html = require('fs').readFileSync(__dirname+'/ShiftScheduler_latest loop.html','utf8');
+  const keys = html.slice(html.indexOf('const ALL_BACKUP_KEYS'),html.indexOf('];',html.indexOf('const ALL_BACKUP_KEYS')));
+  assert(keys.includes('"shift_week_availability"'));
+  assert(/key:"shift_week_availability", val: snapshot\.shift_week_availability/.test(html));
+  assert(html.includes('weekAvailabilityStoreErrors(snapshot.shift_week_availability)'));
+});
