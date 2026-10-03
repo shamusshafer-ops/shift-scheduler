@@ -211,7 +211,7 @@ function restoreHarness(snapshot,write=async()=>true) {
  const writes=[],messages=[];let done;
  class FileReader {readAsText(){done=this.onload({target:{result:JSON.stringify(snapshot)}});}}
  const noop=()=>{};
- const setterNames=['setWeekDraft','setEmployees','setSettings','setTimeOffReqs','setSavedWeeks','setHistory','setEmpPatterns','setSavedRosters'];
+ const setterNames=['setWeekDraft','setEmployees','setSettings','setTimeOffReqs','setWeekAvailability','setSavedWeeks','setHistory','setEmpPatterns','setSavedRosters'];
  const scope={FileReader,setBusy:noop,SCHEMA_VERSION:0,EMP_MIGRATIONS:{},ACTIVE_WEEK_KEY:'shift_active_week',publicationStore:{restore:async()=>{}},
   lsSet:async(key,text)=>{writes.push(key);return write(key,text);},flash:(message,ok)=>messages.push({message,ok}),...Object.fromEntries(setterNames.map(name=>[name,noop]))};
  const handle=evaluate(extract('  const handleFile = (e) => {','  const btnStyle =')+'return handleFile;',scope);
@@ -245,4 +245,12 @@ test('delayed manual confirmations cannot change a different week or changed inp
   const commit=evaluate(extract('  const commitAssignmentChange =','  const commitExtendedChange =')+'return commitAssignmentChange;', {isReadOnly:false,manualInputIsCurrent:check});
   assert.equal(commit(()=>assert.fail('stale updater ran')),false);
  }
+});
+test('backup restore rejects malformed week shift availability before writing anything',async()=>{
+ const h=restoreHarness({shift_employees:[employee()],shift_active_week:live(),shift_week_availability:{'2026-09-06':{a:{Monday:{first:'maybe'}}}}});
+ await h.done;assert.equal(h.writes.length,0);assert.match(h.messages[0].message,/shift_week_availability/);
+});
+test('backup restore writes week shift availability when present',async()=>{
+ const h=restoreHarness({shift_employees:[employee()],shift_active_week:live(),shift_week_availability:{'2026-09-06':{a:{Monday:{first:'no'}}}}});
+ await h.done;assert(h.writes.includes('shift_week_availability'));assert(h.messages.every(v=>v.ok!==false));
 });

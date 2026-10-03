@@ -122,7 +122,7 @@ test('complete-search feasibility agrees with an exhaustive oracle on 24 constra
 function uiHarness(result={status:'searching',phase:'regular-hours',nodes:1,candidates:1,reasons:[],solution:null},overrides={},weeks=[]) {
  const queue=[],events=[],ref={current:null},stamp={current:'base'},cancel={current:false},found={current:null};let advances=0;
  const fake={snapshot:()=>result,advance:()=>{advances++;return result;},cancel:()=>({...result,status:'cancelled'}),foundWeeks:(from=0)=>weeks.slice(from)};
- const scope={...c,isReadOnly:false,generationInputsReady:true,pendingProposal:null,employees:oneDay(['a','b','c']),weekStart:'2026-09-06',cfg:{},schedule:{},extShifts:[],handoffs:[],trainingBlocks:[],timeOffReqs:[],history:[],empPatterns:{},afExclude:[],fairnessHistory:{},ptoHoursByEmployee:{},
+ const scope={...c,isReadOnly:false,generationInputsReady:true,pendingProposal:null,employees:oneDay(['a','b','c']),weekStart:'2026-09-06',cfg:{},schedule:{},extShifts:[],handoffs:[],trainingBlocks:[],timeOffReqs:[],weekAvailability:null,history:[],empPatterns:{},afExclude:[],fairnessHistory:{},ptoHoursByEmployee:{},
   completeSearchRef:ref,overtimeInputRef:stamp,autoFillCancelRef:cancel,autoFillRunning:false,
   createCompleteScheduleSearch:()=>fake,setAutoFillRunning:v=>events.push(['running',v]),setAutoFillProgress:v=>events.push(['progress',v]),
   showAlert:v=>events.push(['alert',v]),validateSchedule:()=>[],proposalIsCurrent:p=>p.baseStamp===stamp.current,discardStaleProposal:()=>events.push(['stale']),

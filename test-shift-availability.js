@@ -1,0 +1,256 @@
+"use strict";
+// Per-day, per-shift availability grid: standing employee pattern plus one-week
+// overrides. "no" blocks every hour of that shift; "prefer"/"ok" never block.
+const test = require('node:test');
+const assert = require('node:assert/strict');
+const core = require('./load-core');
+const {cellKey,buildTimeOffAvailability:availability,employeePolicyIssues,availabilityConflicts,shiftInterval,
+  shiftAvailabilityErrors,shiftAvailabilityState,weekAvailabilityFor,weekAvailabilityField,makeHistoryEntry,
+  scheduleViewSnapshot,publicationSnapshot,publicationStamp,extendedWorkIntervals,buildAutoFill,DAYS,SHIFTS} = core;
+const week = '2026-09-06';
+const emp = (extra={}) => ({id:'e',name:'Employee',qualifications:['Guard','Medical'],employmentType:'part-time',...extra});
+const schedule = (day='Monday',sid='first',id='e') => ({[cellKey(day,sid)]:[{employeeId:id,position:'Guard'}]});
+const issues = (e, s, timeOff=availability([],week), extra={}) => employeePolicyIssues(e,s,{},{empTimeOffDays:timeOff,...extra});
+const blocked = list => list.some(i=>i.type==='availability');
+const dataError = list => list.some(i=>i.type==='availability_data');
+
+test('no grid and no overrides leave every shift available',()=>{
+  for (const day of DAYS) for (const s of SHIFTS) assert.equal(blocked(issues(emp(),schedule(day,s.id))),false);
+  assert.equal(shiftAvailabilityState(emp(),'Monday','first',availability([],week)),'ok');
+});
+test('a standing "no" blocks only that day and shift',()=>{
+  const e = emp({shiftAvailability:{Monday:{first:'no'}}});
+  const conflict = issues(e,schedule('Monday','first')).find(i=>i.type==='availability');
+  assert(conflict && /shift availability/.test(conflict.msg));
+  assert.equal(blocked(issues(e,schedule('Monday','second'))),false);
+  assert.equal(blocked(issues(e,schedule('Tuesday','first'))),false);
+});
+test('"prefer" and "ok" never block',()=>{
+  const e = emp({shiftAvailability:{Monday:{first:'prefer',second:'ok'}}});
+  assert.equal(blocked(issues(e,schedule('Monday','first'))),false);
+  assert.equal(blocked(issues(e,schedule('Monday','second'))),false);
+});
+test('third shift "no" covers its hours past midnight but not the next first shift',()=>{
+  const e = emp({shiftAvailability:{Monday:{third:'no'}}});
+  assert(blocked(issues(e,schedule('Monday','third'))));
+  assert.equal(availabilityConflicts(e,[{start:50,end:54}],null).length,1); // Tue 02:00-06:00
+  assert.equal(blocked(issues(e,schedule('Tuesday','first'))),false);
+});
+test('Saturday third standing "no" reaches the next week and last week\'s spill-over',()=>{
+  const e = emp({shiftAvailability:{Saturday:{third:'no'}}});
+  assert(blocked(issues(e,schedule('Saturday','third'))));
+  // Previous Saturday 22:00 to this Sunday 06:00 is hours -2..6.
+  assert.equal(availabilityConflicts(e,[{start:0,end:4}],null).length,1);
+  assert.equal(blocked(issues(e,schedule('Sunday','first'))),false);
+});
+test('strict by hours: a 12-hour day duty is blocked by a "no" on the shift it runs into',()=>{
+  const e = emp({shiftAvailability:{Monday:{second:'no'}}});
+  // Day 12-hour pair: the first half 06:00-18:00 runs four hours into second shift.
+  const twelve = extendedWorkIntervals({day:'Monday',pairId:'day',empAId:'e',empBId:'x'}).filter(i=>i.employeeId==='e');
+  assert(twelve.length);
+  assert(availabilityConflicts(e,twelve,null).length > 0);
+  assert.equal(availabilityConflicts(emp(),twelve,null).length,0);
+  // An early arrival 10:00-14:00 before second shift overlaps a first-shift "no".
+  const first = emp({shiftAvailability:{Monday:{first:'no'}}});
+  assert.equal(availabilityConflicts(first,[{start:34,end:38}],null).length,1);
+});
+test('a week override replaces the standing cell for that week only',()=>{
+  const e = emp({shiftAvailability:{Monday:{first:'no'}}});
+  const open = availability([],week,{e:{Monday:{first:'ok'}}});
+  assert.equal(blocked(issues(e,schedule('Monday','first'),open)),false);
+  assert.equal(shiftAvailabilityState(e,'Monday','first',open),'ok');
+  const closed = availability([],week,{e:{Wednesday:{second:'no'}}});
+  assert(blocked(issues(emp(),schedule('Wednesday','second'),closed)));
+  assert(blocked(issues(e,schedule('Monday','first'),closed)),'standing cell still applies where the week has no override');
+  assert.equal(shiftAvailabilityState(emp(),'Wednesday','second',closed),'no');
+});
+test('week overrides do not leak into the adjacent weeks',()=>{
+  const timeOff = availability([],week,{e:{Saturday:{third:'no'}}});
+  assert(blocked(issues(emp(),schedule('Saturday','third'),timeOff)));
+  assert.equal(availabilityConflicts(emp(),[{start:0,end:6}],timeOff).length,0,'this Sunday morning is not last Saturday night');
+});
+test('overrides for other employees do not affect this one',()=>{
+  const timeOff = availability([],week,{other:{Monday:{first:'no'}}});
+  assert.equal(blocked(issues(emp(),schedule(),timeOff)),false);
+});
+test('malformed standing grids fail closed with a data error',()=>{
+  for (const bad of [[], 'no', {Funday:{first:'no'}}, {Monday:{fourth:'no'}}, {Monday:{first:'maybe'}}, {Monday:['first']}]) {
+    assert(shiftAvailabilityErrors(bad).length, JSON.stringify(bad));
+    const e = emp({shiftAvailability:bad}), list = issues(e,schedule('Tuesday','second'));
+    assert(dataError(list)); assert(blocked(list));
+  }
+  for (const ok of [null, undefined, {}, {Monday:null}, {Monday:{first:null}}, {Monday:{first:'prefer',second:'ok',third:'no'}}])
+    assert.equal(shiftAvailabilityErrors(ok).length,0,JSON.stringify(ok));
+});
+test('malformed week overrides fail closed for that employee and report the problem',()=>{
+  const timeOff = availability([],week,{e:{Monday:{first:'sometimes'}}});
+  assert(timeOff.issues.some(i=>i.type==='availability_data' && i.employeeId==='e'));
+  assert(blocked(issues(emp(),schedule('Friday','second'),timeOff)));
+  assert.equal(blocked(issues(emp({id:'x'}),schedule('Friday','second','x'),timeOff)),false);
+  assert(availability([],week,'bad').issues.some(i=>i.type==='availability_data'));
+});
+test('weekAvailabilityFor picks the week and passes malformed stores through',()=>{
+  const store = {[week]:{e:{Monday:{first:'no'}}}};
+  assert.deepEqual(weekAvailabilityFor(store,week),store[week]);
+  assert.equal(weekAvailabilityFor(store,'2026-09-13'),null);
+  assert.equal(weekAvailabilityFor(null,week),null);
+  assert.equal(weekAvailabilityFor('bad',week),'bad');
+});
+test('snapshots carry week overrides only when present, so existing stamps are unchanged',()=>{
+  const input = {weekStart:week,schedule:{},extShifts:[],handoffs:[],trainingBlocks:[],timeOffReqs:[],employees:[emp()],cfg:{},history:[]};
+  assert.deepEqual(weekAvailabilityField(null),{});
+  assert.deepEqual(weekAvailabilityField({}),{});
+  assert.equal(publicationStamp(publicationSnapshot(input)),publicationStamp(publicationSnapshot({...input,weekAvailability:{}})));
+  const withOverride = {...input,weekAvailability:{e:{Monday:{first:'no'}}}};
+  assert.notEqual(publicationStamp(publicationSnapshot(input)),publicationStamp(publicationSnapshot(withOverride)));
+  assert.equal(Object.hasOwn(makeHistoryEntry(input),'weekAvailability'),false);
+  const entry = makeHistoryEntry(withOverride);
+  assert.deepEqual(entry.weekAvailability,withOverride.weekAvailability);
+  assert.deepEqual(scheduleViewSnapshot({weekAvailability:{e:{}}},entry).weekAvailability,entry.weekAvailability);
+  assert.equal(scheduleViewSnapshot({weekAvailability:{e:{Monday:{first:'no'}}}},makeHistoryEntry(input)).weekAvailability,null,
+    'viewing an older week never borrows the live week\'s overrides');
+});
+test('autofill never assigns a "no" cell',()=>{
+  const roster = [
+    ...['a','b','c','d','f','g','h','i','j','k','l','m'].map((id,i)=>({id,name:'E'+id,employmentType:'full-time',
+      qualifications:['Guard','Scale','Medical'],preferredShifts:[],blockedShifts:[],unavailableDays:[],maxShiftsPerWeek:null})),
+  ];
+  roster[0].shiftAvailability = {Monday:{first:'no',second:'no'},Tuesday:{third:'no'}};
+  const timeOff = availability([],week,{b:{Wednesday:{first:'no',second:'no',third:'no'}}});
+  const log = console.log, warn = console.warn; console.log = console.warn = () => {};
+  let result; try { result = buildAutoFill(roster,{maxSearchNodes:2000,maxSearchMs:500},timeOff,{},[],false,{roster}); }
+  finally { console.log = log; console.warn = warn; }
+  const on = (id,day,sid) => (result.schedule[cellKey(day,sid)] || []).some(x=>x.employeeId===id);
+  assert.equal(on('a','Monday','first'),false); assert.equal(on('a','Monday','second'),false);
+  assert.equal(on('a','Tuesday','third'),false);
+  for (const sid of ['first','second','third']) assert.equal(on('b','Wednesday',sid),false);
+});
+
+// Phase 2: candidate filters inside autofill screen "no" cells themselves, so
+// the final policy filter never has to discard their picks (which left gaps).
+test('autofill plans around "no" cells instead of having assignments rejected',()=>{
+  const fx = require('./fixtures/autofill-real-roster-drafts.json');
+  const grid = {'psi-2':{Monday:{first:'no'},Tuesday:{first:'no'}}};
+  const emps = JSON.parse(JSON.stringify(fx.roster)).map(e=>grid[e.id]?{...e,shiftAvailability:grid[e.id]}:e);
+  const timeOff = availability([],week);
+  const log = console.log, warn = console.warn; console.log = console.warn = () => {};
+  let result; try { result = buildAutoFill(emps,{...fx.cfg,maxSearchNodes:3000},timeOff,fx.enrichedPatterns,[],false,{roster:emps}); }
+  finally { console.log = log; console.warn = warn; }
+  assert.deepEqual((result.policyRejected || []).map(r=>r.employeeId+' '+r.day+' '+r.shiftId),[]);
+  for (const day of ['Monday','Tuesday']) assert(!(result.schedule[cellKey(day,'first')] || []).some(a=>a.employeeId==='psi-2'));
+});
+test('the overtime lower bound counts "no" cells as unavailable',()=>{
+  const roster = [emp({id:'a',employmentType:'full-time',requiredShift:'first'})];
+  const all = Object.fromEntries(DAYS.map(d=>[d,{first:'no'}]));
+  const open = core.overtimeLowerBound(roster,{empTimeOffDays:availability([],week)});
+  const closedStanding = core.overtimeLowerBound([{...roster[0],shiftAvailability:all}],{empTimeOffDays:availability([],week)});
+  const closedWeek = core.overtimeLowerBound(roster,{empTimeOffDays:availability([],week,{a:all})});
+  assert(closedStanding > open); assert.equal(closedWeek,closedStanding);
+});
+
+// Phase 3: "prefer" cells drive shift preference day by day.
+const {dayPreferredShifts,weekPreferredShifts,preferenceBurden} = core;
+test('day preference: grid "prefer" cells win for their day, other days use the weekly list',()=>{
+  const weekly = emp({preferredShifts:['third']});
+  assert.equal(dayPreferredShifts(weekly,'Monday',null),weekly.preferredShifts,'no grid returns the weekly list itself');
+  const e = emp({preferredShifts:['third'],shiftAvailability:{Monday:{first:'prefer',second:'prefer'},Tuesday:{third:'no'}}});
+  assert.deepEqual(dayPreferredShifts(e,'Monday',null),['first','second']);
+  assert.deepEqual(dayPreferredShifts(e,'Tuesday',null),['third'],'a day with only "no" cells keeps the weekly list');
+  assert.deepEqual(dayPreferredShifts(e,'Friday',null),['third']);
+  assert.deepEqual(dayPreferredShifts(emp(),'Friday',availability([],week,{e:{Friday:{second:'prefer'}}})),['second']);
+  assert.deepEqual(dayPreferredShifts(e,'Monday',availability([],week,{e:{Monday:{first:'ok',second:'ok'}}})),['third'],
+    'a week override can clear a standing preference');
+});
+test('week preference: each day votes, the most-preferred shift wins',()=>{
+  const weekly = emp({preferredShifts:['third','first']});
+  assert.equal(weekPreferredShifts(weekly,null),weekly.preferredShifts,'no grid returns the weekly list itself');
+  const allSecond = Object.fromEntries(DAYS.map(d=>[d,{second:'prefer'}]));
+  assert.deepEqual(weekPreferredShifts(emp({preferredShifts:['third'],shiftAvailability:allSecond}),null),['second']);
+  const saturdayOnly = emp({preferredShifts:['first'],shiftAvailability:{Saturday:{second:'prefer'}}});
+  assert.deepEqual(weekPreferredShifts(saturdayOnly,null),['first'],'six weekly-preference days outvote one grid day');
+  assert.deepEqual(weekPreferredShifts(emp({shiftAvailability:{Monday:{first:'no'}}}),null),[]);
+});
+test('preference burden counts off-preference hours day by day',()=>{
+  const e = emp({preferredShifts:['third'],shiftAvailability:{Monday:{first:'prefer'}}});
+  assert.equal(preferenceBurden(e,schedule('Monday','first')).penaltyHours,0);
+  assert.equal(preferenceBurden(e,schedule('Tuesday','first')).penaltyHours,8);
+  assert.equal(preferenceBurden(emp({preferredShifts:['third']}),schedule('Monday','first')).penaltyHours,8);
+  assert.equal(preferenceBurden(emp(),schedule('Wednesday','first'),[],[],availability([],week,{e:{Wednesday:{second:'prefer'}}})).penaltyHours,8);
+});
+test('preference warnings name the day\'s preferred shift',()=>{
+  const e = emp({preferredShifts:['third'],shiftAvailability:{Monday:{first:'prefer'}}});
+  assert.equal(core.getPreferenceViolations(e,'Monday','first',{}).some(v=>v.type==='wrong_shift'),false);
+  const v = core.getPreferenceViolations(e,'Monday','second',{}).find(v=>v.type==='wrong_shift');
+  assert(v && /prefers 1st|prefers first|prefers 06/i.test(v.msg),v && v.msg);
+});
+test('autofill follows a grid preference that differs from the weekly one',()=>{
+  const fx = require('./fixtures/autofill-real-roster-drafts.json');
+  const allSecond = Object.fromEntries(DAYS.map(d=>[d,{second:'prefer'}]));
+  const emps = JSON.parse(JSON.stringify(fx.roster)).map(e=>e.id==='psi-9'?{...e,shiftAvailability:allSecond}:e);
+  assert.deepEqual(emps.find(e=>e.id==='psi-9').preferredShifts,['third']);
+  const log = console.log, warn = console.warn; console.log = console.warn = () => {};
+  let result; try { result = buildAutoFill(emps,{...fx.cfg,maxSearchNodes:3000},availability([],week),fx.enrichedPatterns,[],false,{roster:emps}); }
+  finally { console.log = log; console.warn = warn; }
+  const shifts = Object.entries(result.schedule).filter(([,a])=>a.some(x=>x.employeeId==='psi-9')).map(([k])=>k.split('__')[1]);
+  assert(shifts.length > 0);
+  assert(shifts.every(s=>s==='second'),shifts.join(','));
+});
+
+// Phase 4: editing helpers behind the grid screens.
+const {withShiftAvailabilityCell,withWeekAvailabilityCell,withoutWeekAvailability,ruleBlockedShiftReason,shiftAvailabilityCounts} = core;
+test('editing the standing grid stores only non-OK cells and collapses to nothing',()=>{
+  let g = withShiftAvailabilityCell(null,'Monday','first','prefer');
+  assert.deepEqual(g,{Monday:{first:'prefer'}});
+  g = withShiftAvailabilityCell(g,'Monday','second','no');
+  assert.deepEqual(g,{Monday:{first:'prefer',second:'no'}});
+  g = withShiftAvailabilityCell(g,'Monday','first','ok');
+  assert.deepEqual(g,{Monday:{second:'no'}});
+  assert.equal(withShiftAvailabilityCell(g,'Monday','second','ok'),null);
+  assert.deepEqual(shiftAvailabilityCounts({Monday:{first:'prefer',second:'no'},Friday:{third:'no'}}),{prefer:1,no:2});
+  assert.deepEqual(shiftAvailabilityCounts({Monday:{first:'bogus'}}),{prefer:0,no:0});
+});
+test('week cells set back to the standing value are removed, and empty weeks disappear',()=>{
+  const e = emp({shiftAvailability:{Monday:{first:'no'}}});
+  let store = withWeekAvailabilityCell({},week,e,'Monday','first','ok');
+  assert.deepEqual(store,{[week]:{e:{Monday:{first:'ok'}}}},'reopening a standing "no" is stored as an explicit ok');
+  store = withWeekAvailabilityCell(store,week,e,'Monday','first','no');
+  assert.deepEqual(store,{},'back to the standing value: nothing stored');
+  store = withWeekAvailabilityCell({other:1},week,e,'Tuesday','second','prefer');
+  assert.deepEqual(store,{other:1,[week]:{e:{Tuesday:{second:'prefer'}}}});
+  assert.deepEqual(withoutWeekAvailability(store,week,'e'),{other:1});
+  assert.deepEqual(withWeekAvailabilityCell('corrupt',week,e,'Tuesday','second','prefer'),{[week]:{e:{Tuesday:{second:'prefer'}}}});
+});
+test('cells already ruled out by other settings are locked with a reason',()=>{
+  assert.equal(ruleBlockedShiftReason(emp(),'Monday','first'),null);
+  assert.match(ruleBlockedShiftReason(emp({unavailableDays:['Monday']}),'Monday','first'),/Unavailable/);
+  assert.match(ruleBlockedShiftReason(emp({availableDaysOfWeek:['Tuesday']}),'Monday','first'),/available days/);
+  assert.match(ruleBlockedShiftReason(emp({blockedShifts:['third']}),'Monday','third'),/blocked/);
+  assert.match(ruleBlockedShiftReason(emp({requiredShift:'second'}),'Monday','first'),/Required shift is 2nd/);
+  assert.equal(ruleBlockedShiftReason(emp({requiredShift:'second',canWorkOtherShifts:true}),'Monday','first'),null);
+  assert.equal(ruleBlockedShiftReason(emp({requiredShift:'second',crossShiftOT:true}),'Monday','first'),null);
+  assert.match(ruleBlockedShiftReason(emp({qualifications:['Supervisor','Guard']}),'Saturday','first'),/Supervisor/);
+  assert.equal(ruleBlockedShiftReason(emp({qualifications:['Supervisor','Guard']}),'Monday','first'),null);
+});
+
+// Phase 5: storage, backups and housekeeping.
+const {weekAvailabilityStoreErrors,pruneWeekAvailability} = core;
+test('a stored week-override map is validated as a whole',()=>{
+  assert.deepEqual(weekAvailabilityStoreErrors(undefined),[]);
+  assert.deepEqual(weekAvailabilityStoreErrors({[week]:{e:{Monday:{first:'no'}}}}),[]);
+  for (const bad of [[],'x',{[week]:[]},{[week]:{e:{Monday:{first:'maybe'}}}}]) assert(weekAvailabilityStoreErrors(bad).length,JSON.stringify(bad));
+});
+test('pruning drops only weeks older than the window and keeps the same object when nothing is old',()=>{
+  const store = {'2026-01-04':{e:{}},'2026-03-15':{e:{}},[week]:{e:{}},'2026-12-27':{e:{}},odd:{e:{}}};
+  const pruned = pruneWeekAvailability(store,week);
+  assert.deepEqual(Object.keys(pruned).sort(),['2026-03-15','2026-09-06','2026-12-27','odd'].sort());
+  assert.equal(pruneWeekAvailability(pruned,week),pruned);
+  assert.equal(pruneWeekAvailability(store,'not-a-date'),store);
+  assert.equal(pruneWeekAvailability('corrupt',week),'corrupt');
+});
+test('full backups include week overrides and restore validates them',()=>{
+  const html = require('fs').readFileSync(__dirname+'/ShiftScheduler_latest loop.html','utf8');
+  const keys = html.slice(html.indexOf('const ALL_BACKUP_KEYS'),html.indexOf('];',html.indexOf('const ALL_BACKUP_KEYS')));
+  assert(keys.includes('"shift_week_availability"'));
+  assert(/key:"shift_week_availability", val: snapshot\.shift_week_availability/.test(html));
+  assert(html.includes('weekAvailabilityStoreErrors(snapshot.shift_week_availability)'));
+});
