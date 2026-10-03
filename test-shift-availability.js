@@ -225,7 +225,10 @@ test('cells already ruled out by other settings are locked with a reason',()=>{
   assert.match(ruleBlockedShiftReason(emp({unavailableDays:['Monday']}),'Monday','first'),/Unavailable/);
   assert.match(ruleBlockedShiftReason(emp({availableDaysOfWeek:['Tuesday']}),'Monday','first'),/available days/);
   assert.match(ruleBlockedShiftReason(emp({blockedShifts:['third']}),'Monday','third'),/blocked/);
-  assert.match(ruleBlockedShiftReason(emp({requiredShift:'second'}),'Monday','first'),/Required shift is 2nd/);
+  assert.equal(ruleBlockedShiftReason(emp({requiredShift:'second'}),'Monday','first'),null,'required shift no longer locks: Prefer may grant it');
+  assert.match(core.requiredShiftExceptionHint(emp({requiredShift:'second'}),'Monday','first'),/Outside required 2nd/);
+  assert.equal(core.requiredShiftExceptionHint(emp({requiredShift:'second'}),'Monday','second'),null);
+  assert.equal(core.requiredShiftExceptionHint(emp({requiredShift:'second',canWorkOtherShifts:true}),'Monday','first'),null);
   assert.equal(ruleBlockedShiftReason(emp({requiredShift:'second',canWorkOtherShifts:true}),'Monday','first'),null);
   assert.equal(ruleBlockedShiftReason(emp({requiredShift:'second',crossShiftOT:true}),'Monday','first'),null);
   assert.match(ruleBlockedShiftReason(emp({qualifications:['Supervisor','Guard']}),'Saturday','first'),/Supervisor/);
@@ -253,4 +256,39 @@ test('full backups include week overrides and restore validates them',()=>{
   assert(keys.includes('"shift_week_availability"'));
   assert(/key:"shift_week_availability", val: snapshot\.shift_week_availability/.test(html));
   assert(html.includes('weekAvailabilityStoreErrors(snapshot.shift_week_availability)'));
+});
+
+// Follow-up: "prefer" on another shift lets full-timers work it that day.
+const {canWorkShiftOnDay,onPlanShift} = core;
+test('a prefer cell is a one-day exception to a required shift; other cells stay bound',()=>{
+  const e = emp({employmentType:'full-time',requiredShift:'first',shiftAvailability:{Tuesday:{second:'prefer'}}});
+  assert.equal(canWorkShiftOnDay(e,'Tuesday','second',null),true);
+  assert.equal(canWorkShiftOnDay(e,'Wednesday','second',null),false);
+  assert.equal(canWorkShiftOnDay(e,'Tuesday','first',null),true);
+  const kinds = (day,sid,timeOff) => employeePolicyIssues(e,schedule(day,sid),{}, {empTimeOffDays:timeOff || availability([],week)}).map(i=>i.type);
+  assert(!kinds('Tuesday','second').includes('required_shift'));
+  assert(kinds('Wednesday','second').includes('required_shift'));
+  assert(!kinds('Wednesday','second',availability([],week,{e:{Wednesday:{second:'prefer'}}})).includes('required_shift'),'a week override can grant too');
+  assert(kinds('Tuesday','second',availability([],week,{e:{Tuesday:{second:'ok'}}})).includes('required_shift'),'and a week override can take it back');
+});
+test('a prefer cell counts as part of the weekly plan that day',()=>{
+  const e = emp({shiftAvailability:{Monday:{first:'prefer'}}}), plan = {shiftId:'third'};
+  assert.equal(onPlanShift(plan,e,'Monday','first',null),true);
+  assert.equal(onPlanShift(plan,e,'Monday','third',null),true);
+  assert.equal(onPlanShift(plan,e,'Tuesday','first',null),false);
+});
+test('autofill moves a required-shift full-timer to a preferred other shift without breaking rules',()=>{
+  const fx = require('./fixtures/autofill-real-roster-drafts.json');
+  const grid = {Tuesday:{second:'prefer'},Wednesday:{second:'prefer'}};
+  const emps = JSON.parse(JSON.stringify(fx.roster)).map(e=>e.id==='psi-4'?{...e,shiftAvailability:grid}:e);
+  assert.equal(emps.find(e=>e.id==='psi-4').requiredShift,'first');
+  const timeOff = availability([],week);
+  const log = console.log, warn = console.warn; console.log = console.warn = () => {};
+  let result; try { result = buildAutoFill(emps,{...fx.cfg,maxSearchNodes:3000},timeOff,fx.enrichedPatterns,[],false,{roster:emps}); }
+  finally { console.log = log; console.warn = warn; }
+  const onSecond = ['Tuesday','Wednesday'].filter(d=>(result.schedule[cellKey(d,'second')]||[]).some(a=>a.employeeId==='psi-4'));
+  assert(onSecond.length > 0,'works at least one preferred 2nd shift');
+  const other = Object.entries(result.schedule).filter(([k,a])=>a.some(x=>x.employeeId==='psi-4') && !k.endsWith('__first')).map(([k])=>k);
+  assert(other.every(k=>['Tuesday__second','Wednesday__second'].includes(k)),other.join(','));
+  assert.equal(core.validateAssignmentPolicy(result.schedule,emps,fx.cfg,{empTimeOffDays:timeOff,empPatterns:fx.enrichedPatterns}).filter(i=>i.type==='required_shift').length,0);
 });
