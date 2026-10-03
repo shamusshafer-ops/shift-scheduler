@@ -906,7 +906,7 @@ function extendedCoverageFloor(day, shiftId, extShiftsArg, employees) {
 }
 
 // Compute a summary stat object from a schedule snapshot + employee list
-function computeWeekStats(schedule, employees, extShiftsArg, handoffsArg = [], ptoHoursByEmployee = {}) {
+function computeWeekStats(schedule, employees, extShiftsArg, handoffsArg = [], ptoHoursByEmployee = {}, timeOff) {
   const totalSlots = DAYS.length * SHIFTS.length;
   let totalOk = 0, totalEmpty = 0, totalMissingRole = 0, totalOTHours = 0, totalViolations = 0, underHoursFT = 0;
   const intervals = collectCoverageIntervals(schedule, extShiftsArg, handoffsArg);
@@ -920,7 +920,7 @@ function computeWeekStats(schedule, employees, extShiftsArg, handoffsArg = [], p
     const h = calcHours(e.id, schedule, extShiftsArg, handoffsArg);
     if (e.employmentType === "full-time" && h > 40) totalOTHours += h - 40;
     if (e.employmentType === "full-time" && h + (ptoHoursByEmployee[e.id] || 0) < 40) underHoursFT++;
-    totalViolations += getAllPrefViolations(e, schedule).length;
+    totalViolations += getAllPrefViolations(e, schedule, timeOff).length;
   }
   const coveragePct = totalSlots ? Math.round(totalOk / totalSlots * 100) : 0;
   return { coveragePct, totalEmpty, totalMissingRole, totalOTHours, underHoursFT, totalViolations, totalOk, totalSlots };
@@ -1449,7 +1449,7 @@ function consecutiveWorkingDays(empId, schedule, upToDay, prevWeekTail) {
 }
 
 // Violation checks for a single assignment
-function getPreferenceViolations(emp, day, shiftId, schedule) {
+function getPreferenceViolations(emp, day, shiftId, schedule, timeOff) {
   const v = [];
   if (violatesDaysOff(emp, day)) {
     v.push({ type: "days_off", msg: `Scheduled on preferred day off (${day})` });
@@ -1466,7 +1466,7 @@ function getPreferenceViolations(emp, day, shiftId, schedule) {
     v.push({ type: "wrong_shift_required", msg: `REQUIRED ${reqLabel} — placed on ${shiftLabel}` });
   }
   // Preferred shifts — soft violation if placed off-preference
-  const prefs = emp.preferredShifts||[];
+  const prefs = dayPreferredShifts(emp, day, timeOff);
   if (!emp.requiredShift && prefs.length > 0 && !prefs.includes(shiftId)) {
     const shiftLabel = SHIFTS.find(s=>s.id===shiftId)?.label || shiftId;
     const prefLabels = prefs.map(p=>SHIFTS.find(s=>s.id===p)?.label||p).join(" or ");
@@ -1481,7 +1481,7 @@ function getPreferenceViolations(emp, day, shiftId, schedule) {
 }
 
 // Collect all preference violations for an employee across the whole schedule
-function getAllPrefViolations(emp, schedule) {
+function getAllPrefViolations(emp, schedule, timeOff) {
   const all = [];
   // Scan only keys where this employee appears — O(assigned) not O(allSlots)
   for (const key of Object.keys(schedule)) {
@@ -1489,7 +1489,7 @@ function getAllPrefViolations(emp, schedule) {
     if (!asgn.length || !asgn.some(a => a.employeeId === emp.id)) continue;
     const [day, shiftId] = key.split("__");
     if (!SHIFT_START_HOUR[shiftId]) continue;
-    const v = getPreferenceViolations(emp, day, shiftId, schedule);
+    const v = getPreferenceViolations(emp, day, shiftId, schedule, timeOff);
     for (const viol of v) all.push({ day, shiftId, ...viol });
   }
   return all;
@@ -1629,7 +1629,7 @@ function deployProactiveExtShifts(sourceEmps, cfg, empTimeOffDays, existingExtSh
       const isSup = (e.qualifications || []).includes("Supervisor");
       if (isSup) return shift.id === "first";
       if (e.requiredShift) return e.requiredShift === shift.id;
-      const prefs = e.preferredShifts || [];
+      const prefs = weekPreferredShifts(e, empTimeOffDays);
       if (prefs.length === 1) return prefs[0] === shift.id;
       return false;
     });
@@ -1978,6 +1978,21 @@ function shiftAvailabilityState(emp, day, shiftId, timeOff) {
 function shiftMarkedOff(emp, day, shiftId, timeOff) {
   return shiftAvailabilityState(emp, day, shiftId, timeOff) === "no";
 }
+// Shifts the employee prefers on this day. Grid "prefer" cells for the day win;
+// a day without any falls back to the weekly preferredShifts list.
+function dayPreferredShifts(emp, day, timeOff) {
+  if (!emp.shiftAvailability && !timeOff?.shiftAvailabilityByEmployee?.[emp.id]) return emp.preferredShifts || [];
+  const cells = SHIFTS.filter(s => shiftAvailabilityState(emp, day, s.id, timeOff) === "prefer").map(s => s.id);
+  return cells.length ? cells : (emp.preferredShifts || []);
+}
+// Week-level preference for decisions that hold one shift all week (the work
+// block plan): each day votes for its preferred shifts; the most votes win.
+function weekPreferredShifts(emp, timeOff) {
+  if (!emp.shiftAvailability && !timeOff?.shiftAvailabilityByEmployee?.[emp.id]) return emp.preferredShifts || [];
+  const votes = SHIFTS.map(s => DAYS.filter(d => dayPreferredShifts(emp, d, timeOff).includes(s.id)).length);
+  const best = Math.max(...votes);
+  return best ? SHIFTS.filter((s, i) => votes[i] === best).map(s => s.id) : [];
+}
 function shiftAvailabilityBlocks(emp, timeOff) {
   const spans = [];
   for (const day of DAYS) for (const s of SHIFTS) {
@@ -2175,7 +2190,7 @@ function lockedDutyIssues(before,after,beforeOptions={},afterOptions=beforeOptio
 }
 
 // Measure only stated preferences, by hours in each affected shift segment.
-function preferenceBurden(emp,schedule,extShifts=[],handoffs=[]) {
+function preferenceBurden(emp,schedule,extShifts=[],handoffs=[],timeOff) {
   let workedHours=0,penaltyHours=0;
   for(const i of collectCoverageIntervals(schedule,extShifts,handoffs).filter(i=>i.employeeId===emp.id)) {
     workedHours+=i.end-i.start;
@@ -2183,7 +2198,8 @@ function preferenceBurden(emp,schedule,extShifts=[],handoffs=[]) {
       const shiftIndex=Math.floor((t-6)/8),end=Math.min(i.end,6+(shiftIndex+1)*8),hours=end-t;
       const day=DAYS[((Math.floor(shiftIndex/3)%7)+7)%7],sid=SHIFTS[((shiftIndex%3)+3)%3].id;
       if((emp.preferredDaysOff || []).includes(day)) penaltyHours+=hours*ps(emp,'daysOff');
-      if(emp.preferredShifts?.length && !emp.preferredShifts.includes(sid)) penaltyHours+=hours*ps(emp,'shift');
+      const prefs=dayPreferredShifts(emp,day,timeOff);
+      if(prefs.length && !prefs.includes(sid)) penaltyHours+=hours*ps(emp,'shift');
       t=end;
     }
   }
@@ -2201,8 +2217,9 @@ function buildPreferenceHistory(publications,weekStart) {
   }
   for(const record of byWeek.values()) {
     const s=record.snapshot;
+    const weekTimeOff=buildTimeOffAvailability([],s.weekStart,s.weekAvailability);
     for(const emp of s.employees) {
-      const b=preferenceBurden(emp,s.schedule,s.extShifts,s.handoffs);
+      const b=preferenceBurden(emp,s.schedule,s.extShifts,s.handoffs,weekTimeOff);
       if(!b.workedHours) continue;
       const row=byEmployee[emp.id] ||= {workedHours:0,penaltyHours:0,weeks:0};
       row.workedHours+=b.workedHours;row.penaltyHours+=b.penaltyHours;row.weeks++;
@@ -2210,8 +2227,8 @@ function buildPreferenceHistory(publications,weekStart) {
   }
   return {byEmployee,weeks:[...byWeek.keys()].sort()};
 }
-function preferenceFairnessCost(emp,schedule,extShifts,handoffs,fairnessHistory={}) {
-  const prior=fairnessHistory.byEmployee?.[emp.id],current=preferenceBurden(emp,schedule,extShifts,handoffs);
+function preferenceFairnessCost(emp,schedule,extShifts,handoffs,fairnessHistory={},timeOff) {
+  const prior=fairnessHistory.byEmployee?.[emp.id],current=preferenceBurden(emp,schedule,extShifts,handoffs,timeOff);
   // A bounded extra weight protects those whose preferences were missed more often.
   const weight=1+Math.min(2,Math.max(0,(prior?.penaltyHours || 0)/Math.max(8,prior?.workedHours || 0)));
   return current.penaltyHours*weight;
@@ -2347,7 +2364,7 @@ function scheduleQuality(result, employees, cfg = {}, options = {}, baseline) {
   for (const emp of employees) {
     const h=weeklyEmployeeHours(emp,ns,exts,handoffs,options.ptoHoursByEmployee || {});
     shortfall+=h.shortfallHours || 0;overtime+=Math.max(0,h.creditedHours-FT_MIN_HOURS);
-    preferences+=preferenceFairnessCost(emp,ns,exts,handoffs,options.fairnessHistory);
+    preferences+=preferenceFairnessCost(emp,ns,exts,handoffs,options.fairnessHistory,options.empTimeOffDays);
   }
   if (baseline) {
     const keys=s=>new Set(Object.entries(s).flatMap(([key,a])=>a.map(v=>key+"__"+v.employeeId+"__"+v.position)));
@@ -2629,7 +2646,7 @@ function createCompleteScheduleSearch(rawInput) {
             const key=canonicalJSON({id:emp.id,kind:base.base.source,start:base.base.start,end:base.base.end,position:base.position,handoffs:hs});
             if(!seen.has(key)) {
               seen.add(key);candidate.index=candidates.length;candidate.spans=spans;
-              candidate.cost=preferenceFairnessCost(emp,own.ns,own.autoExtShifts,own.handoffs,input.fairnessHistory || {});
+              candidate.cost=preferenceFairnessCost(emp,own.ns,own.autoExtShifts,own.handoffs,input.fairnessHistory || {},availability);
               candidates.push(candidate);candidateCount=candidates.length;
             }
           }
@@ -3276,14 +3293,14 @@ function repairScheduleGaps(result, context) {
       // Lower cost = better candidate. Factors: base type cost, shift preference
       // alignment, hour impact (under-40 good, over-48 bad), OT preference,
       // role-fill bonus for missing Scale/Medical.
-      const candidateCost = (emp, gapShiftId, strategyType, hoursAdded, fillsRole) => {
+      const candidateCost = (emp, gapDay, gapShiftId, strategyType, hoursAdded, fillsRole) => {
         let cost = 0;
         // Base cost by strategy type
         if (strategyType === "insert")  cost += 0;
         if (strategyType === "steal")   cost += 50;
         if (strategyType === "handoff") cost += 30;
         // Shift preference alignment (scaled by prefStrength.shift)
-        const prefs = emp.preferredShifts || [];
+        const prefs = dayPreferredShifts(emp, gapDay, empTimeOffDays);
         const sw = ps(emp, "shift");
         if (prefs.length && !prefs.includes(gapShiftId)) cost += 80 * sw;
         if (prefs.length && prefs.includes(gapShiftId))  cost -= 20 * sw;
@@ -3353,7 +3370,7 @@ function repairScheduleGaps(result, context) {
           const fillsRole = (pos === "Scale" && needsScale) || (pos === "Medical" && needsMedical) ? pos : null;
           candidates.push({
             type: "insert", emp, pos, fillsRole,
-            cost: candidateCost(emp, gap.shiftId, "insert", SHIFT_HOURS, fillsRole),
+            cost: candidateCost(emp, gap.day, gap.shiftId, "insert", SHIFT_HOURS, fillsRole),
             apply: () => {
               ns[gapKey] = [...(ns[gapKey] || []), { employeeId: emp.id, position: pos }];
               assignedIds.add(emp.id);
@@ -3390,7 +3407,7 @@ function repairScheduleGaps(result, context) {
             const capturedDonorKey = donorKey;
             candidates.push({
               type: "steal", emp, pos, fillsRole, donorShiftId: donor.id,
-              cost: candidateCost(emp, gap.shiftId, "steal", 0, fillsRole),
+              cost: candidateCost(emp, gap.day, gap.shiftId, "steal", 0, fillsRole),
               apply: () => {
                 ns[capturedDonorKey] = ns[capturedDonorKey].filter((_, idx) => idx !== capturedDi);
                 ns[gapKey] = [...(ns[gapKey] || []), { employeeId: emp.id, position: pos }];
@@ -3428,7 +3445,7 @@ function repairScheduleGaps(result, context) {
             const fillsRole = (pos === "Scale" && needsScale) || (pos === "Medical" && needsMedical) ? pos : null;
             candidates.push({
               type: "handoff", emp, pos, fillsRole, adjShiftId, hoType,
-              cost: candidateCost(emp, gap.shiftId, "handoff", HANDOFF_HOURS, fillsRole),
+              cost: candidateCost(emp, gap.day, gap.shiftId, "handoff", HANDOFF_HOURS, fillsRole),
               apply: () => {
                 handoffs.push({
                   day: gap.day, employeeId: emp.id, type: hoType,
@@ -3499,7 +3516,7 @@ function repairScheduleGaps(result, context) {
           if (emp.maxShiftsPerWeek != null && (empShiftCount[emp.id] || 0) >= emp.maxShiftsPerWeek) return false;
           return !assignmentIssues(emp, rg.day, rg.shiftId, rg.role, ns, cfg,
             { extShifts: autoExtShifts, handoffs, empTimeOffDays, ptoHoursByEmployee, creditHourLimits, empPatterns: enrichedPatterns }).length;
-        }).sort((a, b) => candidateCost(a, rg.shiftId, "insert", SHIFT_HOURS, rg.role) - candidateCost(b, rg.shiftId, "insert", SHIFT_HOURS, rg.role));
+        }).sort((a, b) => candidateCost(a, rg.day, rg.shiftId, "insert", SHIFT_HOURS, rg.role) - candidateCost(b, rg.day, rg.shiftId, "insert", SHIFT_HOURS, rg.role));
 
         if (insertCands.length) {
           const emp = insertCands[0];
@@ -3808,7 +3825,7 @@ function buildCallOffList(day, shiftId, excludeEmpId, employees, schedule, cfg =
       flags.push({ label: (Math.round(gap * 10) / 10) + "h rest", level: gap < minRest + 4 ? "warn" : "ok" });
     if (prefOff)
       flags.push({ label: "Prefers " + day.slice(0,3) + " off", level: "warn" });
-    if ((emp.preferredShifts || []).length && !(emp.preferredShifts || []).includes(shiftId))
+    if (dayPreferredShifts(emp, day, options.empTimeOffDays).length && !dayPreferredShifts(emp, day, options.empTimeOffDays).includes(shiftId))
       flags.push({ label: "Off preferred shift", level: "info" });
     if (wouldOT)
       flags.push({ label: (otPref === "preferred" ? "Prefers OT " : "OT ") + hrs + "h → " + projHrs + "h",
@@ -3991,7 +4008,7 @@ function buildAutoFill(sourceEmps, cfg, empTimeOffDays, empPatterns, extShiftsAr
   // Group employees by their preferred shift (or "any" if none set).
   const shiftGroups = { first: [], second: [], third: [], any: [] };
   sourceEmps.forEach(e => {
-    const prefs = e.preferredShifts||[];
+    const prefs = weekPreferredShifts(e, empTimeOffDays);
     if ((e.qualifications||[]).includes("Supervisor")) {
       shiftGroups.first.push(e);
     } else if (e.requiredShift && shiftGroups[e.requiredShift]) {
@@ -4017,7 +4034,7 @@ function buildAutoFill(sourceEmps, cfg, empTimeOffDays, empPatterns, extShiftsAr
   shiftGroups.any.forEach(e => {
     // Multi-preferred employees only distribute among their preferred shifts;
     // truly unconstrained employees balance across all three.
-    const prefs = (e.preferredShifts || []).filter(p => shiftNeeds.some(n => n.id === p));
+    const prefs = weekPreferredShifts(e, empTimeOffDays).filter(p => shiftNeeds.some(n => n.id === p));
     const pool = prefs.length ? shiftNeeds.filter(n => prefs.includes(n.id)) : shiftNeeds;
     const lightest = pool.slice().sort((a, b) => a.count - b.count)[0];
     shiftGroups[lightest.id].push(e);
@@ -4308,8 +4325,8 @@ function buildAutoFill(sourceEmps, cfg, empTimeOffDays, empPatterns, extShiftsAr
     // PT employees keep a soft penalty — they fill as last resort across shifts.
     if (isFT && empPlan && empPlan.shiftId !== shiftId && !canWorkOtherShifts(emp)) return null;
 
-    const ptPrefMismatch = (!isFT && (emp.preferredShifts||[]).length > 0
-      && !(emp.preferredShifts||[]).includes(shiftId)) ? 800 : 0;
+    const ptPrefMismatch = (!isFT && dayPreferredShifts(emp, day, empTimeOffDays).length > 0
+      && !dayPreferredShifts(emp, day, empTimeOffDays).includes(shiftId)) ? 800 : 0;
     const shiftMismatch = empPlan && empPlan.shiftId === shiftId ? 0 : 20; // PT only now
     // FT employees with crossShiftOT can work any shift, but are deprioritized on non-planned shifts
     // (high penalty keeps them as last resort after same-shift staff, same as FT overtime)
@@ -4392,7 +4409,7 @@ function buildAutoFill(sourceEmps, cfg, empTimeOffDays, empPatterns, extShiftsAr
         if (shiftMarkedOff(peer, day, shiftId, empTimeOffDays)) return false;
         if (peer.requiredShift && peer.requiredShift !== shiftId && !canWorkOtherShifts(peer)) return false;
         // Must prefer or be willing to work this shift (no extreme mismatch)
-        const peerPrefs = peer.preferredShifts || [];
+        const peerPrefs = dayPreferredShifts(peer, day, empTimeOffDays);
         if (peerPrefs.length > 0 && !peerPrefs.includes(shiftId)) return false;
         return true;
       })
@@ -4480,7 +4497,7 @@ function buildAutoFill(sourceEmps, cfg, empTimeOffDays, empPatterns, extShiftsAr
 
     // +100 preferred-shift bonus: reward placements that match the employee's
     // declared preferredShifts list.  Applies to both FT and PT employees.
-    const prefShifts = emp.preferredShifts || [];
+    const prefShifts = dayPreferredShifts(emp, day, empTimeOffDays);
     const preferredShiftBonus = prefShifts.includes(shiftId) ? -100 : 0;
 
     // +50 consecutive-day rhythm bonus: reward placements that continue an
@@ -4808,7 +4825,7 @@ function buildAutoFill(sourceEmps, cfg, empTimeOffDays, empPatterns, extShiftsAr
       // A1b: employee's direct preferredShifts bonus.
       // plan.shiftId already covers FT, but PT has no plan shift and FT crossShiftOT
       // can rotate — this term rewards hitting the employee's own stated preference.
-      const prefShifts = emp.preferredShifts || [];
+      const prefShifts = dayPreferredShifts(emp, day, empTimeOffDays);
       if (prefShifts.includes(shiftId)) score -= 80 * ps(emp, "shift");
       // A1b: PT preferred-shift mismatch — PT with a shift preference but landing
       // on a non-preferred shift gets strongly deprioritised (mirrors empScore's
@@ -5055,7 +5072,7 @@ function buildAutoFill(sourceEmps, cfg, empTimeOffDays, empPatterns, extShiftsAr
           if (isFT && empP && empP.shiftId !== shift.id && !canWorkOtherShifts(emp)) soft += 500 * ps(emp, "shift");
           if (isFT && empP && empP.shiftId !== shift.id && canWorkOtherShifts(emp)) soft += 400 * ps(emp, "shift");
           if (!isFT) {
-            const prefs = emp.preferredShifts || [];
+            const prefs = dayPreferredShifts(emp, day, empTimeOffDays);
             if (prefs.length > 0 && !prefs.includes(shift.id)) soft += 600 * ps(emp, "shift");
           }
         }
@@ -5347,7 +5364,7 @@ function buildAutoFill(sourceEmps, cfg, empTimeOffDays, empPatterns, extShiftsAr
           // Score: prefer placing employee back on their preferred shift,
           // and filling critical roles (Scale/Medical)
           let score = 0;
-          const prefs = emp.preferredShifts || [];
+          const prefs = dayPreferredShifts(emp, sl.day, empTimeOffDays);
           if (prefs.length && prefs.includes(sl.shiftId)) score -= 50;
           if (prefs.length && !prefs.includes(sl.shiftId)) score += 30;
           if (pos === "Scale" && !slotHasRole(work[key] || [], sourceEmps, "Scale")) score -= 40;
@@ -5614,7 +5631,7 @@ function buildAutoFill(sourceEmps, cfg, empTimeOffDays, empPatterns, extShiftsAr
               const empPlan = plan[e.id];
               if (empPlan && empPlan.shiftId !== shift.id) return false;
             } else {
-              const prefs = e.preferredShifts || [];
+              const prefs = dayPreferredShifts(e, day, empTimeOffDays);
               if (prefs.length > 0 && !prefs.includes(shift.id)) return false;
             }
             if ((e.unavailableDays||[]).includes(day)) return false;
@@ -8465,7 +8482,7 @@ function PreferenceEditor({ prefShifts, setPrefShifts, blockedShifts, setBlocked
 
 function PreferenceViolationBanner() {
   const { employees } = useRoster();
-  const { schedule } = useSchedule();
+  const { schedule, empTimeOffDays } = useSchedule();
   const t = useTheme();
   const [expandedReq,  setExpandedReq]  = useState(false);
   const [expandedPref, setExpandedPref] = useState(false);
@@ -8473,11 +8490,11 @@ function PreferenceViolationBanner() {
   const violations = useMemo(() => {
     const out = [];
     employees.forEach(emp => {
-      const pv = getAllPrefViolations(emp, schedule);
+      const pv = getAllPrefViolations(emp, schedule, empTimeOffDays);
       if (pv.length) out.push({ emp, violations: pv });
     });
     return out;
-  }, [employees, schedule]);
+  }, [employees, schedule, empTimeOffDays]);
 
   if (!violations.length) return null;
 
@@ -8589,12 +8606,12 @@ function PreferenceViolationBanner() {
 
 function ViolationMinimizeButton({ onClick }) {
   const { employees } = useRoster();
-  const { schedule, extShifts, handoffs, ptoHoursByEmployee } = useSchedule();
+  const { schedule, extShifts, handoffs, ptoHoursByEmployee, empTimeOffDays } = useSchedule();
   const t = useTheme();
-  const count = useMemo(() => buildViolationList(employees, schedule, extShifts, handoffs, ptoHoursByEmployee).length, [employees, schedule, extShifts, handoffs, ptoHoursByEmployee]);
+  const count = useMemo(() => buildViolationList(employees, schedule, extShifts, handoffs, ptoHoursByEmployee, empTimeOffDays).length, [employees, schedule, extShifts, handoffs, ptoHoursByEmployee, empTimeOffDays]);
   const hasReq = useMemo(() =>
-    buildViolationList(employees, schedule, extShifts, handoffs, ptoHoursByEmployee).some(v => v.type === "wrong_shift_required" || v.type === "unavailable" || v.type === "supervisor_missing"),
-    [employees, schedule, extShifts, handoffs, ptoHoursByEmployee]);
+    buildViolationList(employees, schedule, extShifts, handoffs, ptoHoursByEmployee, empTimeOffDays).some(v => v.type === "wrong_shift_required" || v.type === "unavailable" || v.type === "supervisor_missing"),
+    [employees, schedule, extShifts, handoffs, ptoHoursByEmployee, empTimeOffDays]);
   const col = count === 0 ? "var(--ss-text-dim)" : hasReq ? "var(--ss-danger)" : "var(--ss-warning)";
   const borderCol = count === 0 ? "var(--ss-border)" : hasReq ? "var(--ss-danger-55)" : "var(--ss-warning-55)";
   return (
@@ -8614,7 +8631,7 @@ function ViolationMinimizeButton({ onClick }) {
   );
 }
 
-function buildViolationList(employees, schedule, extShiftsArg, handoffs = [], ptoHoursByEmployee = {}) {
+function buildViolationList(employees, schedule, extShiftsArg, handoffs = [], ptoHoursByEmployee = {}, timeOff) {
   const SEVERITY = { supervisor_missing: -1, wrong_shift_required: 0, unavailable: 1, days_off: 2, wrong_shift: 3, overwork: 4, under_hours: 5 };
   const items = [];
   // O(1) employee lookup — avoids O(N) find inside slot loops
@@ -8695,7 +8712,7 @@ function buildViolationList(employees, schedule, extShiftsArg, handoffs = [], pt
           severity: SEVERITY.unavailable, msg: `Unavailable on ${day}` });
         continue;
       }
-      const v = getPreferenceViolations(emp, day, shiftId, schedule);
+      const v = getPreferenceViolations(emp, day, shiftId, schedule, timeOff);
       for (const viol of v) {
         items.push({ emp, day, shiftId, position,
           type: viol.type, severity: SEVERITY[viol.type] ?? 99, msg: viol.msg });
@@ -8871,7 +8888,7 @@ function MinimizeViolationsPanel({ onClose }) {
 
   const policyOptions = { extShifts: extShifts || [], handoffs: handoffs || [], empTimeOffDays, ptoHoursByEmployee, empPatterns: boundaryPatterns(history, weekStart, empPatterns) };
 
-  const violations = useMemo(() => buildViolationList(employees, schedule, extShifts, handoffs, ptoHoursByEmployee), [employees, schedule, extShifts, handoffs, ptoHoursByEmployee]);
+  const violations = useMemo(() => buildViolationList(employees, schedule, extShifts, handoffs, ptoHoursByEmployee, empTimeOffDays), [employees, schedule, extShifts, handoffs, ptoHoursByEmployee, empTimeOffDays]);
 
   const [fixedIds, setFixedIds] = useState(new Set());
   const [unfixableIds, setUnfixableIds] = useState(new Set());
@@ -8892,7 +8909,7 @@ function MinimizeViolationsPanel({ onClose }) {
     let cur = JSON.parse(JSON.stringify(schedule));
     const nowFixed = new Set(fixedIds);
     const nowUnfix = new Set(unfixableIds);
-    const items = buildViolationList(employees, cur, extShifts, handoffs, ptoHoursByEmployee);
+    const items = buildViolationList(employees, cur, extShifts, handoffs, ptoHoursByEmployee, empTimeOffDays);
     items.forEach(item => {
       if (nowFixed.has(itemKey(item))) return;
       const result = tryFixViolation(item, employees, cur, cfg, extShifts);
@@ -10773,7 +10790,7 @@ function CoverageDashboard({ navigateToWeek }) {
         label: weekRangeLabel(h.weekStart),
         isNamed: !h.isAutoSave,
         snapshotLabel: h.label,
-        ...computeWeekStats(h.schedule, employees, h.extShifts||[], h.handoffs||[], buildPtoCredits(employees,h.timeOffReqs || [],h.weekStart).hoursByEmployee),
+        ...computeWeekStats(h.schedule, employees, h.extShifts||[], h.handoffs||[], buildPtoCredits(employees,h.timeOffReqs || [],h.weekStart).hoursByEmployee, buildTimeOffAvailability([],h.weekStart,h.weekAvailability)),
       }));
   }, [history, employees]);
 
@@ -12962,7 +12979,7 @@ function ScheduleGrid({ onOpenTestModal }) {
       { employeeId: tgtEmp.id, day: tgtDay, shiftId: tgtShiftId, position: tgtPos });
     const viols = scheduleChangeIssues(schedule, swapped, employees, cfg, policyOptions).map(i => ({ hard: true, msg: i.msg }));
     for (const [emp, day, sid] of [[srcEmp, tgtDay, tgtShiftId], [tgtEmp, srcDay, srcShiftId]])
-      getPreferenceViolations(emp, day, sid, swapped).forEach(v => viols.push({ hard: false, msg: `${emp.name}: ${v.msg}` }));
+      getPreferenceViolations(emp, day, sid, swapped, empTimeOffDays).forEach(v => viols.push({ hard: false, msg: `${emp.name}: ${v.msg}` }));
     return viols;
   };
 
@@ -13012,7 +13029,7 @@ function ScheduleGrid({ onOpenTestModal }) {
       viols.push({ hard:true,  msg:`${newEmp.name} is locked to ${newEmp.requiredShift} shift` });
     if (!(newEmp.qualifications||[]).includes(newPosition))
       viols.push({ hard:true,  msg:`${newEmp.name} is not qualified for ${newPosition}` });
-    const prefViols = getPreferenceViolations(newEmp, subSrc.day, subSrc.shiftId, schedule);
+    const prefViols = getPreferenceViolations(newEmp, subSrc.day, subSrc.shiftId, schedule, empTimeOffDays);
     prefViols.forEach(v => viols.push({ hard:false, msg:`${newEmp.name}: ${v.msg}` }));
     const rest = calcRestGap(newEmp.id, schedule, subSrc.day, subSrc.shiftId);
     const minRest = cfg?.minRestHours ?? 12;
@@ -14226,7 +14243,7 @@ function ScheduleGrid({ onOpenTestModal }) {
                       const nights   = shift.id==="third" ? calcConsecutiveNights(a.employeeId,schedule,day,shift.id) : 0;
                       const rest     = calcRestGap(a.employeeId,schedule,day,shift.id);
                       const hasFatigue = unavail||(nights>(cfg?.maxConsecutiveNights??MAX_CONSECUTIVE_NIGHTS))||(rest<(cfg?.minRestHours??MIN_REST_HOURS)&&rest!==Infinity);
-                      const prefViolations = emp ? getPreferenceViolations(emp, day, shift.id, schedule) : [];
+                      const prefViolations = emp ? getPreferenceViolations(emp, day, shift.id, schedule, empTimeOffDays) : [];
                       const hasPrefWarn    = prefViolations.length > 0;
                       const hasReqViol     = prefViolations.some(v=>v.type==="wrong_shift_required");
                       const isOnCallSlot = !!a.isOnCall;
@@ -17270,8 +17287,8 @@ function ShiftSchedulerApp() {
     employees.filter(e=>getFatigueIssues(e.id,schedule,cfg,employees,extShifts||[],handoffs || [],boundaryPatterns(history,weekStart,empPatterns)).length>0).length
   ,[employees,schedule,extShifts,handoffs,cfg,history,weekStart,empPatterns]);
   const prefViolCount = useMemo(()=>
-    employees.filter(e=>getAllPrefViolations(e,schedule).length>0).length
-  ,[employees,schedule]);
+    employees.filter(e=>getAllPrefViolations(e,schedule,empTimeOffDays).length>0).length
+  ,[employees,schedule,empTimeOffDays]);
 
   return (
     <ConfirmDialogProvider>

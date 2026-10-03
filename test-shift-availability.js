@@ -147,3 +147,51 @@ test('the overtime lower bound counts "no" cells as unavailable',()=>{
   const closedWeek = core.overtimeLowerBound(roster,{empTimeOffDays:availability([],week,{a:all})});
   assert(closedStanding > open); assert.equal(closedWeek,closedStanding);
 });
+
+// Phase 3: "prefer" cells drive shift preference day by day.
+const {dayPreferredShifts,weekPreferredShifts,preferenceBurden} = core;
+test('day preference: grid "prefer" cells win for their day, other days use the weekly list',()=>{
+  const weekly = emp({preferredShifts:['third']});
+  assert.equal(dayPreferredShifts(weekly,'Monday',null),weekly.preferredShifts,'no grid returns the weekly list itself');
+  const e = emp({preferredShifts:['third'],shiftAvailability:{Monday:{first:'prefer',second:'prefer'},Tuesday:{third:'no'}}});
+  assert.deepEqual(dayPreferredShifts(e,'Monday',null),['first','second']);
+  assert.deepEqual(dayPreferredShifts(e,'Tuesday',null),['third'],'a day with only "no" cells keeps the weekly list');
+  assert.deepEqual(dayPreferredShifts(e,'Friday',null),['third']);
+  assert.deepEqual(dayPreferredShifts(emp(),'Friday',availability([],week,{e:{Friday:{second:'prefer'}}})),['second']);
+  assert.deepEqual(dayPreferredShifts(e,'Monday',availability([],week,{e:{Monday:{first:'ok',second:'ok'}}})),['third'],
+    'a week override can clear a standing preference');
+});
+test('week preference: each day votes, the most-preferred shift wins',()=>{
+  const weekly = emp({preferredShifts:['third','first']});
+  assert.equal(weekPreferredShifts(weekly,null),weekly.preferredShifts,'no grid returns the weekly list itself');
+  const allSecond = Object.fromEntries(DAYS.map(d=>[d,{second:'prefer'}]));
+  assert.deepEqual(weekPreferredShifts(emp({preferredShifts:['third'],shiftAvailability:allSecond}),null),['second']);
+  const saturdayOnly = emp({preferredShifts:['first'],shiftAvailability:{Saturday:{second:'prefer'}}});
+  assert.deepEqual(weekPreferredShifts(saturdayOnly,null),['first'],'six weekly-preference days outvote one grid day');
+  assert.deepEqual(weekPreferredShifts(emp({shiftAvailability:{Monday:{first:'no'}}}),null),[]);
+});
+test('preference burden counts off-preference hours day by day',()=>{
+  const e = emp({preferredShifts:['third'],shiftAvailability:{Monday:{first:'prefer'}}});
+  assert.equal(preferenceBurden(e,schedule('Monday','first')).penaltyHours,0);
+  assert.equal(preferenceBurden(e,schedule('Tuesday','first')).penaltyHours,8);
+  assert.equal(preferenceBurden(emp({preferredShifts:['third']}),schedule('Monday','first')).penaltyHours,8);
+  assert.equal(preferenceBurden(emp(),schedule('Wednesday','first'),[],[],availability([],week,{e:{Wednesday:{second:'prefer'}}})).penaltyHours,8);
+});
+test('preference warnings name the day\'s preferred shift',()=>{
+  const e = emp({preferredShifts:['third'],shiftAvailability:{Monday:{first:'prefer'}}});
+  assert.equal(core.getPreferenceViolations(e,'Monday','first',{}).some(v=>v.type==='wrong_shift'),false);
+  const v = core.getPreferenceViolations(e,'Monday','second',{}).find(v=>v.type==='wrong_shift');
+  assert(v && /prefers 1st|prefers first|prefers 06/i.test(v.msg),v && v.msg);
+});
+test('autofill follows a grid preference that differs from the weekly one',()=>{
+  const fx = require('./fixtures/autofill-real-roster-drafts.json');
+  const allSecond = Object.fromEntries(DAYS.map(d=>[d,{second:'prefer'}]));
+  const emps = JSON.parse(JSON.stringify(fx.roster)).map(e=>e.id==='psi-9'?{...e,shiftAvailability:allSecond}:e);
+  assert.deepEqual(emps.find(e=>e.id==='psi-9').preferredShifts,['third']);
+  const log = console.log, warn = console.warn; console.log = console.warn = () => {};
+  let result; try { result = buildAutoFill(emps,{...fx.cfg,maxSearchNodes:3000},availability([],week),fx.enrichedPatterns,[],false,{roster:emps}); }
+  finally { console.log = log; console.warn = warn; }
+  const shifts = Object.entries(result.schedule).filter(([,a])=>a.some(x=>x.employeeId==='psi-9')).map(([k])=>k.split('__')[1]);
+  assert(shifts.length > 0);
+  assert(shifts.every(s=>s==='second'),shifts.join(','));
+});
