@@ -256,3 +256,47 @@ test('every hours display uses one count of hours actually worked', () => {
   assert.deepEqual(both(sched, [], [{...late, sourceShiftId:'third'}]), [8, 8], 'an orphaned one does not');
   assert(!html.includes('function calcHoursDetail('));
 });
+
+// ── Deferred batch A: 12h overlaps, manual overtime approval, hidden grid ────
+const commitHarness = (schedule, extShifts = []) => {
+  const calls = {alerts:[], schedule:[], pending:[], undo:0};
+  const employees = [{id:'p', name:'P', employmentType:'full-time', qualifications:['Guard','Scale','Medical']}];
+  const scope = {isReadOnly:false, manualInputIsCurrent:() => true, schedule, extShifts, handoffs:[], employees, cfg:{maxConsecutiveShifts:7}, policyOptions:{extShifts, handoffs:[]},
+    showAlert:a => calls.alerts.push(a), pushUndo:() => calls.undo++, setSchedule:f => calls.schedule.push(f), setHandoffs:() => {},
+    setPendingProposal:p => calls.pending.push(p), ptoHoursByEmployee:{}, assignLog:{}, overtimeInputRef:{current:'stamp'}};
+  const commit = evaluate(extract('  // Unlocked early/late extensions whose source duty a change removes go with it.', '  const commitExtendedChange') + 'return commitAssignmentChange;', scope);
+  return {commit, calls};
+};
+test('a regular shift inside the same person\'s 12-hour duty is refused', () => {
+  const ext = {pairId:'day', day:'Monday', empAId:'p', empBId:null};
+  assert.deepEqual(core.newRowsInsideOwnExtended({}, {[cellKey('Monday','second')]:[{employeeId:'p',position:'Guard'}]}, [ext]), [{key:'Monday__second', employeeId:'p'}]);
+  assert.deepEqual(core.newRowsInsideOwnExtended({}, {[cellKey('Tuesday','second')]:[{employeeId:'p',position:'Guard'}]}, [ext]), []);
+  const h = commitHarness({}, [ext]);
+  assert.equal(h.commit(s => ({...s, [cellKey('Monday','second')]:[{employeeId:'p',position:'Guard'}]})), false);
+  assert.equal(h.calls.schedule.length, 0); assert.match(JSON.stringify(h.calls.alerts), /already covers Monday second/);
+});
+test('a manual edit that adds overtime goes to approval instead of applying', () => {
+  const five = Object.fromEntries(['Monday','Tuesday','Wednesday','Thursday','Friday'].map(d => [cellKey(d,'first'), [{employeeId:'p',position:'Guard'}]]));
+  const h = commitHarness(five);
+  assert.equal(h.commit(s => ({...s, [cellKey('Saturday','first')]:[{employeeId:'p',position:'Guard'}]})), true);
+  assert.equal(h.calls.schedule.length, 0, 'not applied yet'); assert.equal(h.calls.undo, 0);
+  assert.equal(h.calls.pending.length, 1); assert.equal(h.calls.pending[0].manual, true); assert.deepEqual(h.calls.pending[0].overtimeIds, ['p']);
+  const ok = commitHarness({[cellKey('Monday','first')]:[{employeeId:'p',position:'Guard'}]});
+  assert.equal(ok.commit(s => ({...s, [cellKey('Tuesday','first')]:[{employeeId:'p',position:'Guard'}]})), true);
+  assert.equal(ok.calls.schedule.length, 1, 'no overtime: applied directly'); assert.equal(ok.calls.pending.length, 0);
+});
+test('denying the overtime of a manual edit leaves the schedule unchanged', () => {
+  const calls = {pending:[], alerts:[], committed:0};
+  const scope = {pendingProposal:{manual:true, overtimeIds:['p'], ns:{}, baseStamp:'s'}, publicationStore:{busy:false}, proposalIsCurrent:() => true,
+    discardStaleProposal:() => {}, setPendingProposal:p => calls.pending.push(p), showAlert:a => calls.alerts.push(a), commitScheduleProposal:() => calls.committed++};
+  const handle = evaluate(extract('  const handleOvertimeApproval = async', '  const suggestExtShifts') + 'return handleOvertimeApproval;', scope);
+  return handle({p:false}, 'Manager').then(() => {
+    assert.deepEqual(calls.pending, [null]); assert.equal(calls.committed, 0);
+    assert.match(calls.alerts[0].title, /not applied/);
+  });
+});
+test('switching tabs keeps the schedule grid (and its search, approval and undo) alive', () => {
+  assert(html.includes('<div style={{display:activeTab==="schedule"?"flex":"none",gap:0,alignItems:"flex-start"}}>'));
+  assert(!html.includes('{activeTab==="schedule"&&('));
+  assert(html.includes('if (!gridVisibleRef.current) return; // other tabs keep the grid mounted but hidden'));
+});

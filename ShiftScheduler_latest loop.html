@@ -850,6 +850,28 @@ function orphanedHandoffs(schedule, extShifts = [], handoffs = []) {
 }
 // Unlocked handoffs a change would orphan travel with it; locked ones (and any
 // already orphaned beforehand) stay and are reported by the rule checks.
+// Regular rows added by a change (present in `after`, not in `before`) whose
+// employee already has extended or carry-in work overlapping that slot. Such a
+// row would only be an uncounted display copy, so new ones are refused; rows
+// already saved are left alone.
+function newRowsInsideOwnExtended(beforeSchedule, afterSchedule, extShifts = []) {
+  const ext = (extShifts || []).flatMap(extendedWorkIntervals);
+  const out = [];
+  for (const [key, rows] of Object.entries(afterSchedule || {})) {
+    const span = shiftInterval(...key.split("__"));
+    if (!span) continue;
+    const had = new Set((beforeSchedule?.[key] || []).map(a => a.employeeId));
+    for (const a of rows || []) if (!had.has(a.employeeId) && ext.some(i => i.employeeId === a.employeeId && intervalsOverlap(i, span)))
+      out.push({ key, employeeId: a.employeeId });
+  }
+  return out;
+}
+// Employees whose hours worked over 40 would go up with this change.
+function overtimeIncreases(employees, before, after) {
+  return (employees || []).filter(e =>
+    weeklyEmployeeHours(e, after.ns, after.autoExtShifts || [], after.handoffs || []).overtimeHours >
+    weeklyEmployeeHours(e, before.schedule || {}, before.extShifts || [], before.handoffs || []).overtimeHours);
+}
 // Both people on an extended record are still on the roster.
 const extEmployeesKnown = (ext, roster) => [ext.empAId, ext.empBId].every(id => !id || (roster || []).some(e => e.id === id));
 function handoffsOrphanedByChange(before, after) {
@@ -9175,7 +9197,7 @@ function MinimizeViolationsPanel({ onClose, onBeforeChange }) {
 
   const keepsCoverage = (before, after) => {
     const a = coverageShortfall(before, employees, extShifts || [], handoffs || []), b = coverageShortfall(after, employees, extShifts || [], handoffs || []);
-    return b.bodies <= a.bodies && b.roles <= a.roles;
+    return b.bodies <= a.bodies && b.roles <= a.roles && !newRowsInsideOwnExtended(before, after, extShifts || []).length;
   };
   const fixOne = (item) => {
     const result = tryFixViolation(item, employees, schedule, cfg, extShifts);
@@ -12327,9 +12349,8 @@ function EmpPicker({emp,day,sid,st,assign,getPos,subSource,onSub,onHover}) {
     if (consecH > empMaxConsec(emp)) return;
     if (shortRest) warns.push(`Only ${Math.round(restGap*10)/10}h rest since last shift (min ${cfg?.minRestHours??MIN_REST_HOURS}h).`);
     if (tooManyNights) warns.push(`${consNights} consecutive night shifts exceeds the ${cfg?.maxConsecutiveNights??MAX_CONSECUTIVE_NIGHTS}-shift limit.`);
-    if (wouldBeOver) {
-      if (otPref === "blocked") warns.push(`${emp.name} prefers NO overtime — currently at ${currentHours}h.`);
-      else warns.push(`${emp.name} is at ${currentHours}h this week — overtime.`);
+    if (wouldBeOver && otPref === "blocked") {
+      warns.push(`${emp.name} prefers NO overtime — currently at ${currentHours}h.`);
     }
     if (warns.length) {
       const ok = await showConfirm({title:"Assignment Warnings",message:"Assign anyway?",items:warns.map(m=>({msg:m,hard:false})),confirmLabel:"Assign",variant:"warning"});
@@ -13050,7 +13071,8 @@ function ScheduleGrid({ onOpenTestModal }) {
   const { setSchedule, setExtShifts, setTrainingBlocks, setWeekStart, scheduleStale: scheduleStaleP, setScheduleStale: setScheduleStaleProp, setHandoffs, publicationStore, setWeekDraft, resetWeekDraft, weekSwitchBusy, generationInputsReady } = scheduleState;
   const { history, setHistory, savedWeeks, setSavedWeeks } = useHistory();
   const { timeOffReqs: liveTimeOffReqs, weekAvailability: weekAvailabilityStore } = useTimeOff();
-  const { highlightSlot, clearHighlightSlot, pendingAutoFill, clearPendingAutoFill, mobileView, setMobileView } = useUI();
+  const { highlightSlot, clearHighlightSlot, pendingAutoFill, clearPendingAutoFill, mobileView, setMobileView, activeTab } = useUI();
+  const gridVisibleRef = useRef(true); gridVisibleRef.current = activeTab === undefined || activeTab === "schedule";
   const t = useTheme();
   const cfg = useSettings();
   const { showConfirm, showAlert } = useConfirm();
@@ -13098,7 +13120,7 @@ function ScheduleGrid({ onOpenTestModal }) {
 
   useEffect(() => {
     const handler = (e) => {
-      if (e.key !== "Escape") return;
+      if (e.key !== "Escape" || !gridVisibleRef.current) return;
       if (swapSource)   { setSwapSource(null); e.preventDefault(); return; }
       if (subSource)    { setSubSource(null); setEditingCell(null); e.preventDefault(); return; }
       if (dragEmp)      { setDragEmp(null); e.preventDefault(); return; }
@@ -13265,6 +13287,7 @@ function ScheduleGrid({ onOpenTestModal }) {
   const redoRef = useRef(redo); redoRef.current = redo;
   useEffect(() => {
     const handler = (e) => {
+      if (!gridVisibleRef.current) return; // other tabs keep the grid mounted but hidden
       if (e.target.tagName === "INPUT" || e.target.tagName === "TEXTAREA" || e.target.isContentEditable) return;
       if ((e.ctrlKey || e.metaKey) && !e.shiftKey && e.key === "z") { e.preventDefault(); undoRef.current(); }
       if ((e.ctrlKey || e.metaKey) && (e.key === "y" || (e.shiftKey && e.key === "z"))) { e.preventDefault(); redoRef.current(); }
@@ -13301,6 +13324,11 @@ function ScheduleGrid({ onOpenTestModal }) {
   const commitScheduleProposal = proposal => {
     if (isReadOnly) return false;
     if (!proposalIsCurrent(proposal)) { discardStaleProposal(); return false; }
+    // Rows inside the same person's 12h/carry-in work are uncounted display
+    // copies; a new week never carries them (locked rows stay as they are).
+    const copies = newRowsInsideOwnExtended({}, proposal.ns, proposal.autoExtShifts || []);
+    if (copies.length) proposal = { ...proposal, ns: Object.fromEntries(Object.entries(proposal.ns).map(([key, rows]) =>
+      [key, rows.filter(a => a.locked || !copies.some(c => c.key === key && c.employeeId === a.employeeId))])) };
     const limits = proposal.creditHourLimits || Object.fromEntries(employees.map(e => [e.id, 40]));
     const hard = validateAssignmentPolicy(proposal.ns, employees, cfg,
       { ...policyOptions, extShifts: proposal.autoExtShifts || [], handoffs: proposal.handoffs || [], creditHourLimits: limits });
@@ -13334,10 +13362,22 @@ function ScheduleGrid({ onOpenTestModal }) {
     const dropped = handoffsOrphanedByChange({schedule, extShifts:extShifts || [], handoffs:handoffs || []}, {schedule:next, extShifts:extShifts || []});
     const nextOptions = { ...policyOptions, handoffs: (handoffs || []).filter(h => !dropped.includes(h)) };
     const failures = scheduleChangeIssues(schedule, next, employees, cfg, policyOptions, nextOptions);
+    const insideOwn = newRowsInsideOwnExtended(schedule, next, extShifts || []);
+    const nameOf = id => employees.find(e => e.id === id)?.name || id;
+    failures.push(...insideOwn.map(r => ({ msg: `${nameOf(r.employeeId)} already covers ${r.key.replace("__", " ")} with a 12-hour, swing or carry-in duty; change that duty instead.` })));
     if (failures.length) {
       showAlert({ title: "Assignment blocked", message: "This change would break a scheduling rule.",
         items: failures.map(i => ({ hard: true, msg: i.msg })), variant: "danger" });
       return false;
+    }
+    // A change that adds overtime goes through the same approval as autofill.
+    const proposedState = { ns: next, autoExtShifts: extShifts || [], handoffs: nextOptions.handoffs };
+    const addsOvertime = overtimeIncreases(employees, { schedule, extShifts, handoffs }, proposedState);
+    if (addsOvertime.length) {
+      const reviewItems = overtimeReviewItems(employees, { schedule, extShifts, handoffs }, proposedState, cfg, ptoHoursByEmployee);
+      setPendingProposal(makeOvertimeProposal({ ...proposedState, reviewItems, usedPatterns:{}, assignLog: assignLog || {},
+        manual: true, overtimeIds: addsOvertime.map(e => e.id) }, overtimeInputRef.current));
+      return true;
     }
     pushUndo(); // only for changes that go through, so blocked edits leave undo/redo alone
     setSchedule(prev => {
@@ -13357,6 +13397,14 @@ function ScheduleGrid({ onOpenTestModal }) {
       showAlert({ title: "Extended shift blocked", message: "This change would break a scheduling rule.",
         items: failures.map(i => ({ hard: true, msg: i.msg })), variant: "danger" });
       return false;
+    }
+    const proposedState = { ns: schedule, autoExtShifts: next, handoffs: keptHandoffs };
+    const addsOvertime = overtimeIncreases(employees, { schedule, extShifts, handoffs }, proposedState);
+    if (addsOvertime.length) {
+      const reviewItems = overtimeReviewItems(employees, { schedule, extShifts, handoffs }, proposedState, cfg, ptoHoursByEmployee);
+      setPendingProposal(makeOvertimeProposal({ ...proposedState, reviewItems, usedPatterns:{}, assignLog: assignLog || {},
+        manual: true, overtimeIds: addsOvertime.map(e => e.id) }, overtimeInputRef.current));
+      return true;
     }
     pushUndo();
     setExtShifts(prev => {
@@ -13591,9 +13639,8 @@ function ScheduleGrid({ onOpenTestModal }) {
     if (tooManyNights) warns.push(`${nights} consecutive night shifts.`);
     const empDragOtPref = dragEmp.overtimePref && dragEmp.overtimePref !== "neutral" ? dragEmp.overtimePref : (cfg?.defaultOvertimePref || "neutral");
     const dragOtPref    = dragEmp.employmentType === "full-time" ? empDragOtPref : "neutral";
-    if (wouldBeOver) {
-      if (dragOtPref === "blocked") warns.push(`${dragEmp.name} prefers NO overtime — currently at ${currentHours}h.`);
-      else warns.push(`${dragEmp.name} would go to ${currentHours+SHIFT_HOURS}h (overtime).`);
+    if (wouldBeOver && dragOtPref === "blocked") {
+      warns.push(`${dragEmp.name} prefers NO overtime — currently at ${currentHours}h.`);
     }
     if (warns.length) {
       const ok = await showConfirm({title:"Assignment Warnings",message:"Assign anyway?",items:warns.map(m=>({msg:m,hard:false})),confirmLabel:"Assign",variant:"warning"});
@@ -14103,6 +14150,13 @@ function ScheduleGrid({ onOpenTestModal }) {
   const handleOvertimeApproval = async (approved,actor) => {
     if (!pendingProposal || publicationStore.busy) return;
     if (!proposalIsCurrent(pendingProposal)) { discardStaleProposal(); return; }
+    // A manual edit is all-or-nothing: if the overtime it adds is not approved,
+    // it is not applied (trimming could drop a different duty than the one edited).
+    if (pendingProposal.manual && (pendingProposal.overtimeIds || []).some(id => approved?.[id] !== true)) {
+      setPendingProposal(null);
+      showAlert({ title: "Change not applied", message: "The overtime it needed was not approved, so the schedule is unchanged.", variant: "info" });
+      return;
+    }
     try {
       const result = resolveOvertimeProposal(pendingProposal, employees, pendingProposal.reviewItems, approved, {
         source: employees.filter(e => !(afExclude || []).includes(e.id)), cfg, empTimeOffDays, ptoHoursByEmployee,
@@ -18198,8 +18252,9 @@ function ShiftSchedulerApp() {
           {activeTab==="employees"&&(
             <EmployeeManager onOpenTestModal={()=>setShowTestModal(true)}/>
           )}
-          {activeTab==="schedule"&&(
-            <div style={{display:"flex",gap:0,alignItems:"flex-start"}}>
+          {/* The grid stays mounted on other tabs (just hidden) so a running
+               autofill or search, a pending approval and undo history survive. */}
+            <div style={{display:activeTab==="schedule"?"flex":"none",gap:0,alignItems:"flex-start"}}>
               <div style={{flex:1,minWidth:0}}>
                 <ScheduleGrid key={weekStart} onOpenTestModal={()=>setShowTestModal(true)}/>
               </div>
@@ -18266,7 +18321,6 @@ function ShiftSchedulerApp() {
                 })()}
               </div>
             </div>
-          )}
           {activeTab==="dashboard"&&(
             <CoverageDashboard
               navigateToWeek={(weekStartVal) => { setWeekStart(weekStartVal); setActiveTab("schedule"); }}/>
