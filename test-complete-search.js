@@ -291,7 +291,7 @@ test('the overtime floor counts every coverage hour and each person\'s room unde
  assert.equal(c.overtimeLowerBound(guards),544-12*40);
  const pt=e('pt',{requiredShift:'second',maxShiftsPerWeek:2,qualifications:['Guard']});
  assert.equal(c.overtimeLowerBound([...guards.slice(0,11),pt]),544-11*40-16,'a second-shift-only part-timer without swings adds 16h');
- assert.equal(c.overtimeLowerBound(guards,{ptoHoursByEmployee:{g0:16}}),544-11*40-24,'PTO uses up room under 40');
+ assert.equal(c.overtimeLowerBound(guards,{ptoHoursByEmployee:{g0:16}}),544-12*40,'PTO never counts toward overtime, so it uses up no room under 40');
 });
 const incumbent=()=>({ns:{Sunday__second:oneDay(['a','b','c']).map(v=>a(v.id,'Guard',false))},autoExtShifts:[],handoffs:[],usedPatterns:{}});
 test('"Use best now" applies the search\'s best week, or autofill\'s draft before one exists',()=>{

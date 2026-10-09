@@ -1070,42 +1070,10 @@ function extEmpHours(pair, isEmpA) {
   return EXT_SHIFT_HOURS;
 }
 
-function calcHoursDetail(empId, schedule, extShifts, handoffsArr) {
-  // Returns { hours, regularSlots, extCredits, dedupedKeys } for debugging.
-  const extCoveredKeys = new Set();
-  const extCredits = [];
-  if (extShifts) {
-    extShifts.forEach(ext => {
-      if (ext.empAId !== empId && ext.empBId !== empId) return;
-      const pair = EXT_PAIRS_BY_ID.get(ext.pairId);
-      if (!pair) return;
-      const isEmpA = ext.empAId === empId;
-      const effectiveCovers = isEmpA ? pair.covers : (pair.coversB || pair.covers);
-      effectiveCovers.forEach(shiftId => extCoveredKeys.add(cellKey(ext.day, shiftId)));
-      if (pair.crossDayB && !isEmpA) {
-        const ni = DAYS.indexOf(ext.day);
-        if (ni >= 0 && ni < DAYS.length - 1) extCoveredKeys.add(cellKey(DAYS[ni + 1], pair.crossDayB));
-      }
-      const h = isEmpA ? extEmpHours(pair, true) : extEmpHours(pair, false);
-      extCredits.push({ pairId: ext.pairId, day: ext.day, isEmpA, h, empAId: ext.empAId, empBId: ext.empBId });
-    });
-  }
-  let regHours = 0;
-  const regularSlots = [];
-  Object.entries(schedule).forEach(([key, asgn]) => {
-    const hit = asgn.some(x => x.employeeId === empId);
-    if (!hit) return;
-    if (extCoveredKeys.has(key)) { regularSlots.push({ key, deduped: true }); return; }
-    regularSlots.push({ key, deduped: false });
-    regHours += SHIFT_HOURS;
-  });
-  const extHours = extCredits.reduce((s, c) => s + c.h, 0);
-  const hoHours = (handoffsArr || []).filter(h => h.employeeId === empId).reduce((s, h) => s + (h.hours || HANDOFF_HOURS), 0);
-  return { hours: regHours + extHours + hoHours, regHours, extHours, hoHours, regularSlots, extCredits, dedupedKeys: [...extCoveredKeys] };
-}
-
+// Hours actually worked: the union of real work intervals (regular, extended
+// halves, valid handoffs), so swings and overlaps are never double counted.
 function calcHours(empId, schedule, extShifts, handoffsArr) {
-  return calcHoursDetail(empId, schedule, extShifts, handoffsArr).hours;
+  return normalizedWorkedHours(empId, schedule || {}, extShifts || [], handoffsArr || []);
 }
 
 // Count how many distinct shift slots an employee is assigned in the current week
@@ -1393,12 +1361,14 @@ function employeePolicyIssues(emp, schedule, cfg = {}, options = {}) {
     hours += Math.max(0, i.end - Math.max(i.start, end)); end = Math.max(end, i.end);
   }
   const ot = emp.overtimePref && emp.overtimePref !== "neutral" ? emp.overtimePref : (cfg.defaultOvertimePref || "neutral");
+  // Overtime is hours worked over 40; PTO is only charged up to 40.
   const ptoHours = Math.max(0, options.ptoHoursByEmployee?.[emp.id] || 0);
-  if (ot === "blocked" && hours + ptoHours > FT_MIN_HOURS)
-    add("no_overtime", `${hours}h work + ${ptoHours}h approved PTO exceeds the No OT scheduling limit of ${FT_MIN_HOURS}h`, hours + ptoHours - FT_MIN_HOURS);
+  const credited = hours + Math.min(ptoHours, Math.max(0, FT_MIN_HOURS - hours));
+  if (ot === "blocked" && hours > FT_MIN_HOURS)
+    add("no_overtime", `${hours}h worked exceeds the No OT limit of ${FT_MIN_HOURS}h`, hours - FT_MIN_HOURS);
   const approvedLimit = options.creditHourLimits?.[emp.id];
-  if (approvedLimit != null && hours + ptoHours > approvedLimit)
-    add("overtime_approval_limit", `${hours + ptoHours}h credit exceeds the approved limit of ${approvedLimit}h`, hours + ptoHours - approvedLimit);
+  if (approvedLimit != null && credited > approvedLimit)
+    add("overtime_approval_limit", `${credited}h exceeds the approved limit of ${approvedLimit}h`, credited - approvedLimit);
   return issues;
 }
 
@@ -2277,7 +2247,7 @@ function overtimeReviewItems(employees, before, proposal, cfg = {}, credits = {}
     const current = weeklyEmployeeHours(emp, before.schedule || {}, before.extShifts || [], before.handoffs || [], credits);
     const pref = emp.overtimePref && emp.overtimePref !== "neutral" ? emp.overtimePref : (cfg.defaultOvertimePref || "neutral");
     return [{ emp, currentHours: current.creditedHours, newHours: next.creditedHours,
-      workedHours: next.workedHours, ptoHours: next.ptoHours, blocked: pref === "blocked" }];
+      workedHours: next.workedHours, ptoHours: next.ptoChargedHours, blocked: pref === "blocked" }];
   });
 }
 
@@ -2305,7 +2275,10 @@ function trimOvertimeProposal(proposal, employees, limits, credits = {}) {
   result.autoExtShifts ||= [];
   const removed = [];
   for (const emp of employees) {
-    const budget = Math.max(0, (limits[emp.id] ?? FT_MIN_HOURS) - (credits[emp.id] || 0));
+    // Limits are on credited hours. At or above 40 that is hours worked (PTO is
+    // not charged past 40); below 40, charged PTO still takes its share.
+    const limit = limits[emp.id] ?? FT_MIN_HOURS;
+    const budget = limit >= FT_MIN_HOURS ? limit : Math.max(0, limit - (credits[emp.id] || 0));
     if (normalizedWorkedHours(emp.id, result.ns, result.autoExtShifts, result.handoffs) <= budget) continue;
     const intervals = collectCoverageIntervals(result.ns, result.autoExtShifts, result.handoffs).filter(i => i.employeeId === emp.id && !i.carryIn);
     const lockedHandoffs=(result.handoffs || []).filter(h=>h.employeeId===emp.id && h.locked);
@@ -2545,7 +2518,7 @@ function overtimeLowerBound(employees, options = {}) {
     // extensions are swings, which need an opt-in; first/third ones do not.
     const canExtend = emp.willing16h || emp.ext12hPref || (emp.swingEligible || []).length || slots.some(s => s.shiftId !== "second");
     const hours = duties * SHIFT_HOURS + (canExtend ? Math.min(days, duties) * HANDOFF_HOURS : 0);
-    room += Math.min(hours, Math.max(0, FT_MIN_HOURS - (ptoHoursByEmployee[emp.id] || 0)));
+    room += Math.min(hours, FT_MIN_HOURS); // OT is worked over 40; PTO does not use up that room
   }
   return Math.max(0, required - room);
 }
@@ -3447,10 +3420,10 @@ function buildScheduleExportModel(input, generatedOn = localISODate(new Date()))
   const summary = [row(['Employee','Type','Qualifications','Work hours','PTO hours','Total credit','OT hours','Status'].map(v => cell(v,C.header,{bold:true})),30)];
   for (const r of employeeRows) summary.push(row([
     cell(r.emp.name,C.body,{align:'Left'}),cell(r.emp.employmentType || ''),cell((r.emp.qualifications || []).join(', ')),
-    cell(r.workedHours),cell(r.ptoHours),cell(r.creditedHours),cell(Math.max(0,r.workedHours-40)),cell(r.status),
+    cell(r.workedHours),cell(r.ptoChargedHours),cell(r.creditedHours),cell(Math.max(0,r.workedHours-40)),cell(r.status),
   ],Math.max(23,Math.ceil(String(r.emp.name).length/20)*13+6,Math.ceil((r.emp.qualifications || []).join(', ').length/22)*13+6,
     Math.ceil(String(r.status).length/20)*13+6,Math.ceil(String(r.emp.employmentType || '').length/12)*13+6)));
-  summary.push(row([cell('TOTAL',C.header,{span:3,bold:true}),...['workedHours','ptoHours','creditedHours'].map(k => cell(employeeRows.reduce((n,r)=>n+r[k],0),C.header,{bold:true})),cell(totalOvertime,C.header,{bold:true}),cell('',C.header)]));
+  summary.push(row([cell('TOTAL',C.header,{span:3,bold:true}),...['workedHours','ptoChargedHours','creditedHours'].map(k => cell(employeeRows.reduce((n,r)=>n+r[k],0),C.header,{bold:true})),cell(totalOvertime,C.header,{bold:true}),cell('',C.header)]));
   summary.push(row([cell('Training is shown on the schedule but is not included in worked-hour accounting.',C.white,{span:8})],25));
   return {weekStart, employeeRows, totalOvertime, sheets:[
     {name:'Weekly Schedule',widths:[140,36,77,77,77,77,77,77,77],rows:main},
@@ -3954,9 +3927,14 @@ function normalizedWorkedHours(empId, schedule, extShifts = [], handoffs = []) {
 function weeklyEmployeeHours(emp, schedule, extShifts = [], handoffs = [], ptoHoursByEmployee = {}) {
   const workedHours = normalizedWorkedHours(emp.id, schedule, extShifts, handoffs);
   const ptoHours = Math.max(0, ptoHoursByEmployee[emp.id] || 0);
-  const creditedHours = workedHours + ptoHours;
+  // Overtime is hours WORKED over 40; PTO never adds to it and is not charged
+  // for hours that would take the week past 40. So credited = worked + charged
+  // PTO, and "credited - 40" anywhere equals worked over 40.
+  const ptoChargedHours = Math.min(ptoHours, Math.max(0, FT_MIN_HOURS - workedHours));
+  const creditedHours = workedHours + ptoChargedHours;
+  const overtimeHours = Math.max(0, workedHours - FT_MIN_HOURS);
   const targetHours = emp.employmentType === "full-time" ? FT_MIN_HOURS : null;
-  return { workedHours, ptoHours, creditedHours, targetHours,
+  return { workedHours, ptoHours, ptoChargedHours, creditedHours, overtimeHours, targetHours,
     requiredWorkHours: targetHours == null ? null : Math.max(0, targetHours - ptoHours),
     shortfallHours: targetHours == null ? 0 : Math.max(0, targetHours - creditedHours) };
 }
@@ -3974,7 +3952,7 @@ function buildWeeklyAccounting(employees, schedule, extShifts = [], handoffs = [
   const issues = [...pto.issues];
   for (const row of rows) {
     if (row.shortfallHours > 0) issues.push({ level: "error", type: "weekly_obligation", employeeId: row.employeeId,
-      shortfallHours: row.shortfallHours, msg: `${row.emp.name}: ${row.workedHours}h work + ${row.ptoHours}h approved PTO = ${row.creditedHours}/40h; ${row.shortfallHours}h short${row.excluded ? " (excluded from autofill)" : ""}${row.ptoNeedsReview ? "; review PTO hours" : ""}.` });
+      shortfallHours: row.shortfallHours, msg: `${row.emp.name}: ${row.workedHours}h work + ${row.ptoChargedHours}h PTO = ${row.creditedHours}/40h; ${row.shortfallHours}h short${row.excluded ? " (excluded from autofill)" : ""}${row.ptoNeedsReview ? "; review PTO hours" : ""}.` });
     else if (row.workedHours === 0 && row.ptoHours === 0) issues.push({ level: "warn", type: "employee_unscheduled", employeeId: row.employeeId,
       msg: `${row.emp.name}: not scheduled${row.excluded ? " (excluded from autofill)" : ""}; no minimum hours are configured for ${row.emp.employmentType || "this employee"}.` });
   }
@@ -8535,7 +8513,7 @@ function WeeklyAccountingPanel() {
     <div style={{overflowX:"auto"}}><table style={{width:"100%",borderCollapse:"collapse",fontSize:11}}>
       <thead><tr>{["Employee","Work","PTO","Total credit","Target","Status"].map(h => <th key={h} style={{textAlign:"left",padding:6,borderBottom:"1px solid var(--ss-border)"}}>{h}</th>)}</tr></thead>
       <tbody>{accounting.rows.map(r => <tr key={r.employeeId}>
-        {[r.emp.name,`${r.workedHours}h`,`${r.ptoHours}h`,`${r.creditedHours}h`,r.targetHours == null ? "—" : `${r.targetHours}h`,
+        {[r.emp.name,`${r.workedHours}h`,r.ptoChargedHours < r.ptoHours ? `${r.ptoChargedHours}h (of ${r.ptoHours}h approved)` : `${r.ptoHours}h`,`${r.creditedHours}h`,r.targetHours == null ? "—" : `${r.targetHours}h`,
           r.status + (r.shortfallHours ? ` (${r.shortfallHours}h)` : "") + (r.excluded ? " · Autofill excluded" : "")].map((value,n) =>
           <td key={n} style={{padding:6,borderBottom:"1px solid var(--ss-border)",color:n === 5 && (r.shortfallHours || r.ptoNeedsReview) ? "var(--ss-danger)" : "var(--ss-text)"}}>{value}</td>)}
       </tr>)}</tbody>
@@ -12309,7 +12287,7 @@ function SchedulePopout({ onClose, snapshot }) {
 }
 
 function EmpPicker({emp,day,sid,st,assign,getPos,subSource,onSub,onHover}) {
-  const { schedule, extShifts, weekStart, empTimeOffDays } = useSchedule();
+  const { schedule, extShifts, handoffs, weekStart, empTimeOffDays } = useSchedule();
   const { showConfirm, showAlert } = useConfirm();
   const t = useTheme();
   const cfg = useSettings();
@@ -12317,7 +12295,7 @@ function EmpPicker({emp,day,sid,st,assign,getPos,subSource,onSub,onHover}) {
   const pos = getPos(emp,day,sid);
   if (!pos.length) return null;
 
-  const currentHours  = calcHours(emp.id, schedule, extShifts||[]);
+  const currentHours  = calcHours(emp.id, schedule, extShifts||[], handoffs||[]);
   const wouldBeOver   = emp.employmentType==="full-time" && currentHours>=40;
   const isUnavailable = (emp.unavailableDays||[]).includes(day) || shiftMarkedOff(emp, day, sid, empTimeOffDays);
   const restGap       = calcRestGap(emp.id, schedule, day, sid);
@@ -13189,7 +13167,7 @@ function ScheduleGrid({ onOpenTestModal }) {
   const buildTooltip = (empId, day, shiftId, position) => {
     const emp = employees.find(e => e.id === empId);
     if (!emp) return undefined;
-    const hrs = calcHours(empId, displaySchedule, extShifts);
+    const hrs = calcHours(empId, displaySchedule, extShifts, handoffs);
     const lines = [];
     lines.push(`${emp.name} — ${position}`);
     lines.push(`${emp.employmentType === "full-time" ? "FT" : emp.employmentType === "part-time" ? "PT" : "OC"} · ${hrs}h this week`);
@@ -13605,7 +13583,7 @@ function ScheduleGrid({ onOpenTestModal }) {
     const shortRest = rest < (cfg?.minRestHours??MIN_REST_HOURS) && rest !== Infinity;
     const nights = s==="third" ? calcConsecutiveNights(dragEmp.id, schedule, d, s) : 0;
     const tooManyNights = nights >= (cfg?.maxConsecutiveNights??MAX_CONSECUTIVE_NIGHTS);
-    const currentHours = calcHours(dragEmp.id, schedule, extShifts||[]);
+    const currentHours = calcHours(dragEmp.id, schedule, extShifts||[], handoffs||[]);
     const wouldBeOver = dragEmp.employmentType==="full-time" && currentHours>=40;
     if (consecHDrag > empMaxConsec(dragEmp)) { setDragEmp(null); return; }
     if (isUnavailable) warns.push(`${dragEmp.name} is marked unavailable on ${d}.`);
@@ -15108,7 +15086,7 @@ function ScheduleGrid({ onOpenTestModal }) {
               {!isFT&&<span style={{fontSize:8,fontWeight:800,color:"var(--ss-text-muted)",
                 background:"var(--ss-surface)",border:"1px solid var(--ss-border)",padding:"0 3px",
                 borderRadius:2,letterSpacing:".03em"}}>PT</span>}
-              <span style={{fontSize:9,color:isFT&&hours<40?"var(--ss-danger)":isFT&&hours>40?"var(--ss-warning)":"var(--ss-text-dim)"}} title={`${credit.workedHours}h work + ${credit.ptoHours}h approved PTO`}>{hours}h</span>
+              <span style={{fontSize:9,color:isFT&&hours<40?"var(--ss-danger)":isFT&&hours>40?"var(--ss-warning)":"var(--ss-text-dim)"}} title={`${credit.workedHours}h work + ${credit.ptoChargedHours}h PTO charged${credit.ptoChargedHours < credit.ptoHours ? ` (of ${credit.ptoHours}h approved)` : ""}`}>{hours}h</span>
               {fatigueN>0&&<span style={{fontSize:8,color:"var(--ss-fatigue)",fontWeight:800}}>⚠</span>}
               <span style={{display:"flex",gap:2}}>{emp.qualifications.map(q=>(
                 <span key={q} style={{width:5,height:5,borderRadius:"50%",background:pC(q,t)}}/>
@@ -18244,10 +18222,12 @@ function ShiftSchedulerApp() {
                   const totalSlots = weekCoverage.reduce((n, c) => n + c.need, 0);
                   const filled = weekCoverage.reduce((n, c) => n + c.count, 0);
                   const pct         = totalSlots>0?Math.round(filled/totalSlots*100):0;
-                  const ftShort     = employees.filter(e=>e.employmentType==="full-time"&&calcHours(e.id,schedule||{},extShifts||[])<40);
-                  const ftOver      = employees.filter(e=>e.employmentType==="full-time"&&calcHours(e.id,schedule||{},extShifts||[])>40);
+                  // Short = under 40 counting PTO; overtime = hours worked over 40.
+                  const wk=e=>weeklyEmployeeHours(e,schedule||{},extShifts||[],handoffs||[],ptoHoursByEmployee);
+                  const ftShort     = employees.filter(e=>e.employmentType==="full-time"&&wk(e).shortfallHours>0);
+                  const ftOver      = employees.filter(e=>e.employmentType==="full-time"&&wk(e).overtimeHours>0);
                   const ftHours     = employees.filter(e=>e.employmentType==="full-time").map(e=>({
-                    name:e.name.split(" ").pop(), h:calcHours(e.id,schedule||{},extShifts||[])
+                    name:e.name.split(" ").pop(), h:calcHours(e.id,schedule||{},extShifts||[],handoffs||[])
                   })).sort((a,b)=>a.h-b.h);
                   const statRow = (label, val, col) => (
                     <div style={{display:"flex",justifyContent:"space-between",
