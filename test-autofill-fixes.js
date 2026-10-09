@@ -78,3 +78,11 @@ test('autofill alternates attempts with and without Step 0 so the better plan wi
   assert(html.includes('let result = attempt(attemptNum > 1, attemptNum % 2 === 1);'));
   assert(html.includes('for (const ext of withProactive ? deployProactiveExtShifts('));
 });
+
+test('the weekly plan is a 40h block, not the consecutive-day cap', () => {
+  assert(html.includes('const planDays    = Math.min(maxShifts, Math.ceil(FT_MIN_HOURS / SHIFT_HOURS));'));
+  const step1 = html.slice(html.indexOf('// ── Step 1: Assign each employee a shift + work-block plan'), html.indexOf('// ── Step 2: Build qualification-group peer sets'));
+  assert(!/\bmaxShifts\b/.test(step1), 'plan and rest-day steps use planDays, not the fatigue cap');
+  assert(step1.includes('const restNeeded = Math.max(0, planDaysOff - unavail.size);'), 'unavailable days count as rest');
+  assert(/SHIFTS\.forEach\(shift => \{\n\s+const essential = essentialByShift\[shift\.id\] \|\| \[\];[\s\S]{0,400}const globalRestDays = new Map\(\);/.test(step1), 'rest days are staggered per shift');
+});

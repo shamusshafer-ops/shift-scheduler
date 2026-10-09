@@ -4180,6 +4180,11 @@ function buildAutoFill(sourceEmps, cfg, empTimeOffDays, empPatterns, extShiftsAr
   const rg = (id, sched, d, s) => calcRestGap(id, sched, d, s, extShiftsArg, empPatterns);
   const maxShifts = cfg?.maxConsecutiveShifts ?? 5;
   const daysOff   = Math.max(1, 7 - maxShifts); // rest days in the cycle
+  // The weekly work plan is a 40h block (5 x 8h). The consecutive-day setting
+  // is a fatigue cap (maxShifts above), not a number of days to plan: with a
+  // cap of 7, planning 7 days left full-timers with no planned day off.
+  const planDays    = Math.min(maxShifts, Math.ceil(FT_MIN_HOURS / SHIFT_HOURS));
+  const planDaysOff = 7 - planDays;
   const ns          = {};
   const hourTracker = {};
   const dayWorked   = {};
@@ -4329,7 +4334,7 @@ function buildAutoFill(sourceEmps, cfg, empTimeOffDays, empPatterns, extShiftsAr
     group.forEach((emp, idx) => {
       // Even spacing: Math.floor distributes starts across all 7 days without collisions.
       // Pattern memory: advance the employee's blockStart from the previous week by the
-      // full cycle length (maxShifts work days + daysOff rest days = 7) so the rotation
+      // full cycle length (planDays work days + planDaysOff rest days = 7) so the rotation
       // rolls forward predictably each week.  For a 5-on/2-off pattern this always
       // advances by 7, which wraps cleanly — the employee's rest days shift by one
       // position each week, giving a fair rolling schedule over time.
@@ -4341,29 +4346,29 @@ function buildAutoFill(sourceEmps, cfg, empTimeOffDays, empPatterns, extShiftsAr
       const freshBlockStartEff = emp.requiredShift ? 0 : freshBlockStart;
       // rotationMode: "rolling" advances by 1 day/week; "fixed" keeps same days off.
       const rotationMode = cfg?.rotationMode ?? "fixed";
-      const advancement = rotationMode === "rolling" ? 1 : (maxShifts + daysOff);
+      const advancement = rotationMode === "rolling" ? 1 : (planDays + planDaysOff);
       const blockStart = prevPattern?.blockStart !== undefined
         ? (prevPattern.blockStart + advancement) % 7
         : freshBlockStartEff;
 
-      // Build the set of work days: maxShifts consecutive starting at blockStart,
+      // Build the set of work days: planDays consecutive starting at blockStart,
       // wrapping around the week, but respecting preferred days off.
       const preferredOff = new Set(emp.preferredDaysOff || []);
       const workDays = new Set();
 
-      // Try to place exactly maxShifts work days starting at blockStart,
+      // Try to place exactly planDays work days starting at blockStart,
       // skipping preferred-off days as the "gap".
       let placed = 0;
-      for (let offset = 0; offset < 7 && placed < maxShifts; offset++) {
+      for (let offset = 0; offset < 7 && placed < planDays; offset++) {
         const d = DAYS[(blockStart + offset) % 7];
         if (!preferredOff.has(d) && !(emp.unavailableDays || []).includes(d) && !shiftMarkedOff(emp, d, shift.id, empTimeOffDays)) {
           workDays.add(d);
           placed++;
         }
       }
-      // If we couldn't fill maxShifts (e.g. many unavail days), relax and fill rest
-      if (placed < maxShifts) {
-        for (let offset = 0; offset < 7 && placed < maxShifts; offset++) {
+      // If we couldn't fill planDays (e.g. many unavail days), relax and fill rest
+      if (placed < planDays) {
+        for (let offset = 0; offset < 7 && placed < planDays; offset++) {
           const d = DAYS[(blockStart + offset) % 7];
           if (!workDays.has(d) && !(emp.unavailableDays || []).includes(d) && !shiftMarkedOff(emp, d, shift.id, empTimeOffDays)) {
             workDays.add(d);
@@ -4392,9 +4397,9 @@ function buildAutoFill(sourceEmps, cfg, empTimeOffDays, empPatterns, extShiftsAr
           DAYS.filter(d => isWeekday(d) && !(emp.unavailableDays||[]).includes(d) && !shiftMarkedOff(emp, d, "first", empTimeOffDays))
         );
         // Also allow weekend days from the regular work-block so they can still reach 40h
-        // if a weekday is unavailable — add remaining non-unavail days up to maxShifts
+        // if a weekday is unavailable — add remaining non-unavail days up to planDays
         let supPlaced = supWorkDays.size;
-        for (let offset = 0; offset < 7 && supPlaced < maxShifts; offset++) {
+        for (let offset = 0; offset < 7 && supPlaced < planDays; offset++) {
           const d = DAYS[(blockStart + offset) % 7];
           if (!supWorkDays.has(d) && !(emp.unavailableDays||[]).includes(d) && !shiftMarkedOff(emp, d, "first", empTimeOffDays)) {
             supWorkDays.add(d);
@@ -4421,6 +4426,7 @@ function buildAutoFill(sourceEmps, cfg, empTimeOffDays, empPatterns, extShiftsAr
         return p && p.shiftId === shift.id && e.employmentType === "full-time";
       });
       const essential = [];
+      // The supervisor's weekday plan is the dedicated seat; never re-stagger it.
       group.forEach(e => { if (e.requiredShift === shift.id && !essential.includes(e)) essential.push(e); });
       for (const role of ["Scale", "Medical"]) {
         const providers = group.filter(e =>
@@ -4434,42 +4440,47 @@ function buildAutoFill(sourceEmps, cfg, empTimeOffDays, empPatterns, extShiftsAr
     });
 
     let globalStaggerIdx = 0;
-    const globalRestDays = new Map();
     SHIFTS.forEach(shift => {
       const essential = essentialByShift[shift.id] || [];
+      // Rest days only need to differ among the same shift's essential staff
+      // (that is what keeps the shift covered); site-wide uniqueness is
+      // impossible with many essentials and pushed rest onto arbitrary days.
+      const globalRestDays = new Map();
       essential.forEach(emp => {
         const empPlan = plan[emp.id];
         if (!empPlan) return;
         const preferredOff = new Set(emp.preferredDaysOff || []);
         const unavail = new Set([...(emp.unavailableDays || []), ...DAYS.filter(d => shiftMarkedOff(emp, d, empPlan.shiftId, empTimeOffDays))]);
         const restDays = new Set();
+        // Unavailable days already are days off; only top up to the plan's rest.
+        const restNeeded = Math.max(0, planDaysOff - unavail.size);
 
         // Try preferred days off first if no overlap with other essentials
-        if (preferredOff.size >= daysOff) {
-          const prefArr = [...preferredOff].slice(0, daysOff);
+        if (preferredOff.size >= restNeeded) {
+          const prefArr = [...preferredOff].filter(d => !unavail.has(d)).slice(0, restNeeded);
           let overlap = prefArr.some(d => [...globalRestDays.values()].some(r => r.has(d)));
           if (!overlap) prefArr.forEach(d => restDays.add(d));
         }
 
         // Stagger using global counter for unique rest days
-        if (restDays.size < daysOff) {
+        if (restDays.size < restNeeded) {
           restDays.clear();
           let placed = 0;
-          for (let a = 0; a < 7 && placed < daysOff; a++) {
+          for (let a = 0; a < 7 && placed < restNeeded; a++) {
             const d = DAYS[(globalStaggerIdx + a) % 7];
             if (unavail.has(d)) continue;
             if ([...globalRestDays.values()].some(r => r.has(d))) continue;
             restDays.add(d); placed++;
           }
-          if (placed < daysOff) {
-            for (let a = 0; a < 7 && placed < daysOff; a++) {
+          if (placed < restNeeded) {
+            for (let a = 0; a < 7 && placed < restNeeded; a++) {
               const d = DAYS[(globalStaggerIdx + a) % 7];
               if (restDays.has(d) || unavail.has(d)) continue;
               restDays.add(d); placed++;
             }
           }
         }
-        globalStaggerIdx += daysOff;
+        globalStaggerIdx += planDaysOff;
         globalRestDays.set(emp.id, restDays);
 
         // Update the plan's workDays (preserve blockStart for continuity)
