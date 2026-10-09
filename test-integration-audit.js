@@ -211,7 +211,7 @@ function restoreHarness(snapshot,write=async()=>true) {
  const writes=[],messages=[];let done;
  class FileReader {readAsText(){done=this.onload({target:{result:JSON.stringify(snapshot)}});}}
  const noop=()=>{};
- const setterNames=['setWeekDraft','setEmployees','setSettings','setTimeOffReqs','setWeekAvailability','setSavedWeeks','setHistory','setEmpPatterns','setSavedRosters'];
+ const setterNames=['setWeekDraft','setEmployees','setSettings','setTimeOffReqs','setWeekAvailability','setSavedWeeks','setHistory','setEmpPatterns','setSavedRosters','setAfExclude','setSwingDesig'];
  const scope={FileReader,setBusy:noop,SCHEMA_VERSION:0,EMP_MIGRATIONS:{},ACTIVE_WEEK_KEY:'shift_active_week',publicationStore:{restore:async()=>{}},
   lsSet:async(key,text)=>{writes.push(key);return write(key,text);},flash:(message,ok)=>messages.push({message,ok}),...Object.fromEntries(setterNames.map(name=>[name,noop]))};
  const handle=evaluate(extract('  const handleFile = (e) => {','  const btnStyle =')+'return handleFile;',scope);
@@ -232,7 +232,7 @@ test('startup waits for schema and weekly migration before making the app ready'
  effects[0]();assert.deepEqual(states,[]);schemaDone();await tick();assert.deepEqual(states,[]);weekDone();await tick();assert.deepEqual(states,[true]);
 });
 test('pending generated-roster autofill waits for saved inputs instead of consuming the request early',()=>{
- const body=extract('  useEffect(()=>{\n    if(pendingAutoFill','  const prevEmpsRef');let runs=0,clears=0;
+ const body=extract('  useEffect(()=>{\n    if(pendingAutoFill','  const runTargetedRepair');let runs=0,clears=0;
  const scope={useEffect:f=>f(),pendingAutoFill:[employee()],isReadOnly:false,autoFillRunning:false,pendingProposal:null,runAutoFill:()=>runs++,clearPendingAutoFill:()=>clears++};
  evaluate(body,{...scope,generationInputsReady:false});assert.equal(runs,0);assert.equal(clears,0);
  evaluate(body,{...scope,generationInputsReady:true});assert.equal(runs,1);assert.equal(clears,1);

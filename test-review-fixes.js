@@ -114,3 +114,77 @@ test('on weekends the supervisor may work any shift and position they hold, with
   assert.equal(core.ruleBlockedShiftReason(sup, 'Saturday', 'second'), null);
   assert.match(core.ruleBlockedShiftReason(sup, 'Tuesday', 'second'), /weekdays/);
 });
+
+// ── Batch 3: data and screen fixes ───────────────────────────────────────────
+test('an early arrival counts on the calendar day its hours fall on', () => {
+  const e = emp({id:'p', qualifications:['Guard']});
+  const sched = Object.fromEntries(['Monday','Tuesday','Wednesday','Thursday','Friday'].map(d => [cellKey(d,'first'), [{employeeId:'p', position:'Guard'}]]));
+  // Arrives 02:00 Monday before Monday first: joins Sunday's third shift.
+  const h = {id:'h', day:'Sunday', employeeId:'p', sourceShiftId:'first', targetShiftId:'third', type:'early-arrival', position:'Guard', hours:4};
+  const types = core.employeePolicyIssues(e, sched, {maxConsecutiveShifts:5}, {handoffs:[h], weekendDays:0}).map(i => i.type);
+  assert(!types.includes('consecutive_days'), types.join(','));
+  assert(!core.employeeDutyDays('p', core.collectCoverageIntervals(sched, [], [h])).has(0), 'Sunday is still a day off');
+});
+
+test('cross-week checks and publication use the newest record of last week', () => {
+  const manual = {weekStart:'2026-09-27', isAutoSave:false, savedAt:'2026-10-01T12:00:00Z', schedule:{Friday__first:[{employeeId:'x',position:'Guard'}]}};
+  const later = {weekStart:'2026-09-27', isAutoSave:true, savedAt:'2026-10-03T12:00:00Z', schedule:{Saturday__third:[{employeeId:'x',position:'Guard'}]}};
+  assert.deepEqual(core.publicationSnapshot({weekStart:week, history:[manual, later]}).previousWeek.schedule, later.schedule);
+  assert.equal(core.boundaryPatterns([manual, later], week, {}).x.trailingDays, 1, 'Saturday work carries into Sunday');
+});
+
+test('denying overtime keeps the duties closest to the approved hours', () => {
+  const p = {id:'p', name:'P', qualifications:['Guard'], employmentType:'full-time'};
+  const ns = Object.fromEntries(['Monday','Tuesday','Wednesday','Thursday','Friday'].map(d => [cellKey(d,'first'), [{employeeId:'p', position:'Guard'}]]));
+  const out = core.trimOvertimeProposal({ns, autoExtShifts:[{pairId:'day', day:'Sunday', empAId:'p', empBId:null}], handoffs:[]}, [p], {p:40}, {});
+  assert.equal(core.normalizedWorkedHours('p', out.ns, out.autoExtShifts, out.handoffs), 40, 'drop the 12h duty, not two 8h shifts');
+});
+
+test('full backups include autofill exclusions and swing designations', () => {
+  const keys = extract('const ALL_BACKUP_KEYS', '];');
+  assert(keys.includes('"shift_af_exclude"') && keys.includes('"shift_swing_desig"'));
+  assert(html.includes('key:"shift_af_exclude"') && html.includes('key:"shift_swing_desig"'));
+});
+
+test('short-rest messages name the day instead of a day offset', () => {
+  const e = emp({id:'r', qualifications:['Guard']});
+  const sched = {[cellKey('Monday','second')]:[{employeeId:'r',position:'Guard'}], [cellKey('Tuesday','first')]:[{employeeId:'r',position:'Guard'}]};
+  const msg = core.employeePolicyIssues(e, sched, {minRestHours:12}, {}).find(i => i.type === 'short_rest')?.msg || '';
+  assert.match(msg, /before Tuesday 06:00/); assert(!/\(\+\d+d\)/.test(msg), msg);
+});
+
+test('removing a shift takes its unlocked early/late extensions with it; locked ones stay', () => {
+  const sched = {[cellKey('Monday','second')]:[{employeeId:'a',position:'Guard'}]};
+  const free = {id:'f', day:'Monday', employeeId:'a', sourceShiftId:'second', targetShiftId:'third', type:'late-stay', position:'Guard', hours:4};
+  const locked = {...free, id:'l', locked:true};
+  const before = {schedule:sched, extShifts:[], handoffs:[free, locked]};
+  const dropped = core.handoffsOrphanedByChange(before, {schedule:{}, extShifts:[]});
+  assert.deepEqual(dropped.map(h => h.id), ['f']);
+  assert.deepEqual(core.handoffsOrphanedByChange(before, {schedule:sched, extShifts:[]}), [], 'nothing dropped while the source stays');
+});
+
+test('found weeks are not marked stale by the current week\'s own autosave', () => {
+  const stamp = extract('  const liveRulesStamp = overtimeInputStamp({', '});');
+  assert(!/[{,]\s*history\s*[,}]/.test(stamp) && stamp.includes('boundaryPatterns(history'), stamp);
+});
+
+test('autofill ignores records left by employees no longer on the roster', () => {
+  assert.equal(core.extEmployeesKnown({empAId:'a', empBId:'gone'}, [{id:'a'}]), false);
+  assert.equal(core.extEmployeesKnown({empAId:'a', empBId:null}, [{id:'a'}]), true);
+  const body = extract('  const runAutoFill = useCallback((empOverride) => {', '    const enrichedPatterns');
+  assert(body.includes('known.has(a.employeeId)') && body.includes('known.has(h.employeeId)'));
+});
+
+test('roster edits mark the schedule stale from the app root, so it works from the Employees tab', () => {
+  assert(html.indexOf('const prevEmpsRef = useRef(null);') > html.indexOf('function ShiftSchedulerApp() {'));
+  assert(!extract('function ScheduleGrid(', '\nfunction ').includes('const prevEmpsRef'));
+});
+
+test('blocked manual changes leave undo and redo alone', () => {
+  const commit = extract('  const commitAssignmentChange = (updater) => {', '  const commitExtendedChange');
+  assert(commit.indexOf('pushUndo()') > commit.indexOf('if (failures.length)'), 'undo is recorded only after the rule check');
+  for (const fn of ['const removeAsgn', 'const executeCallOffReplacement', 'const executeSwap']) {
+    const body = extract('  ' + fn, 'commitAssignmentChange(');
+    assert(!body.includes('pushUndo()'), fn);
+  }
+});
