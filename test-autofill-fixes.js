@@ -75,7 +75,7 @@ test('gap repair swaps a Guard for a missing role in a full shift', () => {
 });
 
 test('autofill alternates attempts with and without Step 0 so the better plan wins', () => {
-  assert(html.includes('let result = attempt(attemptNum > 1, attemptNum % 2 === 1);'));
+  assert(html.includes('running = attemptSteps(attemptNum > 1, attemptNum % 2 === 1);'));
   assert(html.includes('for (const ext of withProactive ? deployProactiveExtShifts('));
 });
 
@@ -85,4 +85,24 @@ test('the weekly plan is a 40h block, not the consecutive-day cap', () => {
   assert(!/\bmaxShifts\b/.test(step1), 'plan and rest-day steps use planDays, not the fatigue cap');
   assert(step1.includes('const restNeeded = Math.max(0, planDaysOff - unavail.size);'), 'unavailable days count as rest');
   assert(/SHIFTS\.forEach\(shift => \{\n\s+const essential = essentialByShift\[shift\.id\] \|\| \[\];[\s\S]{0,400}const globalRestDays = new Map\(\);/.test(step1), 'rest days are staggered per shift');
+});
+
+test('autofill runs in short slices so the page and Cancel stay responsive, with unchanged results', () => {
+  const steps = core.buildAutoFillSteps;
+  assert.equal(typeof steps, 'function');
+  const roster = ['a','b','c','d','e','f','g','h','i','j','k','l'].map(id => E(id, ['Guard','Scale','Medical']));
+  const run = sync => {
+    let seed = 7, clock = 1.7e12; const rnd = Math.random, now = Date.now;
+    Math.random = () => { seed = (seed * 1664525 + 1013904223) >>> 0; return seed / 4294967296; };
+    Date.now = () => Math.floor(clock += 0.05);
+    try { return quiet(() => { if (sync) return core.buildAutoFill(roster, {}, new Set(), {}, [], false, {roster});
+      const it = steps(roster, {}, new Set(), {}, [], false, {roster}); let s, yields = 0;
+      while (!(s = it.next()).done) yields++; return {...s.value, yields}; }); }
+    finally { Math.random = rnd; Date.now = now; }
+  };
+  const sliced = run(false), whole = run(true);
+  assert(sliced.yields >= 20, 'yields during annealing (' + sliced.yields + ')');
+  assert.deepEqual(sliced.schedule, whole.schedule, 'identical result');
+  const tick = html.slice(html.indexOf('    const tick = () => {'), html.indexOf('    const tick = () => {') + 2500);
+  assert(tick.includes('const sliceEnd = Date.now() + 40;') && tick.includes('if (!step.done) { setTimeout(tick, 0); return; }'));
 });

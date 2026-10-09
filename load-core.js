@@ -38,7 +38,7 @@ if (fs.existsSync(__dirname + "/core.js")) {
 // indirect eval would lose const/function scope; use Function in global-ish scope via module eval
 const exportsList = [
   "buildScheduleExportModel", "scheduleExportDutyLabel", "scheduleExportXml", "scheduleExportHtml", "SCHEDULE_EXPORT_COLORS",
-  "buildAutoFill", "calcRestGap", "calcConsecutiveHours", "calcConsecutiveNights",
+  "buildAutoFill", "buildAutoFillSteps", "calcRestGap", "calcConsecutiveHours", "calcConsecutiveNights",
   "canFillPos", "getAvailPos", "REGULAR_SLOTS", "SUP_SLOT_DAY", "cellKey",
   "DAYS", "SHIFTS", "POSITIONS", "ALL_POSITIONS", "SHIFT_HOURS", "FT_MIN_HOURS",
   "EXT_PAIRS", "EXT_PAIRS_BY_ID", "extCovers", "slotHasRole", "isGuardOnly",
