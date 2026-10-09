@@ -16,10 +16,14 @@ function fixture() {
  return publicationSnapshot({weekStart:week,employees,schedule,extShifts:[],handoffs:[],timeOffReqs:[],cfg:{minRestHours:12,maxConsecutiveShifts:5,maxConsecutiveNights:4},
   history:[{weekStart:'2026-08-30',schedule:{},extShifts:[],handoffs:[],isAutoSave:false}]});
 }
+// Overtime is hours worked over 40 (PTO never counts toward it), so first-0-0
+// also takes three of first-1-0's first shifts: 48 hours worked.
 function overtimeFixture() {
- const s=fixture();
- s.employees.find(e=>e.id==='first-0-0').overtimePref='preferred';
- s.timeOffReqs=[{id:'pto',empId:'first-0-0',type:'single_day',startDate:'2026-09-10',endDate:'2026-09-10',status:'approved',paid:true,ptoHoursByDate:{'2026-09-10':24}}];
+ const s=fixture(),e=s.employees.find(e=>e.id==='first-0-0');
+ Object.assign(e,{overtimePref:'preferred',availableDaysOfWeek:null,maxShiftsPerWeek:null});
+ for(const day of ['Wednesday','Thursday','Saturday']) s.schedule[cellKey(day,'first')].find(a=>a.employeeId==='first-1-0').employeeId='first-0-0';
+ // Paid leave on a day off: above 40 worked it is not charged, and does not change the overtime.
+ s.timeOffReqs=[{id:'pto',empId:'first-0-0',type:'single_day',startDate:'2026-09-11',endDate:'2026-09-11',status:'approved',paid:true,ptoHoursByDate:{'2026-09-11':8}}];
  return s;
 }
 const publish=(s,approvals=[])=>createPublicationRecord(s,approvals,'Manager',{priorWeekConfirmed:true});
@@ -109,7 +113,7 @@ test('pending proposals and running searches block publication',()=>{
 test('overtime preference is not a durable approval, but a named exact-schedule approval is',()=>{
  const s=overtimeFixture();assert(types(s).includes('publication_overtime'));
  const records=createOvertimeDecisions(s,{'first-0-0':true},'Shamus');
- assert.equal(records[0].creditLimit,48);assert.equal(records[0].workedHours,24);assert.equal(records[0].ptoHours,24);
+ assert.equal(records[0].creditLimit,48);assert.equal(records[0].workedHours,48);assert.equal(records[0].ptoHours,0);
  assert(validatePublication(s,records).ok);assert(publicationRecordValid(publish(s,records)));
 });
 test('No OT cannot be waived through approval records',()=>{

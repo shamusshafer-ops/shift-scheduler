@@ -232,3 +232,27 @@ test('carry-in is never saved with the week, its history or its publication', ()
   assert(draft.includes('withoutCarryIn(next[k])'));
   assert(extract('function validatePublication(', '\nfunction ').includes('carryInFromWeek(snapshot.previousWeek)'));
 });
+
+// ── Hours and overtime: overtime is hours worked over 40; PTO never counts ───
+test('PTO fills toward 40 but is never charged past it and never makes overtime', () => {
+  const ft = {id:'f', employmentType:'full-time'};
+  const work = n => Object.fromEntries(DAYS.slice(0, n).map(d => [cellKey(d,'first'), [{employeeId:'f', position:'Guard'}]]));
+  const h = (n, pto) => core.weeklyEmployeeHours(ft, work(n), [], [], {f:pto});
+  assert.deepEqual([h(4,8).creditedHours, h(4,8).ptoChargedHours, h(4,8).shortfallHours, h(4,8).overtimeHours], [40, 8, 0, 0]);
+  assert.deepEqual([h(5,8).creditedHours, h(5,8).ptoChargedHours, h(5,8).overtimeHours], [40, 0, 0], '40 worked + 8 PTO: no PTO charged, no OT');
+  assert.deepEqual([h(6,8).creditedHours, h(6,8).ptoChargedHours, h(6,8).overtimeHours], [48, 0, 8]);
+  assert.deepEqual([h(3,8).shortfallHours, h(3,8).ptoChargedHours], [8, 8], 'PTO still counts toward the 40h target');
+});
+
+test('every hours display uses one count of hours actually worked', () => {
+  const both = (sched, exts = [], hs = []) => [core.calcHours('h', sched, exts, hs), core.normalizedWorkedHours('h', sched, exts, hs)];
+  for (const pairId of ['swing-10p-10a', 'swing-2a-2p']) {
+    const [a, b] = both({}, [{pairId, day:'Tuesday', empAId:'h', empBId:null}]);
+    assert.equal(a, b, pairId); assert.equal(a, 12, pairId);
+  }
+  const sched = {[cellKey('Monday','first')]:[{employeeId:'h', position:'Guard'}]};
+  const late = {day:'Monday', employeeId:'h', sourceShiftId:'first', targetShiftId:'second', type:'late-stay', position:'Guard', hours:4};
+  assert.deepEqual(both(sched, [], [late]), [12, 12], 'a valid late stay counts');
+  assert.deepEqual(both(sched, [], [{...late, sourceShiftId:'third'}]), [8, 8], 'an orphaned one does not');
+  assert(!html.includes('function calcHoursDetail('));
+});

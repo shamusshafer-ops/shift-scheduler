@@ -70,15 +70,17 @@ test("out-of-range credit and unknown employees are explicit errors", () => {
   assert(result.issues.some(i => i.type === "pto_unknown_employee"));
 });
 
-test("No OT includes PTO credits for regular, extended and handoff work", () => {
+test("No OT limits hours worked (PTO never counts) for regular, extended and handoff work", () => {
   const e = employee({overtimePref:"blocked",ext12hPref:"day"});
   const opts = {ptoHoursByEmployee:{e:8}};
   const s = schedule(["Tuesday","Wednesday","Thursday","Friday"]);
   assert.equal(core.employeePolicyIssues(e,s,{},opts).length,0);
-  assert(core.assignmentIssues(e,"Saturday","first","Guard",s,{},opts).some(i => i.type === "no_overtime"));
-  assert(core.employeePolicyIssues(e,{}, {}, {ptoHoursByEmployee:{e:32},extShifts:[{day:"Tuesday",pairId:"day",empAId:"e"}]}).some(i => i.type === "no_overtime"));
+  assert(!core.assignmentIssues(e,"Saturday","first","Guard",s,{},opts).some(i => i.type === "no_overtime"), "40h worked + PTO is not overtime");
+  const five = schedule(["Monday","Tuesday","Wednesday","Thursday","Friday"]);
+  assert(core.assignmentIssues(e,"Saturday","first","Guard",five,{},opts).some(i => i.type === "no_overtime"), "48h worked is");
+  assert(!core.employeePolicyIssues(e,{}, {}, {ptoHoursByEmployee:{e:32},extShifts:[{day:"Tuesday",pairId:"day",empAId:"e"}]}).some(i => i.type === "no_overtime"));
   const handoff = {day:"Friday",employeeId:"e",sourceShiftId:"first",targetShiftId:"second",position:"Guard",type:"late-stay",hours:4};
-  assert(core.employeePolicyIssues(e,s,{}, {...opts,handoffs:[handoff]}).some(i => i.type === "no_overtime"));
+  assert(core.employeePolicyIssues(e,five,{}, {...opts,handoffs:[handoff]}).some(i => i.type === "no_overtime"));
 });
 
 test("worked totals deduplicate mirror records and ignore orphan handoffs", () => {

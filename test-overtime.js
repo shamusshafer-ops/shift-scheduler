@@ -28,12 +28,14 @@ test("empty schedules and overtime preference never bypass manager review", () =
   assert.equal(items[0].newHours,48);
 });
 
-test("part-time and on-call overtime is reviewed and PTO is included", () => {
+test("part-time and on-call overtime is reviewed; PTO never counts toward overtime", () => {
   for (const employmentType of ["part-time","on-call"]) {
-    const items = overtimeReviewItems([emp("e",{employmentType})],{},proposal(shifts(sixDays.slice(0,5))),{},{e:8});
+    // 40h worked + 8h PTO: PTO is not charged past 40, so no overtime.
+    assert.equal(overtimeReviewItems([emp("e",{employmentType})],{},proposal(shifts(sixDays.slice(0,5))),{},{e:8}).length,0);
+    const items = overtimeReviewItems([emp("e",{employmentType})],{},proposal(shifts(sixDays)),{},{e:8});
     assert.equal(items.length,1);
-    assert.equal(items[0].workedHours,40);
-    assert.equal(items[0].ptoHours,8);
+    assert.equal(items[0].workedHours,48);
+    assert.equal(items[0].ptoHours,0, "no PTO charged above 40");
     assert.equal(items[0].newHours,48);
   }
 });
@@ -67,11 +69,13 @@ test("denial removes only the over-budget regular duty, preserving the input", (
 });
 
 test("denying an extended half removes its mirrors but preserves its partner", () => {
+  // 40h of regular shifts plus a 12h day half: keeping the five 8h shifts lands
+  // exactly on 40, so the extended half (and its display mirrors) is denied.
   const ext = {day:"Thursday",pairId:"day",empAId:"e",empBId:"partner"};
-  const ns = {...shifts(["Sunday"]),Thursday__first:[a()],Thursday__second:[a()]};
+  const ns = {...shifts(["Sunday","Monday","Tuesday","Wednesday","Friday"]),Thursday__first:[a()],Thursday__second:[a()]};
   const input = proposal(ns,{autoExtShifts:[ext]});
   const roster = [emp("e",{ext12hPref:"day"}),emp("partner",{ext12hPref:"night"})];
-  const result = trimOvertimeProposal(input,roster,{e:40,partner:40},{e:32});
+  const result = trimOvertimeProposal(input,roster,{e:40,partner:40},{});
   assert.equal(result.autoExtShifts[0].empAId,null);
   assert.equal(result.autoExtShifts[0].empBId,"partner");
   assert.equal(result.ns.Thursday__first.length,0);
@@ -82,10 +86,12 @@ test("denying an extended half removes its mirrors but preserves its partner", (
 
 test("denial removes late stays and early arrivals beyond the credited limit", () => {
   for (const [type,sourceShiftId,targetShiftId] of [["late-stay","first","second"],["early-arrival","third","second"]]) {
-    const input = proposal({[cellKey("Friday",sourceShiftId)]:[a()]},{handoffs:[{day:"Friday",employeeId:"e",position:"Medical",type,sourceShiftId,targetShiftId,hours:4}]});
-    const result = trimOvertimeProposal(input,[emp()],{e:40},{e:32});
+    // Five 8h shifts (40h worked) plus a 4h handoff: denial removes the handoff.
+    const days = ["Monday","Tuesday","Wednesday","Thursday"].map(d => [cellKey(d,sourceShiftId),[a()]]);
+    const input = proposal({...Object.fromEntries(days),[cellKey("Friday",sourceShiftId)]:[a()]},{handoffs:[{day:"Friday",employeeId:"e",position:"Medical",type,sourceShiftId,targetShiftId,hours:4}]});
+    const result = trimOvertimeProposal(input,[emp()],{e:40},{});
     assert.equal(result.handoffs.length,0);
-    assert.equal(weeklyEmployeeHours(emp(),result.ns,[],[],{e:32}).creditedHours,40);
+    assert.equal(weeklyEmployeeHours(emp(),result.ns,[],result.handoffs,{}).workedHours,40);
   }
 });
 
