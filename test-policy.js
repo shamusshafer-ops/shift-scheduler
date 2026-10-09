@@ -169,8 +169,9 @@ test("production manual commit blocks forward-rest violations and accepts a vali
   const end = html.indexOf("  const commitExtendedChange =", start);
   let state = sched(["Monday"], "second"), alerts = [];
   const commit = new Function(...Object.keys(core), "schedule", "employees", "cfg", "policyOptions", "isReadOnly", "setSchedule", "showAlert", "manualInputIsCurrent",
+    "extShifts", "handoffs", "pushUndo", "dropOrphanedHandoffs",
     html.slice(start, end) + "return commitAssignmentChange;")(...Object.values(core), state, [emp()], {}, options(), false,
-      fn => { state = fn(state); }, alert => alerts.push(alert), () => true);
+      fn => { state = fn(state); }, alert => alerts.push(alert), () => true, [], [], () => {}, () => {});
   assert.equal(commit(s => ({ ...s, Sunday__third: [a()] })), false);
   assert.equal(alerts.length, 1);
   assert.equal(state.Sunday__third, undefined);
