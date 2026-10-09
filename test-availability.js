@@ -159,7 +159,7 @@ function runProduction(requests, replacement=false) {
  if(replacement) roster.push(emp({id:'backup',name:'Backup',qualifications:['Guard','Scale','Medical'],requiredShift:'first',availableDaysOfWeek:['Monday'],maxShiftsPerWeek:1}));
  const timeOff=availability(requests,week),cfg={maxConsecutiveNights:4,minRestHours:12,maxConsecutiveShifts:5};
  const validate=(s,x,e,h=[])=>[...validateCoverage(s,roster,x,h),...validateAssignmentPolicy(s,roster,cfg,{extShifts:x,handoffs:h,empTimeOffDays:timeOff})];
- const start=html.indexOf('    const attempt = (jitter) => {'),end=html.indexOf('    // ── Commit best result',start);
+ const start=html.indexOf('    const attempt = (jitter, withProactive = true) => {'),end=html.indexOf('    // ── Commit best result',start);
  const run=new Function(...Object.keys(core),'source','cfg','empTimeOffDays','enrichedPatterns','extShifts','swingDesig','validateSchedule','accountingRoster','ptoHoursByEmployee','preservedSchedule','preservedHandoffs','excludeSet',"const schedule=preservedSchedule,handoffs=preservedHandoffs,fairnessHistory={};"+html.slice(start,end)+'return attempt;')(...Object.values(core),roster,cfg,timeOff,{},[],{},validate,roster,{},{},[],new Set());
  return run(false);
 }

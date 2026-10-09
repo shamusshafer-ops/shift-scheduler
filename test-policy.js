@@ -213,7 +213,7 @@ test("production generation returns complete coverage for a feasible qualified r
       availableDaysOfWeek: group ? DAYS.slice(3) : DAYS.slice(0, 3), maxShiftsPerWeek: 4 }));
   roster.push(emp({ id: "sup", name: "Supervisor", qualifications: ["Supervisor"], requiredShift: "first", overtimePref: "blocked" }));
   const cfg = { maxConsecutiveNights: 4, minRestHours: 12, maxConsecutiveShifts: 5 };
-  const start = html.indexOf("    const attempt = (jitter) => {");
+  const start = html.indexOf("    const attempt = (jitter, withProactive = true) => {");
   const end = html.indexOf("    // ── Commit best result", start);
   const validate = (schedule, extShifts, employees, handoffs = []) => [
     ...core.validateCoverage(schedule, employees, extShifts, handoffs),

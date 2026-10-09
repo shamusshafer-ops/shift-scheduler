@@ -147,7 +147,7 @@ function runAttempt(roster, excluded, preservedSchedule, credits) {
   const source = roster.filter(e => !excluded.includes(e.id));
   const cfg = {maxConsecutiveNights:4,minRestHours:12,maxConsecutiveShifts:5};
   const validate = (s,exts,emps,h=[]) => [...core.validateCoverage(s,roster,exts,h),...core.validateAssignmentPolicy(s,roster,cfg,{extShifts:exts,handoffs:h,ptoHoursByEmployee:credits})];
-  const start = html.indexOf("    const attempt = (jitter) => {"), end=html.indexOf("    // ── Commit best result",start);
+  const start = html.indexOf("    const attempt = (jitter, withProactive = true) => {"), end=html.indexOf("    // ── Commit best result",start);
   const attempt = new Function(...Object.keys(core),"source","cfg","empTimeOffDays","enrichedPatterns","extShifts","swingDesig","validateSchedule","accountingRoster","ptoHoursByEmployee","preservedSchedule","preservedHandoffs","excludeSet",
     "const schedule=preservedSchedule,handoffs=preservedHandoffs,fairnessHistory={};"+html.slice(start,end)+"return attempt;")(...Object.values(core),source,cfg,new Set(),{},[],{},validate,roster,credits,preservedSchedule,[],new Set(excluded));
   return attempt(false);
