@@ -188,3 +188,47 @@ test('blocked manual changes leave undo and redo alone', () => {
     assert(!body.includes('pushUndo()'), fn);
   }
 });
+
+// ── Cross-week boundary: last week's Saturday work running into Sunday ───────
+test('last week\'s Saturday duties that run into Sunday become read-only carry-in for this week', () => {
+  const prev = {weekStart:'2026-09-27', isAutoSave:true, savedAt:'2026-10-03T12:00:00Z',
+    schedule:{Saturday__third:[{employeeId:'t', position:'Guard'}]},
+    extShifts:[{pairId:'swing-10p-10a', day:'Saturday', empAId:'h', empBId:null}], handoffs:[]};
+  const carry = core.carryInRecords([prev], '2026-10-04');
+  const byEmp = Object.fromEntries(carry.map(c => [c.employeeId, c]));
+  assert.deepEqual([byEmp.h.start, byEmp.h.end], [-2, 10], 'Sat 22:00 to Sun 10:00');
+  assert.deepEqual([byEmp.t.start, byEmp.t.end], [-2, 6], 'a regular Saturday third ends at 06:00');
+  assert.equal(core.carryInRecords([prev], '2026-10-11').length, 0, 'only the week right after');
+});
+
+test('carry-in counts toward Sunday first-shift staffing but never toward this week\'s hours', () => {
+  const roster = [{id:'h', name:'H', employmentType:'full-time', qualifications:['Guard','Scale','Medical']},
+    ...['a','b','c'].map(id => ({id, name:id, employmentType:'full-time', qualifications:['Guard','Scale','Medical']}))];
+  const carry = [{carryIn:true, pairId:'carry-in', day:'Sunday', employeeId:'h', start:-2, end:10}];
+  const sched = {[cellKey('Sunday','first')]:['a','b','c'].map(id => ({employeeId:id, position:'Guard'}))};
+  const staffing = core.validateStaffing(sched, carry, []);
+  assert(staffing.some(i => i.type === 'overstaffed' && i.day === 'Sunday'), 'a 4th body 06:00-10:00 is now visible');
+  assert.equal(core.normalizedWorkedHours('h', {}, carry, []), 0, 'its hours stay with last week');
+  const two = {[cellKey('Sunday','first')]:['a','b'].map(id => ({employeeId:id, position:'Guard'}))};
+  assert.equal(core.analyzeShiftCoverage('Sunday','first', two, roster, carry, []).segments[0].regular, 3, 'covers 06:00-10:00');
+});
+
+test('a late stay from last Saturday\'s third shift into Sunday first is valid with carry-in', () => {
+  const e = {id:'t', name:'T', employmentType:'full-time', qualifications:['Guard'], unavailableDays:[], blockedShifts:[], requiredShift:'third', swingEligible:['swing-10p-10a']};
+  const h = {id:'x', day:'Sunday', employeeId:'t', sourceShiftId:'third', targetShiftId:'first', type:'late-stay', position:'Guard', hours:4};
+  const carry = [{carryIn:true, pairId:'carry-in', day:'Sunday', employeeId:'t', start:-2, end:6}];
+  const types = x => core.employeePolicyIssues(e, {}, {}, {handoffs:[h], extShifts:x}).map(i => i.type);
+  assert(types([]).includes('invalid_handoff'), 'without last week it has no source');
+  assert(!types(carry).includes('invalid_handoff'), 'with carry-in it does');
+  assert.equal(core.normalizedWorkedHours('t', {}, carry, [h]), 4, 'and its own 4h count this week');
+});
+
+test('carry-in is never saved with the week, its history or its publication', () => {
+  const carry = {carryIn:true, pairId:'carry-in', day:'Sunday', employeeId:'h', start:-2, end:10};
+  const own = {pairId:'day', day:'Monday', empAId:'a', empBId:null};
+  assert.deepEqual(core.makeHistoryEntry({weekStart:week, extShifts:[own, carry]}).extShifts, [own]);
+  assert.deepEqual(core.publicationSnapshot({weekStart:week, extShifts:[own, carry], history:[]}).extShifts, [own]);
+  const draft = extract('const setWeekDraft=useCallback(update=>setActiveWeek(prev=>{', '}),[setActiveWeek]);');
+  assert(draft.includes('withoutCarryIn(next[k])'));
+  assert(extract('function validatePublication(', '\nfunction ').includes('carryInFromWeek(snapshot.previousWeek)'));
+});

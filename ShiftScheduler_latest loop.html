@@ -734,6 +734,10 @@ function shiftInterval(day, shiftId) {
 }
 
 function extendedWorkIntervals(ext) {
+  // Carry-in: last week's work running past Sunday 00:00, already in this
+  // week's hours (negative start). Read-only; never saved with this week.
+  if (ext?.carryIn) return ext.employeeId && Number.isFinite(ext.start) && Number.isFinite(ext.end) && ext.end > ext.start
+    ? [{ employeeId: ext.employeeId, start: ext.start, end: ext.end, source: "extended", carryIn: true, ext }] : [];
   const pair = EXT_PAIRS_BY_ID.get(ext.pairId);
   const di = DAYS.indexOf(ext.day);
   if (!pair || di < 0) return [];
@@ -760,7 +764,7 @@ function collectCoverageIntervals(schedule, extShiftsArg = [], handoffsArg = [])
       // Existing saves can mirror an extended assignment in regular cells.
       // The extended record owns its hours: a mirrored 10:00 start must not
       // accidentally become a full 06:00-14:00 assignment.
-      if (extIntervals.some(i => i.employeeId === a.employeeId && intervalsOverlap(i, span))) continue;
+      if (extIntervals.some(i => !i.carryIn && i.employeeId === a.employeeId && intervalsOverlap(i, span))) continue;
       intervals.push({ ...span, employeeId: a.employeeId, position: a.position, source: "regular" });
     }
   }
@@ -821,6 +825,23 @@ function validateStaffing(schedule, extShiftsArg = [], handoffsArg = [], prepare
   return ALL_SLOTS.flatMap(s=>staffingIssuesForSlot(s.day,s.shiftId,schedule,intervals));
 }
 
+// Work from a previous week's record that runs past the following Sunday 00:00,
+// as read-only carry-in records in the next week's hours. They count toward
+// that week's staffing and can anchor a late stay into Sunday first shift, but
+// never toward its hours: a duty's hours belong to the week it starts.
+function carryInFromWeek(entry) {
+  if (!entry || typeof entry !== "object") return [];
+  return collectCoverageIntervals(entry.schedule || {}, (entry.extShifts || []).filter(e => !e?.carryIn), entry.handoffs || [])
+    .filter(i => i.end > 168)
+    .map(i => ({ carryIn: true, pairId: "carry-in", day: "Sunday", employeeId: i.employeeId, position: i.position || null,
+      start: i.start - 168, end: i.end - 168, fromSource: i.source }));
+}
+function carryInRecords(history, weekStart) {
+  if (!validISODate(weekStart)) return [];
+  const prior = new Date(Date.parse(weekStart + "T12:00:00Z") - 7 * 86400000).toISOString().slice(0, 10);
+  return carryInFromWeek(selectWeekHistory(history, prior, false));
+}
+const withoutCarryIn = exts => (exts || []).filter(e => !e?.carryIn);
 // Handoffs with no valid adjoining source duty in this schedule (for example
 // once the shift they extend has been removed or reassigned).
 function orphanedHandoffs(schedule, extShifts = [], handoffs = []) {
@@ -1246,9 +1267,12 @@ function employeePolicyIssues(emp, schedule, cfg = {}, options = {}) {
         add("supervisor_slot", `weekday supervisor must be the additional fourth person (${day} ${sid})`);
     }
   }
-  const ownExts = extShifts.filter(e => e.empAId === emp.id || e.empBId === emp.id);
+  const ownExts = extShifts.filter(e => !e.carryIn && (e.empAId === emp.id || e.empBId === emp.id));
+  const ownCarryIn = extShifts.filter(e => e.carryIn && e.employeeId === emp.id);
   const ownHandoffs = handoffs.filter(h => h.employeeId === emp.id);
-  const intervals = collectCoverageIntervals(ownSchedule, ownExts, ownHandoffs).filter(i => i.employeeId === emp.id);
+  // Carry-in only anchors cross-week handoffs here; last week's own work enters
+  // the rest checks through the prior-week pattern below.
+  const intervals = collectCoverageIntervals(ownSchedule, [...ownExts, ...ownCarryIn], ownHandoffs).filter(i => i.employeeId === emp.id && !i.carryIn);
   for (const ext of ownExts) {
     for (const half of [0, 1]) if ((half ? ext.empBId : ext.empAId) === emp.id && !canWorkExtHalf(emp, ext.pairId, half))
       add("extended_eligibility", `not eligible for ${ext.pairId} half ${half + 1} on ${ext.day}`);
@@ -2283,7 +2307,7 @@ function trimOvertimeProposal(proposal, employees, limits, credits = {}) {
   for (const emp of employees) {
     const budget = Math.max(0, (limits[emp.id] ?? FT_MIN_HOURS) - (credits[emp.id] || 0));
     if (normalizedWorkedHours(emp.id, result.ns, result.autoExtShifts, result.handoffs) <= budget) continue;
-    const intervals = collectCoverageIntervals(result.ns, result.autoExtShifts, result.handoffs).filter(i => i.employeeId === emp.id);
+    const intervals = collectCoverageIntervals(result.ns, result.autoExtShifts, result.handoffs).filter(i => i.employeeId === emp.id && !i.carryIn);
     const lockedHandoffs=(result.handoffs || []).filter(h=>h.employeeId===emp.id && h.locked);
     const protectedDuty=d=>d.ext?.locked || Object.entries(result.ns).some(([key,a])=>
       a.some(v=>v.employeeId===emp.id&&v.locked) && shiftInterval(...key.split('__'))?.start===d.start) ||
@@ -2411,7 +2435,7 @@ function lockedDutyIssues(before,after,beforeOptions={},afterOptions=beforeOptio
 // Measure only stated preferences, by hours in each affected shift segment.
 function preferenceBurden(emp,schedule,extShifts=[],handoffs=[],timeOff) {
   let workedHours=0,penaltyHours=0;
-  for(const i of collectCoverageIntervals(schedule,extShifts,handoffs).filter(i=>i.employeeId===emp.id)) {
+  for(const i of collectCoverageIntervals(schedule,extShifts,handoffs).filter(i=>i.employeeId===emp.id && !i.carryIn)) {
     workedHours+=i.end-i.start;
     for(let t=i.start;t<i.end;) {
       const shiftIndex=Math.floor((t-6)/8),end=Math.min(i.end,6+(shiftIndex+1)*8),hours=end-t;
@@ -3131,7 +3155,7 @@ function weekAvailabilityFor(store, weekStart) {
 // weeks saved or published without them are unchanged.
 const weekAvailabilityField = value => value != null && (typeof value !== "object" || Object.keys(value).length) ? {weekAvailability:value} : {};
 function makeHistoryEntry(input,label=null) {
-  return JSON.parse(canonicalJSON({weekStart:input.weekStart,schedule:input.schedule || {},extShifts:input.extShifts || [],handoffs:input.handoffs || [],
+  return JSON.parse(canonicalJSON({weekStart:input.weekStart,schedule:input.schedule || {},extShifts:withoutCarryIn(input.extShifts),handoffs:input.handoffs || [],
     trainingBlocks:input.trainingBlocks || [],timeOffReqs:input.timeOffReqs || [],employees:input.employees || [],
     ...weekAvailabilityField(input.weekAvailability),
     savedAt:new Date().toISOString(),label,isAutoSave:label===null,status:'draft'}));
@@ -3167,7 +3191,7 @@ function publicationSnapshot(input) {
   // The newest record of last week: edits made after a manual save count.
   const prior=input.previousWeek || selectWeekHistory(input.history,priorDate,false);
   return JSON.parse(canonicalJSON({ruleVersion:PUBLICATION_RULE_VERSION,weekStart:input.weekStart,
-    employees:input.employees || [],schedule:input.schedule || {},extShifts:input.extShifts || [],handoffs:input.handoffs || [],
+    employees:input.employees || [],schedule:input.schedule || {},extShifts:withoutCarryIn(input.extShifts),handoffs:input.handoffs || [],
     timeOffReqs:input.timeOffReqs || [],cfg:input.cfg || {},trainingBlocks:input.trainingBlocks || [],
     ...weekAvailabilityField(input.weekAvailability),
     previousWeek:prior ? {weekStart:prior.weekStart,schedule:prior.schedule || {},extShifts:prior.extShifts || [],handoffs:prior.handoffs || []} : null}));
@@ -3220,8 +3244,10 @@ function validatePublication(snapshot, approvals=[], options={}) {
     if(options.searchRunning) error("publication_search","Wait for the schedule search to finish before publishing.");
     const availability=buildTimeOffAvailability(snapshot.timeOffReqs,snapshot.weekStart,snapshot.weekAvailability);
     const accounting=buildWeeklyAccounting(snapshot.employees,snapshot.schedule,snapshot.extShifts,snapshot.handoffs,snapshot.timeOffReqs,snapshot.weekStart);
-    issues.push(...validateCoverage(snapshot.schedule,snapshot.employees,snapshot.extShifts,snapshot.handoffs).filter(i=>i.type!=='overstaffed'),
-      ...validateAssignmentPolicy(snapshot.schedule,snapshot.employees,snapshot.cfg,{extShifts:snapshot.extShifts,handoffs:snapshot.handoffs,
+    // Last week's work running into this Sunday counts toward its staffing.
+    const checkedExts=[...withoutCarryIn(snapshot.extShifts),...carryInFromWeek(snapshot.previousWeek)];
+    issues.push(...validateCoverage(snapshot.schedule,snapshot.employees,checkedExts,snapshot.handoffs).filter(i=>i.type!=='overstaffed'),
+      ...validateAssignmentPolicy(snapshot.schedule,snapshot.employees,snapshot.cfg,{extShifts:checkedExts,handoffs:snapshot.handoffs,
         empTimeOffDays:availability,ptoHoursByEmployee:accounting.pto.hoursByEmployee,
         empPatterns:boundaryPatterns(snapshot.previousWeek?[snapshot.previousWeek]:[],snapshot.weekStart,{})}),...accounting.issues);
     for(const item of publicationOvertimeItems(snapshot)) {
@@ -3337,7 +3363,8 @@ function scheduleExportDutyLabel(duty) {
   return `${scheduleExportClock(duty.start)}–${scheduleExportClock(duty.end)}`;
 }
 function buildScheduleExportModel(input, generatedOn = localISODate(new Date())) {
-  const {employees = [], schedule = {}, extShifts = [], handoffs = [], trainingBlocks = [], timeOffReqs = [], weekStart} = input;
+  const {employees = [], schedule = {}, handoffs = [], trainingBlocks = [], timeOffReqs = [], weekStart} = input;
+  const extShifts = withoutCarryIn(input.extShifts);
   if (!validISODate(weekStart)) throw new Error('Select a valid schedule week before exporting.');
   const C = SCHEDULE_EXPORT_COLORS;
   const dates = weekDatesISO(weekStart);
@@ -3917,8 +3944,8 @@ function buildPtoCredits(employees, requests = [], weekStart) {
 
 function normalizedWorkedHours(empId, schedule, extShifts = [], handoffs = []) {
   const own = Object.fromEntries(Object.entries(schedule).map(([key, asgn]) => [key, asgn.filter(a => a.employeeId === empId)]));
-  const intervals = collectCoverageIntervals(own, extShifts.filter(e => e.empAId === empId || e.empBId === empId),
-    handoffs.filter(h => h.employeeId === empId)).filter(i => i.employeeId === empId).sort((a, b) => a.start - b.start);
+  const intervals = collectCoverageIntervals(own, extShifts.filter(e => e.empAId === empId || e.empBId === empId || (e.carryIn && e.employeeId === empId)),
+    handoffs.filter(h => h.employeeId === empId)).filter(i => i.employeeId === empId && !i.carryIn).sort((a, b) => a.start - b.start);
   let hours = 0, end = -Infinity;
   for (const i of intervals) { hours += Math.max(0, i.end - Math.max(end, i.start)); end = Math.max(end, i.end); }
   return hours;
@@ -8420,7 +8447,7 @@ function ManualPairModal({ initialDay, onApprove, onCancel }) {
 
 function ExtShiftBanner({ onRemove }) {
   const { employees } = useRoster();
-  const { extShifts } = useSchedule();
+  const extShifts = withoutCarryIn(useSchedule().extShifts); // removable pairs only; carry-in sits after them
   const t = useTheme();
   if (!extShifts.length) return null;
   const getName = (id) => employees.find(e=>e.id===id)?.name || "?";
@@ -12197,7 +12224,7 @@ function SchedulePopout({ onClose, snapshot }) {
               {DAYS.map(day=>{
                 const asgn = schedule[cellKey(day,shift.id)]||[];
                 const st   = getPopoutStatus(day,shift.id);
-                const cellExt = (extShifts||[]).filter(e=>extCovers(e,day,shift.id));
+                const cellExt = (extShifts||[]).filter(e=>!e.carryIn&&extCovers(e,day,shift.id));
                 const bg = !asgn.length&&!cellExt.length ? "var(--ss-bg)" : !st.ok ? "var(--ss-warning-12)" : "var(--ss-surface)";
                 const bdr= !asgn.length&&!cellExt.length ? "var(--ss-border)" : !st.ok ? "var(--ss-warning-55)" : "var(--ss-accent-30)";
                 return (
@@ -12828,7 +12855,8 @@ function DutyLocksPanel({schedule,extShifts,handoffs,employees,onToggle,disabled
   const rows=Object.entries(schedule).flatMap(([key,a])=>a.flatMap((v,index)=>
     intervals.some(i=>i.source==='regular'&&i.employeeId===v.employeeId&&i.start===shiftInterval(...key.split('__')).start)
       ? [{type:'regular',key,index,locked:v.locked,label:`${key.replace('__',' ')} · ${name(v.employeeId)} · ${v.position}`}]:[]));
-  extShifts.forEach((v,index)=>rows.push({type:'extended',index,locked:v.locked,label:`${v.day} · Extended ${v.pairId} · ${[v.empAId,v.empBId].filter(Boolean).map(name).join(' / ')}`}));
+  // Carry-in from last week sits after the saved pairs and is not lockable here.
+  extShifts.forEach((v,index)=>!v.carryIn&&rows.push({type:'extended',index,locked:v.locked,label:`${v.day} · Extended ${v.pairId} · ${[v.empAId,v.empBId].filter(Boolean).map(name).join(' / ')}`}));
   handoffs.forEach((v,index)=>rows.push({type:'handoff',index,locked:v.locked,label:`${v.day} · ${name(v.employeeId)} · ${v.type} ${v.hours}h`}));
   return <details style={{marginTop:12,padding:12,border:'1px solid var(--ss-border)',borderRadius:8}}>
     <summary style={{fontWeight:700}}>Assignment locks and preference fairness · {rows.filter(r=>r.locked).length} locked</summary>
@@ -13910,7 +13938,7 @@ function ScheduleGrid({ onOpenTestModal }) {
       const allExtShiftsForCleanup = [...(extShifts||[]).filter(e => e.approvedAt !== "auto-fill" || excludeSet.has(e.empAId) || excludeSet.has(e.empBId)).filter(e => extEmployeesKnown(e, accountingRoster)), ...autoExtShifts];
       const seenExtKeys = new Set();
       const dedupedExts = allExtShiftsForCleanup.filter(ext => {
-        const k = ext.day + "__" + ext.pairId;
+        const k = ext.carryIn ? "carry-in__" + ext.employeeId + "__" + ext.start : ext.day + "__" + ext.pairId;
         if (seenExtKeys.has(k)) return false;
         seenExtKeys.add(k);
         return true;
@@ -14241,7 +14269,7 @@ function ScheduleGrid({ onOpenTestModal }) {
 
         const uhCount  = employees.filter(e=>e.employmentType==="full-time"&&weeklyEmployeeHours(e,schedule,extShifts || [],handoffs || [],ptoHoursByEmployee).shortfallHours>0).length;
         const fatCount = employees.filter(e=>DAYS.some(d=>SHIFTS.some(s=>(schedule[cellKey(d,s.id)]||[]).some(a=>a.employeeId===e.id&&(calcConsecutiveNights(e.id,schedule,d,s.id)>=(cfg?.maxConsecutiveNights??MAX_CONSECUTIVE_NIGHTS)))))).length;
-        const extCount = (extShifts||[]).length;
+        const extCount = withoutCarryIn(extShifts).length;
         const totalBanners = (uhCount>0?1:0)+(fatCount>0?1:0)+(extCount>0?1:0);
         if(totalBanners===0) return null;
         return (
@@ -14536,7 +14564,8 @@ function ScheduleGrid({ onOpenTestModal }) {
                   return nights>(cfg?.maxConsecutiveNights??MAX_CONSECUTIVE_NIGHTS)||(rest<(cfg?.minRestHours??MIN_REST_HOURS)&&rest!==Infinity)||unavail;
                 });
 
-                const cellExt          = (extShifts||[]).filter(e=>extCovers(e,day,shift.id));
+                const cellExt          = (extShifts||[]).filter(e=>!e.carryIn&&extCovers(e,day,shift.id));
+                const cellCarryIn      = (extShifts||[]).filter(e=>e.carryIn&&extCovers(e,day,shift.id));
                 const missingScale = !st.hasScale;
                 const missingMedical = !st.hasMedical;
                 const hasUnfillableGap = asgn.length>0&&(missingScale||missingMedical)&&
@@ -14829,6 +14858,20 @@ function ScheduleGrid({ onOpenTestModal }) {
                           {!isReadOnly && !h.locked && <button type="button" onClick={e=>{e.stopPropagation();removeHandoff(h);}}
                             title={`Remove ${hoEmp.name}'s ${label.toLowerCase()}`} aria-label={`Remove ${hoEmp.name}'s ${label.toLowerCase()}`}
                             style={{background:"none",border:"none",color:"#6366f1",cursor:"pointer",fontSize:10,padding:"0 2px",lineHeight:1,flexShrink:0}}>✕</button>}
+                        </div>
+                      );
+                    })}
+
+                    {cellCarryIn.map((c, ci) => {
+                      const cEmp = employees.find(e => e.id === c.employeeId);
+                      if (!cEmp) return null;
+                      return (
+                        <div key={"ci-"+ci} title="Still on from last Saturday's duty (shown for staffing; edit it in last week)"
+                          style={{display:"flex",alignItems:"center",gap:5,padding:"3px 6px",background:"var(--ss-surface-alt)",
+                            border:"1px dashed var(--ss-border)",borderRadius:4,fontSize:11,color:"var(--ss-text-dim)"}}>
+                          <span style={{fontSize:9,flexShrink:0}}>↩</span>
+                          <span style={{flex:1,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap",fontWeight:600,fontSize:10}}>{cEmp.name}</span>
+                          <span style={{fontSize:8,flexShrink:0}}>until {formatCoverageTime(c.end, "Sunday")} · from Sat</span>
                         </div>
                       );
                     })}
@@ -17530,10 +17573,16 @@ function ShiftSchedulerApp() {
   const [swingDesig,  setSwingDesig, swingDesigLoaded] = usePersistentState("shift_swing_desig", {});
   const [empPatterns, setEmpPatterns, patternsLoaded] = usePersistentState("shift_patterns",{});
   const [activeWeek,setActiveWeek,weekLoaded,weekStorageError]=usePersistentState(ACTIVE_WEEK_KEY,emptyWeekDraft);
-  const {weekStart,schedule,extShifts,handoffs,trainingBlocks}=activeWeek;
+  const {weekStart,schedule,extShifts:savedExtShifts,handoffs,trainingBlocks}=activeWeek;
+  // Last week's work running into this Sunday joins the in-memory list (for
+  // staffing and rule checks) but is stripped from every write below.
+  const carryIn=useMemo(()=>carryInRecords(history,weekStart),[history,weekStart]);
+  const carryInKey=canonicalJSON(carryIn);
+  const extShifts=useMemo(()=>carryIn.length?[...(savedExtShifts || []),...carryIn]:savedExtShifts,[savedExtShifts,carryInKey]); // eslint-disable-line react-hooks/exhaustive-deps
   const setWeekDraft=useCallback(update=>setActiveWeek(prev=>{
     const next=typeof update==='function'?update(prev):update;
-    return {...prev,...Object.fromEntries(['weekStart','schedule','extShifts','handoffs','trainingBlocks'].filter(k=>Object.hasOwn(next,k)).map(k=>[k,next[k]]))};
+    return {...prev,...Object.fromEntries(['weekStart','schedule','extShifts','handoffs','trainingBlocks'].filter(k=>Object.hasOwn(next,k))
+      .map(k=>[k,k==='extShifts'?withoutCarryIn(next[k]):next[k]]))};
   }),[setActiveWeek]);
   const setSchedule=useCallback(v=>setWeekDraft(p=>({schedule:typeof v==='function'?v(p.schedule):v})),[setWeekDraft]);
   const setExtShifts=useCallback(v=>setWeekDraft(p=>({extShifts:typeof v==='function'?v(p.extShifts):v})),[setWeekDraft]);
