@@ -12,6 +12,17 @@ const emp = (extra={}) => ({id:'e',name:'Employee',qualifications:['Guard','Medi
 const schedule = (day='Monday',sid='first',id='e') => ({[cellKey(day,sid)]:[{employeeId:id,position:'Guard'}]});
 const issues = (e, s, timeOff=availability([],week), extra={}) => employeePolicyIssues(e,s,{},{empTimeOffDays:timeOff,...extra});
 const blocked = list => list.some(i=>i.type==='availability');
+
+// Autofill has wall-clock budgets; a stepping fake clock and seeded random
+// numbers make these runs identical however busy the machine is.
+function deterministicAutofill(run) {
+  const now = Date.now, random = Math.random, log = console.log, warn = console.warn;
+  let clock = 1.7e12, seed = 12345;
+  Date.now = () => Math.floor(clock += 0.05);
+  Math.random = () => { seed = (seed * 1664525 + 1013904223) >>> 0; return seed / 4294967296; };
+  console.log = console.warn = () => {};
+  try { return run(); } finally { Date.now = now; Math.random = random; console.log = log; console.warn = warn; }
+}
 const dataError = list => list.some(i=>i.type==='availability_data');
 
 test('no grid and no overrides leave every shift available',()=>{
@@ -117,9 +128,7 @@ test('autofill never assigns a "no" cell',()=>{
   ];
   roster[0].shiftAvailability = {Monday:{first:'no',second:'no'},Tuesday:{third:'no'}};
   const timeOff = availability([],week,{b:{Wednesday:{first:'no',second:'no',third:'no'}}});
-  const log = console.log, warn = console.warn; console.log = console.warn = () => {};
-  let result; try { result = buildAutoFill(roster,{maxSearchNodes:2000,maxSearchMs:500},timeOff,{},[],false,{roster}); }
-  finally { console.log = log; console.warn = warn; }
+  const result = deterministicAutofill(() => buildAutoFill(roster,{maxSearchNodes:2000,maxSearchMs:500},timeOff,{},[],false,{roster}));
   const on = (id,day,sid) => (result.schedule[cellKey(day,sid)] || []).some(x=>x.employeeId===id);
   assert.equal(on('a','Monday','first'),false); assert.equal(on('a','Monday','second'),false);
   assert.equal(on('a','Tuesday','third'),false);
@@ -133,9 +142,7 @@ test('autofill plans around "no" cells instead of having assignments rejected',(
   const grid = {'psi-2':{Monday:{first:'no'},Tuesday:{first:'no'}}};
   const emps = JSON.parse(JSON.stringify(fx.roster)).map(e=>grid[e.id]?{...e,shiftAvailability:grid[e.id]}:e);
   const timeOff = availability([],week);
-  const log = console.log, warn = console.warn; console.log = console.warn = () => {};
-  let result; try { result = buildAutoFill(emps,{...fx.cfg,maxSearchNodes:3000},timeOff,fx.enrichedPatterns,[],false,{roster:emps}); }
-  finally { console.log = log; console.warn = warn; }
+  const result = deterministicAutofill(() => buildAutoFill(emps,{...fx.cfg,maxSearchNodes:3000},timeOff,fx.enrichedPatterns,[],false,{roster:emps}));
   assert.deepEqual((result.policyRejected || []).map(r=>r.employeeId+' '+r.day+' '+r.shiftId),[]);
   for (const day of ['Monday','Tuesday']) assert(!(result.schedule[cellKey(day,'first')] || []).some(a=>a.employeeId==='psi-2'));
 });
@@ -189,9 +196,7 @@ test('autofill follows a grid preference that differs from the weekly one',()=>{
   const allSecond = Object.fromEntries(DAYS.map(d=>[d,{second:'prefer'}]));
   const emps = JSON.parse(JSON.stringify(fx.roster)).map(e=>e.id==='psi-9'?{...e,shiftAvailability:allSecond}:e);
   assert.deepEqual(emps.find(e=>e.id==='psi-9').preferredShifts,['third']);
-  const log = console.log, warn = console.warn; console.log = console.warn = () => {};
-  let result; try { result = buildAutoFill(emps,{...fx.cfg,maxSearchNodes:3000},availability([],week),fx.enrichedPatterns,[],false,{roster:emps}); }
-  finally { console.log = log; console.warn = warn; }
+  const result = deterministicAutofill(() => buildAutoFill(emps,{...fx.cfg,maxSearchNodes:3000},availability([],week),fx.enrichedPatterns,[],false,{roster:emps}));
   const shifts = Object.entries(result.schedule).filter(([,a])=>a.some(x=>x.employeeId==='psi-9')).map(([k])=>k.split('__')[1]);
   assert(shifts.length > 0);
   assert(shifts.every(s=>s==='second'),shifts.join(','));
@@ -214,7 +219,8 @@ test('cells already ruled out by other settings are locked with a reason',()=>{
   assert.equal(core.requiredShiftExceptionHint(emp({requiredShift:'second',canWorkOtherShifts:true}),'Monday','first'),null);
   assert.equal(ruleBlockedShiftReason(emp({requiredShift:'second',canWorkOtherShifts:true}),'Monday','first'),null);
   assert.equal(ruleBlockedShiftReason(emp({requiredShift:'second',crossShiftOT:true}),'Monday','first'),null);
-  assert.match(ruleBlockedShiftReason(emp({qualifications:['Supervisor','Guard']}),'Saturday','first'),/Supervisor/);
+  assert.equal(ruleBlockedShiftReason(emp({qualifications:['Supervisor','Guard']}),'Saturday','first'),null,'supervisors may work any weekend shift');
+  assert.match(ruleBlockedShiftReason(emp({qualifications:['Supervisor','Guard']}),'Tuesday','second'),/Supervisor/);
   assert.equal(ruleBlockedShiftReason(emp({qualifications:['Supervisor','Guard']}),'Monday','first'),null);
 });
 
@@ -266,9 +272,7 @@ test('autofill moves a required-shift full-timer to a preferred other shift with
   const emps = JSON.parse(JSON.stringify(fx.roster)).map(e=>e.id==='psi-4'?{...e,shiftAvailability:grid}:e);
   assert.equal(emps.find(e=>e.id==='psi-4').requiredShift,'first');
   const timeOff = availability([],week);
-  const log = console.log, warn = console.warn; console.log = console.warn = () => {};
-  let result; try { result = buildAutoFill(emps,{...fx.cfg,maxSearchNodes:3000},timeOff,fx.enrichedPatterns,[],false,{roster:emps}); }
-  finally { console.log = log; console.warn = warn; }
+  const result = deterministicAutofill(() => buildAutoFill(emps,{...fx.cfg,maxSearchNodes:3000},timeOff,fx.enrichedPatterns,[],false,{roster:emps}));
   const onSecond = ['Tuesday','Wednesday'].filter(d=>(result.schedule[cellKey(d,'second')]||[]).some(a=>a.employeeId==='psi-4'));
   assert(onSecond.length > 0,'works at least one preferred 2nd shift');
   const other = Object.entries(result.schedule).filter(([k,a])=>a.some(x=>x.employeeId==='psi-4') && !k.endsWith('__first')).map(([k])=>k);

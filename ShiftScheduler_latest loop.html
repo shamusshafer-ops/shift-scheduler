@@ -705,7 +705,7 @@ const cellKey      = (d,s) => d+"__"+s;
 const canFillPos = (emp, pos, day) => {
   const isSup = (emp.qualifications||[]).includes("Supervisor");
   if (isSup && isWeekday(day)) return pos === "Supervisor"; // weekday: Supervisor slot only
-  if (isSup && (pos === "Scale" || pos === "Medical")) return false; // weekend: Guard only normally
+  // Weekends: any position they hold (their own shift restrictions still apply).
   return (emp.qualifications||[]).includes(pos);
 };
 // isSupLastResort removed — was unused since Supervisor position was removed in v3
@@ -979,8 +979,11 @@ const DEFAULT_SETTINGS = { maxConsecutiveNights: 3, minRestHours: 12, defaultOve
 // ── Persistent State ──────────────────────────────────────────────────────────
 function usePersistentState(key, fallback) {
   const readErrorRef=useRef(null),editedRef=useRef(false),writeTail=useRef(Promise.resolve()),writeVersion=useRef(0);
+  // Once the saved value could not be read, edits would be built on the fallback
+  // and overwrite it, so writes are refused until a reload or backup restore.
+  const readFailedRef=useRef(false);
   const loadInit=()=>{
-    if(!_hasWinStorage) try {const raw=localStorage.getItem(key);if(raw!==null)return JSON.parse(raw);} catch(e){readErrorRef.current=e;}
+    if(!_hasWinStorage) try {const raw=localStorage.getItem(key);if(raw!==null)return JSON.parse(raw);} catch(e){readErrorRef.current=e;readFailedRef.current=true;}
     return typeof fallback==='function'?fallback():fallback;
   };
   const [val,setValRaw]=useState(loadInit);
@@ -996,11 +999,15 @@ function usePersistentState(key, fallback) {
         try {r=await window.storage.get(key);} catch(e){if(!isMissingStorageError(e))throw e;}
         const next=r?.value!=null?JSON.parse(r.value):(typeof fallback==='function'?fallback():fallback);
         if(activeRef.current && !editedRef.current){valueRef.current=next;setValRaw(next);setLoaded(true);setError(null);}
-      } catch(e){if(activeRef.current && !editedRef.current){setLoaded(false);setError(e.message);}}
+      } catch(e){if(activeRef.current && !editedRef.current){readFailedRef.current=true;setLoaded(false);setError(e.message);}}
     })();
     return ()=>{activeRef.current=false;};
   },[key]);
   const setVal=useCallback(updater=>{
+    if(readFailedRef.current){
+      const err=new Error('Saved data could not be read, so this change was not saved (to avoid overwriting it). Reload the page or restore a backup.');
+      setError(err.message);return Promise.reject(err);
+    }
     const next=typeof updater==='function'?updater(valueRef.current):updater;
     const serialized=JSON.stringify(next),version=++writeVersion.current;
     editedRef.current=true;valueRef.current=next;setValRaw(next);setLoaded(false);
@@ -1281,7 +1288,10 @@ function employeePolicyIssues(emp, schedule, cfg = {}, options = {}) {
       // shift is checked by canWorkExtHalf; regular work and handoffs need permission.
       if (i.source === "extended" && (emp.qualifications || []).includes("Supervisor") && isWeekday(day))
         add("supervisor_slot", `weekday supervisor requires the dedicated first-shift position (${day} ${s.id})`);
-      if (i.source !== "extended" && !canWorkShiftOnDay(emp, day, s.id, di >= 0 && di < 7 ? empTimeOffDays : null))
+      // Extended duties are checked by canWorkExtHalf. A swing-shaped handoff is
+      // allowed like the swing itself (its eligibility is checked above).
+      if (i.source !== "extended" && !(i.source === "handoff" && HANDOFF_SWING_IDS[i.handoff.sourceShiftId + ":" + i.handoff.type]) &&
+          !canWorkShiftOnDay(emp, day, s.id, di >= 0 && di < 7 ? empTimeOffDays : null))
         add("required_shift", `requires ${emp.requiredShift}; no cross-shift authorization (${day} ${s.id})`);
     }
   }
@@ -2025,7 +2035,11 @@ function decomposeAvailabilityGrid(grid, original = {}) {
   const noOn = d => ids.filter(s => state(d, s) === "no");
   const prefOn = d => ids.filter(s => state(d, s) === "prefer");
   // Weekly list = shifts preferred on most open days; other days state their own.
-  const preferredShifts = keepOrder(ids.filter(s => open.filter(d => state(d, s) === "prefer").length * 2 > open.length), original.preferredShifts);
+  // For a binding required shift, other shifts stay per-day cells: only a cell
+  // grants the one-day exception (canWorkShiftOnDay), never the weekly list.
+  const binding = required && !canWorkOtherShifts(original);
+  const preferredShifts = keepOrder(ids.filter(s => (!binding || s === required) &&
+    open.filter(d => state(d, s) === "prefer").length * 2 > open.length), original.preferredShifts);
   const cells = {};
   const set = (d, s, v) => ((cells[d] ||= {})[s] = v);
   for (const d of open) {
@@ -2096,7 +2110,7 @@ function ruleBlockedShiftReason(emp, day, shiftId) {
   if ((emp.unavailableDays || []).includes(day)) return "Unavailable all day";
   if (emp.availableDaysOfWeek?.length && !emp.availableDaysOfWeek.includes(day)) return "Not one of their available days";
   if ((emp.blockedShifts || []).includes(shiftId)) return "Shift is blocked";
-  if ((emp.qualifications || []).includes("Supervisor") && !SUP_SLOT_DAY(day, shiftId)) return "Supervisor works weekday 1st shift only";
+  if ((emp.qualifications || []).includes("Supervisor") && isWeekday(day) && !SUP_SLOT_DAY(day, shiftId)) return "Supervisor works only the 1st-shift supervisor post on weekdays";
   return null;
 }
 // Cells outside a binding required shift, where "prefer" grants that shift for
@@ -3167,6 +3181,13 @@ function publicationRecordValid(record, approvals=record?.approvals) {
   try { return !!record && record.status==="published" && record.priorWeekConfirmed===true && !!record.publishedBy?.trim() &&
     Number.isFinite(Date.parse(record.publishedAt)) && record.stamp===publicationStamp(record.snapshot) && validatePublication(record.snapshot,approvals).ok; } catch (_) { return false; }
 }
+// A stored publication is intact when its record fields and stamp match its own
+// snapshot. Unlike publicationRecordValid it does not re-run today's rules, so
+// weeks published under older rules can still be backed up and restored.
+function publicationRecordIntact(record) {
+  try { return !!record && record.status==="published" && record.priorWeekConfirmed===true && !!record.publishedBy?.trim() &&
+    Number.isFinite(Date.parse(record.publishedAt)) && !!record.snapshot && record.stamp===publicationStamp(record.snapshot); } catch (_) { return false; }
+}
 function createPublicationRepository(io) {
   let tail=Promise.resolve();
   const owned=value=>JSON.parse(canonicalJSON(value));
@@ -3208,7 +3229,7 @@ function createPublicationRepository(io) {
     restore:value=>{
       const copy=owned(value);
       return enqueue(()=>{
-        if(!validStore(copy) || copy.publications.some(record=>!publicationRecordValid(record))) throw new Error("The backup contains invalid publication records.");
+        if(!validStore(copy) || copy.publications.some(record=>!publicationRecordIntact(record))) throw new Error("The backup contains invalid publication records.");
         return persist(copy);
       });
     }};
@@ -3483,8 +3504,8 @@ function repairScheduleGaps(result, context) {
         const pickPosition = (emp, existingBodies) => {
           const q = emp.qualifications || [];
           const isSup = q.includes("Supervisor");
-          if (isSup && !(isWeekday(gap.day) && gap.shiftId === "first")) return null;
-          if (isSup) return "Supervisor";
+          // Weekdays: only the 1st-shift supervisor seat. Weekends: any position they hold.
+          if (isSup && isWeekday(gap.day)) return gap.shiftId === "first" ? "Supervisor" : null;
           const hs = slotHasRole(existingBodies, source, "Scale");
           const hm = slotHasRole(existingBodies, source, "Medical");
           if (!hs && q.includes("Scale"))     return "Scale";
@@ -4396,7 +4417,7 @@ function buildAutoFill(sourceEmps, cfg, empTimeOffDays, empPatterns, extShiftsAr
         if (availabilityConflicts(emp, [shiftInterval(day, shift.id)], empTimeOffDays).length) continue;
         if ((emp.blockedShifts||[]).includes(shift.id)) continue;
         if (!canWorkShiftOnDay(emp, day, shift.id, empTimeOffDays)) continue;
-        if (isSup && !SUP_SLOT_DAY(day, shift.id)) continue;
+        if (isSup && isWeekday(day) && !SUP_SLOT_DAY(day, shift.id)) continue;
         const key = cellKey(day, shift.id);
         const eligible = new Set(
           ALL_POSITIONS.filter(p => canFillPos(emp, p, day) && getAvailPos(day, shift.id).includes(p))
@@ -9024,7 +9045,14 @@ function tryFixViolation(item, employees, schedule, cfg, extShiftsArg) {
   return null;
 }
 
-function MinimizeViolationsPanel({ onClose }) {
+// Staff shortfall and missing roles across the week; a preference fix may never
+// make either worse.
+function coverageShortfall(schedule, employees, extShifts = [], handoffs = []) {
+  const issues = validateCoverage(schedule, employees, extShifts, handoffs);
+  return {bodies: issues.filter(i => i.type === "coverage").reduce((n, i) => n + Math.max(0, i.need - i.have), 0),
+    roles: issues.filter(i => i.type === "role").length};
+}
+function MinimizeViolationsPanel({ onClose, onBeforeChange }) {
   const { employees, empPatterns } = useRoster();
   const { schedule, setSchedule, extShifts, handoffs, empTimeOffDays, weekStart, ptoHoursByEmployee } = useSchedule();
   const { history } = useHistory();
@@ -9040,9 +9068,14 @@ function MinimizeViolationsPanel({ onClose }) {
 
   const itemKey = (item) => `${item.emp.id}__${item.day}__${item.shiftId}__${item.type}`;
 
+  const keepsCoverage = (before, after) => {
+    const a = coverageShortfall(before, employees, extShifts || [], handoffs || []), b = coverageShortfall(after, employees, extShifts || [], handoffs || []);
+    return b.bodies <= a.bodies && b.roles <= a.roles;
+  };
   const fixOne = (item) => {
     const result = tryFixViolation(item, employees, schedule, cfg, extShifts);
-    if (result && !scheduleChangeIssues(schedule, result, employees, cfg, policyOptions).length) {
+    if (result && !scheduleChangeIssues(schedule, result, employees, cfg, policyOptions).length && keepsCoverage(schedule, result)) {
+      onBeforeChange?.();
       setSchedule(prev => scheduleChangeIssues(prev, result, employees, cfg, policyOptions).length ? prev : result);
       setFixedIds(s => new Set([...s, itemKey(item)]));
     } else {
@@ -9058,9 +9091,10 @@ function MinimizeViolationsPanel({ onClose }) {
     items.forEach(item => {
       if (nowFixed.has(itemKey(item))) return;
       const result = tryFixViolation(item, employees, cur, cfg, extShifts);
-      if (result && !scheduleChangeIssues(cur, result, employees, cfg, policyOptions).length) { cur = result; nowFixed.add(itemKey(item)); }
+      if (result && !scheduleChangeIssues(cur, result, employees, cfg, policyOptions).length && keepsCoverage(cur, result)) { cur = result; nowFixed.add(itemKey(item)); }
       else nowUnfix.add(itemKey(item));
     });
+    if (nowFixed.size > fixedIds.size) onBeforeChange?.();
     setSchedule(prev => scheduleChangeIssues(prev, cur, employees, cfg, policyOptions).length ? prev : cur);
     setFixedIds(nowFixed);
     setUnfixableIds(nowUnfix);
@@ -9606,7 +9640,7 @@ function AvailabilityGridEditor({ form, setForm }) {
   const errors = shiftAvailabilityErrors(fields.shiftAvailability);
   const grid = composeAvailabilityGrid(fields);
   const isSup = fields.qualifications.includes("Supervisor");
-  const supLock = (day, sid) => isSup && !SUP_SLOT_DAY(day, sid) ? "Supervisor works weekday 1st shift only" : null;
+  const supLock = (day, sid) => isSup && isWeekday(day) && !SUP_SLOT_DAY(day, sid) ? "Supervisor works only the 1st-shift supervisor post on weekdays" : null;
   const update = (change, nextRequired) => setForm(f => {
     const cur = availabilityFieldsOf(f), g = composeAvailabilityGrid(cur);
     const requiredShift = nextRequired === undefined ? cur.requiredShift : nextRequired;
@@ -10134,7 +10168,6 @@ function EmployeeManager({ onOpenTestModal }) {
   const [errors,    setErrors]    = useState([]);
   const [search,    setSearch]    = useState("");
   const [confirmClearAll,   setConfirmClearAll]   = useState(false);
-  const [confirmSeedRoster, setConfirmSeedRoster] = useState(false);
   const [showAddForm,       setShowAddForm]       = useState(false);
   const [confirmDeleteEmp,  setConfirmDeleteEmp]  = useState(null); // empId pending delete
 
@@ -10568,26 +10601,6 @@ function EmployeeManager({ onOpenTestModal }) {
         {}
         <AfExcludeGroupToggles/>
         <div style={{display:"flex",gap:8,alignItems:"center",flexWrap:"wrap"}}>
-          {confirmSeedRoster ? (
-            <div style={{display:"flex",alignItems:"center",gap:8}}>
-              <span style={{fontSize:11,color:"var(--ss-scale)",fontWeight:600}}>Load PSI roster? Current employees will be replaced.</span>
-              <button onClick={()=>{setEmployees([]);resetWeekDraft();setConfirmSeedRoster(false);}}
-                style={{background:"var(--ss-scale)",color:"#fff",border:"none",padding:"6px 14px",
-                  borderRadius:6,cursor:"pointer",fontSize:11,fontWeight:700,fontFamily:"inherit"}}>Yes, load</button>
-              <button onClick={()=>setConfirmSeedRoster(false)}
-                style={{background:"transparent",color:"var(--ss-text-muted)",border:"1px solid var(--ss-border)",
-                  padding:"6px 14px",borderRadius:6,cursor:"pointer",fontSize:11,fontFamily:"inherit"}}>Cancel</button>
-            </div>
-          ) : (
-            <button onClick={()=>setConfirmSeedRoster(true)}
-              style={{background:"transparent",color:"var(--ss-scale)",border:"1px solid var(--ss-scale-60)",
-                padding:"6px 14px",borderRadius:6,cursor:"pointer",fontSize:11,fontWeight:600,
-                fontFamily:"inherit",transition:"all .2s"}}
-              onMouseEnter={e=>{e.currentTarget.style.background="var(--ss-scale-12)";}}
-              onMouseLeave={e=>{e.currentTarget.style.background="transparent";}}>
-              ↺ Load PSI Roster
-            </button>
-          )}
           {}
           {employees.length > 0 && (
             <button
@@ -12995,8 +13008,8 @@ function ScheduleGrid({ onOpenTestModal }) {
 
   const manualSaveToHistory = useCallback((label, ws, sched) => {
     if (!label.trim() || viewingHistory) return;
-    setHistory(prev=>upsertHistoryEntry(prev,makeHistoryEntry({weekStart:ws,schedule:sched,extShifts,handoffs,trainingBlocks,employees,timeOffReqs},label.trim())));
-  }, [setHistory,extShifts,handoffs,trainingBlocks,employees,timeOffReqs,viewingHistory]);
+    setHistory(prev=>upsertHistoryEntry(prev,makeHistoryEntry({weekStart:ws,schedule:sched,extShifts,handoffs,trainingBlocks,employees,timeOffReqs,weekAvailability},label.trim())));
+  }, [setHistory,extShifts,handoffs,trainingBlocks,employees,timeOffReqs,weekAvailability,viewingHistory]);
 
   const deleteFromHistory = useCallback((idx) => {
     setHistory(prev => prev.filter((_,i) => i !== idx));
@@ -13985,7 +13998,7 @@ function ScheduleGrid({ onOpenTestModal }) {
       });
       const hard=validateAssignmentPolicy(result.ns,employees,cfg,{...policyOptions,extShifts:result.autoExtShifts,handoffs:result.handoffs,creditHourLimits:result.creditHourLimits});
       if(hard.length) {commitScheduleProposal(result);return;}
-      const snapshotFor=p=>publicationSnapshot({weekStart,employees,schedule:p.ns,extShifts:p.autoExtShifts || [],handoffs:p.handoffs || [],timeOffReqs,cfg,history,trainingBlocks:p.trainingBlocks ?? trainingBlocks});
+      const snapshotFor=p=>publicationSnapshot({weekStart,employees,schedule:p.ns,extShifts:p.autoExtShifts || [],handoffs:p.handoffs || [],timeOffReqs,cfg,history,trainingBlocks:p.trainingBlocks ?? trainingBlocks,weekAvailability});
       const reviewed=snapshotFor(pendingProposal),final=snapshotFor(result);
       const records=createOvertimeDecisions(reviewed,approved,actor);
       if(publicationStamp(reviewed)!==publicationStamp(final)) records.push(...createOvertimeDecisions(final,approved,actor));
@@ -14073,7 +14086,7 @@ function ScheduleGrid({ onOpenTestModal }) {
       {showPopout && (
         <SchedulePopout snapshot={viewSnapshot} onClose={()=>setShowPopout(false)}/>
       )}
-      {showMinimize&&<MinimizeViolationsPanel onClose={()=>setShowMinimize(false)}/>}
+      {showMinimize&&<MinimizeViolationsPanel onClose={()=>setShowMinimize(false)} onBeforeChange={pushUndo}/>}
       {showCopyModal&&<CopyWeekModal onSave={handleSaveWeek} onLoad={handleLoadWeek} onDelete={handleDeleteWeek} onClose={()=>setShowCopyModal(false)}/>}
       {callOffOpen&&<CallOffModal
         initialDay={callOffOpen.day}
@@ -16105,14 +16118,17 @@ function RosterBackup() {
           { key:"shift_saved_rosters", val: snapshot.shift_saved_rosters,      setter: setSavedRosters  },
         ];
 
+        let needsReload=false;
         for (const { key, val, setter } of writes) {
           if (val === undefined || val === null) continue;
           if(!await lsSet(key,JSON.stringify(val)))throw new Error('Could not restore '+key+'. Some earlier fields may already have been restored.');
-          await setter(val);
+          // Saved data that could not be read refuses in-memory updates; the
+          // stored copy is now repaired and a reload picks it up.
+          try { await setter(val); } catch(_) { needsReload=true; }
         }
 
         if(snapshot.shift_publication_records!==undefined) await publicationStore.restore(snapshot.shift_publication_records);
-        flash(`✓ Restored ${emps.length} employees and all settings. No reload needed.`);
+        flash(needsReload ? `✓ Restored ${emps.length} employees and all settings. Reload the page to finish.` : `✓ Restored ${emps.length} employees and all settings. No reload needed.`);
       } catch(err) {
         flash("✗ Restore failed: " + err.message, false);
       }
@@ -17488,11 +17504,13 @@ function ShiftSchedulerApp() {
     if (weekAvailLoaded) prevWeekAvailRef.current = {weekStart, stamp};
   }, [weekAvailability, weekStart, weekAvailLoaded]); // eslint-disable-line react-hooks/exhaustive-deps
 
+  // Pruned against today's week, so jumping far ahead never drops current weeks.
   useEffect(() => {
-    if (!weekAvailLoaded || !validISODate(weekStart)) return;
-    const pruned = pruneWeekAvailability(weekAvailabilityStore, weekStart);
+    if (!weekAvailLoaded) return;
+    const today = new Date(); today.setDate(today.getDate() - today.getDay());
+    const pruned = pruneWeekAvailability(weekAvailabilityStore, localISODate(today));
     if (pruned !== weekAvailabilityStore) setWeekAvailabilityStore(pruned);
-  }, [weekAvailLoaded, weekStart]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [weekAvailLoaded]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const prevCfgFatigueRef = useRef(null);
   useEffect(() => {
