@@ -203,7 +203,7 @@ function productionApproval(save) {
  const s=overtimeFixture(),proposal={ns:s.schedule,autoExtShifts:[],handoffs:[],reviewItems:[]},events=[];
  let current=true;
  const scope={...c,pendingProposal:proposal,employees:s.employees,afExclude:[],cfg:s.cfg,empTimeOffDays:new Set(),ptoHoursByEmployee:{},
-  history:[s.previousWeek],weekStart:s.weekStart,empPatterns:{},policyOptions:{},timeOffReqs:s.timeOffReqs,trainingBlocks:[],
+  history:[s.previousWeek],weekStart:s.weekStart,empPatterns:{},policyOptions:{},timeOffReqs:s.timeOffReqs,weekAvailability:null,trainingBlocks:[],
   publicationStore:{busy:false,recordApprovals:save},proposalIsCurrent:()=>current,discardStaleProposal:()=>events.push('stale'),
   resolveOvertimeProposal:()=>proposal,validateAssignmentPolicy:()=>[],validateSchedule:()=>[],
   commitScheduleProposal:()=>events.push(current?'commit':'stale'),showAlert:a=>events.push(a.title)};
