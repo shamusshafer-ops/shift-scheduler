@@ -1618,10 +1618,13 @@ function deployProactiveExtShifts(sourceEmps, cfg, empTimeOffDays, existingExtSh
   // Used to gate new ext shift assignments so FTs don't exceed 48h.
   const FT_MAX_TARGET = 48;
   const NET_EXT_HOURS = EXT_SHIFT_HOURS - SHIFT_HOURS; // 12 - 8 = 4h net per ext
+  // Days one full-timer works in a week: the 40h target, never more than the
+  // consecutive-day cap (which is a fatigue limit, not a weekly quota).
+  const weeklyDays = Math.min(maxShifts, Math.ceil(FT_MIN_HOURS / SHIFT_HOURS));
   const empProjectedHours = {};
   sourceEmps.forEach(e => {
     if (e.employmentType !== "full-time") return;
-    const baseHours = maxShifts * SHIFT_HOURS; // typically 5 × 8 = 40
+    const baseHours = weeklyDays * SHIFT_HOURS; // 5 × 8 = 40
     const extHours = (empExtCount[e.id] || 0) * NET_EXT_HOURS;
     empProjectedHours[e.id] = baseHours + extHours;
   });
@@ -1645,14 +1648,34 @@ function deployProactiveExtShifts(sourceEmps, cfg, empTimeOffDays, existingExtSh
     });
   });
 
+  // Could `e` hold `role` on this day and shift (ignoring who else is busy)?
+  const canHold = (e, day, shiftId, role) => !e.inTraining && canFillPos(e, role, day) &&
+    !(e.unavailableDays || []).includes(day) && !(empTimeOffDays && empTimeOffDays.has(e.id + "__" + day)) &&
+    !(e.blockedShifts || []).includes(shiftId) && canWorkShiftOnDay(e, day, shiftId, empTimeOffDays) &&
+    !availabilityConflicts(e, [shiftInterval(day, shiftId)], empTimeOffDays).length;
+  // Putting `e` on this half must not leave a shift they could otherwise staff
+  // with nobody else able to hold one of their specialist roles there (e.g. the
+  // only second-shift Scale moved onto 18:00-06:00). `skipShiftId` is the
+  // deficit shift the provider is being deployed to cover.
+  const strandsRole = (e, day, pairId, half, taken, skipShiftId = null) => {
+    const work = extendedWorkIntervals({day, pairId, [half ? "empBId" : "empAId"]: e.id}).filter(i => i.employeeId === e.id);
+    return ["Scale", "Medical"].some(role => SHIFTS.some(s => {
+      if (s.id === skipShiftId || !canHold(e, day, s.id, role)) return false;
+      const span = shiftInterval(day, s.id);
+      if (work.some(i => i.start <= span.start && i.end >= span.end)) return false; // still covers it
+      return !sourceEmps.some(o => o.id !== e.id && !taken.has(o.id) && canHold(o, day, s.id, role));
+    }));
+  };
+
   // ── Scan each shift for specialist deficits ─────────────────────────────
   SHIFTS.forEach(targetShift => {
     const dedicated = shiftDedicated[targetShift.id];
 
     for (const role of ["Medical", "Scale"]) {
-      // Count dedicated FT providers for this role on this shift
+      // Count dedicated FT providers for this role on this shift. A supervisor
+      // holds only the supervisor seat on weekdays, so never counts as one.
       const providers = dedicated.filter(e =>
-        (e.qualifications || []).includes(role)
+        (e.qualifications || []).includes(role) && !(e.qualifications || []).includes("Supervisor")
       );
 
       // >1 provider → adequate redundancy, no action needed
@@ -1660,6 +1683,8 @@ function deployProactiveExtShifts(sourceEmps, cfg, empTimeOffDays, existingExtSh
 
       // ≤1 provider → structural deficit
       // Gap days: a single provider covers maxShifts days, leaving the rest uncovered
+      // Uses the consecutive-day cap as before: counting days by the 40h target
+      // deploys more 12h pairs, which measurably made schedules worse.
       const coveredDays = providers.length * maxShifts;
       const gapDays = Math.max(0, 7 - coveredDays);
       if (gapDays === 0) continue;
@@ -1696,17 +1721,14 @@ function deployProactiveExtShifts(sourceEmps, cfg, empTimeOffDays, existingExtSh
           if (pair.isSwing) continue;      // all swings: manual deploy only (Phase 1+2 stability)
           if (pair.id === "split") continue; // split pairs have complex cross-day logic
 
-          // Which side of this pair covers the target shift?
-          const coverIdx = pair.covers.indexOf(targetShift.id);
-          if (coverIdx === -1) continue;
-
           const extKey = day + "__" + pair.id;
           if (usedKeys.has(extKey)) continue;
 
-          // The role-providing half is the one aligned with targetShift in pair.covers
-          //   coverIdx 0 → empA provides roles to targetShift
-          //   coverIdx 1 → empB provides roles to targetShift
-          const providerSlot = coverIdx;
+          // pair.covers lists empA's shifts and pair.coversB empB's; the provider
+          // takes a half that overlaps the target shift.
+          const providerSlots = [0, 1].filter(h => (h ? pair.coversB || [] : pair.covers).includes(targetShift.id));
+          for (const providerSlot of providerSlots) {
+          if (found) break;
           const otherSlot = 1 - providerSlot;
 
           // ── Find provider candidates (must have the needed role) ─────
@@ -1720,6 +1742,7 @@ function deployProactiveExtShifts(sourceEmps, cfg, empTimeOffDays, existingExtSh
             if (!(e.qualifications || []).includes(role)) return false;
             const extCap = (e.employmentType === "full-time" && !e.willing16h) ? MAX_EXT_PER_EMP_STRICT : MAX_EXT_PER_EMP;
             if ((empExtCount[e.id] || 0) >= extCap) return false;
+            if (strandsRole(e, day, pair.id, providerSlot, new Set(), targetShift.id)) return false;
             return true;
           }).sort((a, b) => {
             // Prefer employees from a DIFFERENT shift (they extend into target)
@@ -1751,6 +1774,7 @@ function deployProactiveExtShifts(sourceEmps, cfg, empTimeOffDays, existingExtSh
             if (availabilityConflicts(e, extendedWorkIntervals({day,pairId:pair.id,[otherSlot ? "empBId" : "empAId"]:e.id}), empTimeOffDays).length) return false;
             const extCap = (e.employmentType === "full-time" && !e.willing16h) ? MAX_EXT_PER_EMP_STRICT : MAX_EXT_PER_EMP;
             if ((empExtCount[e.id] || 0) >= extCap) return false;
+            if (strandsRole(e, day, pair.id, otherSlot, new Set([chosenProvider.id]))) return false;
             return true;
           }).sort((a, b) => {
             // Prefer employees who want OT
@@ -1811,6 +1835,7 @@ function deployProactiveExtShifts(sourceEmps, cfg, empTimeOffDays, existingExtSh
           console.log("[Step 0] Proactive " + pair.label + " on " + day + ": "
             + role + " coverage for " + targetShift.id + " shift"
             + " (empA=" + (empA ? empA.name : "\u2014") + ", empB=" + (empB ? empB.name : "\u2014") + ")");
+          }
         }
       }
 
@@ -2594,7 +2619,13 @@ function repairScheduleCompletion(input, context) {
     // so a slot whose only problem is overstaffing can never be fixed here and
     // must not crowd out the weekly-hours targets below.
     const hasGap=c=>c.bodyGapHours>1e-8 || c.roleGapHours>1e-8 || (c.missing || []).length>0 || !c.isFull;
-    const targets=oldCoverage.filter(c=>!c.ok && hasGap(c) && (!context.targetSlots || context.targetSlots.includes(cellKey(c.day,c.shiftId)))).sort((a,b)=>(b.bodyGapHours+b.roleGapHours)-(a.bodyGapHours+a.roleGapHours)).map(c=>({day:c.day,shiftId:c.shiftId}));
+    // A slot short only of a role nobody can legally hold there (e.g. no Scale
+    // can work weekday first shift) is unfixable here; trying it first used to
+    // spend the whole budget before any weekly-hours target was reached.
+    const couldHold=(c,role)=>source.some(e=>positions(e,c).includes(role) && canWorkShiftOnDay(e,c.day,c.shiftId,empTimeOffDays) &&
+      !(e.blockedShifts || []).includes(c.shiftId) && !availabilityConflicts(e,[shiftInterval(c.day,c.shiftId)],empTimeOffDays).length);
+    const fixable=c=>c.bodyGapHours>1e-8 || !c.isFull || (c.missing || []).some(role=>couldHold(c,role));
+    const targets=oldCoverage.filter(c=>!c.ok && hasGap(c) && fixable(c) && (!context.targetSlots || context.targetSlots.includes(cellKey(c.day,c.shiftId)))).sort((a,b)=>(b.bodyGapHours+b.roleGapHours)-(a.bodyGapHours+a.roleGapHours)).map(c=>({day:c.day,shiftId:c.shiftId}));
     if (!context.targetSlots) for(const e of source.filter(e=>oldShortfall[e.id]>0)) for(const slot of ALL_SLOTS) targets.push({...slot,employeeId:e.id});
     let best=null,bestQuality=oldQuality;
     // Iterative deepening: try every target with a direct insert/swap before any
@@ -2609,11 +2640,13 @@ function repairScheduleCompletion(input, context) {
         const candidate={...result,ns},quality=scheduleQuality(candidate,accountingRoster,cfg,options,baseline);
         if (compareScheduleQuality(quality,bestQuality)>=0) continue;
         if (scheduleChangeIssues(before,ns,accountingRoster,cfg,options).length) continue;
-        if (accountingRoster.some(e=>(weeklyEmployeeHours(e,ns,result.autoExtShifts,result.handoffs,ptoHoursByEmployee).shortfallHours || 0)>oldShortfall[e.id]+1e-8)) continue;
-        if (oldCoverage.some(old=>{
-          const now=analyzeShiftCoverage(old.day,old.shiftId,ns,accountingRoster,result.autoExtShifts,result.handoffs);
-          return now.bodyGapHours>old.bodyGapHours+1e-8 || now.roleGapHours>old.roleGapHours+1e-8;
-        })) continue;
+        const nowCoverage=oldCoverage.map(old=>analyzeShiftCoverage(old.day,old.shiftId,ns,accountingRoster,result.autoExtShifts,result.handoffs));
+        if (nowCoverage.some((now,i)=>now.bodyGapHours>oldCoverage[i].bodyGapHours+1e-8 || now.roleGapHours>oldCoverage[i].roleGapHours+1e-8)) continue;
+        // Coverage outranks weekly hours: a move that strictly closes a gap may
+        // leave someone shorter; otherwise nobody's shortfall may grow.
+        const gapTotal=cov=>cov.reduce((n,c)=>n+c.bodyGapHours+c.roleGapHours,0);
+        const closesGap=gapTotal(nowCoverage)<gapTotal(oldCoverage)-1e-8;
+        if (!closesGap && accountingRoster.some(e=>(weeklyEmployeeHours(e,ns,result.autoExtShifts,result.handoffs,ptoHoursByEmployee).shortfallHours || 0)>oldShortfall[e.id]+1e-8)) continue;
         best=candidate;bestQuality=quality;
         // Prefer the first small successful transaction; rerun on remaining gaps.
         break;
@@ -3454,6 +3487,10 @@ function repairScheduleGaps(result, context) {
       }
       const empShiftCount = {};
       for (const [id, s] of Object.entries(empDayShifts)) empShiftCount[id] = s.size;
+      // Someone whose own extended duty overlaps a slot adds no body there: a
+      // regular row would only be an uncounted mirror that hides the gap.
+      const ownExtendedOverlap = (empId, day, shiftId) => (autoExtShifts || []).flatMap(extendedWorkIntervals)
+        .some(i => i.employeeId === empId && intervalsOverlap(i, shiftInterval(day, shiftId)));
 
       // ── Cost scoring helper ──
       // Lower cost = better candidate. Factors: base type cost, shift preference
@@ -3521,6 +3558,7 @@ function repairScheduleGaps(result, context) {
         for (const emp of source) {
           if (assignedIds.has(emp.id)) continue;
           if (emp.inTraining) continue;
+          if (ownExtendedOverlap(emp.id, gap.day, gap.shiftId)) continue;
           if ((emp.unavailableDays || []).includes(gap.day)) continue;
           if (empTimeOffDays && empTimeOffDays.has(emp.id + "__" + gap.day)) continue;
           if ((emp.blockedShifts || []).includes(gap.shiftId)) continue;
@@ -3666,10 +3704,12 @@ function repairScheduleGaps(result, context) {
         const currentAsgn = ns[rgKey] || [];
         const assignedIds = new Set(currentAsgn.map(a => a.employeeId));
 
-        // Strategy 1: insert — find unassigned employee with the needed role
-        const insertCands = source.filter(emp => {
+        // Strategy 1: insert — find unassigned employee with the needed role.
+        // Candidates are rule-checked against `sched` (the slot as it would be).
+        const roleCandidates = sched => source.filter(emp => {
           if (assignedIds.has(emp.id)) return false;
           if (emp.inTraining) return false;
+          if (ownExtendedOverlap(emp.id, rg.day, rg.shiftId)) return false;
           if (!(emp.qualifications || []).includes(rg.role)) return false;
           if ((emp.unavailableDays || []).includes(rg.day)) return false;
           if (empTimeOffDays && empTimeOffDays.has(emp.id + "__" + rg.day)) return false;
@@ -3680,9 +3720,10 @@ function repairScheduleGaps(result, context) {
           );
           if (onThisDay && !emp.willing16h) return false;
           if (emp.maxShiftsPerWeek != null && (empShiftCount[emp.id] || 0) >= emp.maxShiftsPerWeek) return false;
-          return !assignmentIssues(emp, rg.day, rg.shiftId, rg.role, ns, cfg,
+          return !assignmentIssues(emp, rg.day, rg.shiftId, rg.role, sched, cfg,
             { extShifts: autoExtShifts, handoffs, empTimeOffDays, ptoHoursByEmployee, creditHourLimits, empPatterns: enrichedPatterns }).length;
         }).sort((a, b) => candidateCost(a, rg.day, rg.shiftId, "insert", SHIFT_HOURS, rg.role) - candidateCost(b, rg.day, rg.shiftId, "insert", SHIFT_HOURS, rg.role));
+        const insertCands = roleCandidates(ns);
 
         if (insertCands.length) {
           const emp = insertCands[0];
@@ -3705,8 +3746,11 @@ function repairScheduleGaps(result, context) {
           const remaining = analyzeShiftCoverage(rg.day, rg.shiftId, without, accountingRoster, autoExtShifts, handoffs);
           return !remaining.missing.some(role => role !== rg.role && !currentCoverage.missing.includes(role));
         });
-        if (guardIdx >= 0 && insertCands.length) {
-          const emp = insertCands[0];
+        // In a full slot every insert candidate fails as overstaffed, so swap
+        // candidates are checked with the evicted guard already out.
+        const swapCands = guardIdx >= 0 ? roleCandidates({ ...ns, [rgKey]: currentAsgn.filter((_, i) => i !== guardIdx) }) : [];
+        if (swapCands.length) {
+          const emp = swapCands[0];
           const evicted = currentAsgn[guardIdx];
           const evictedEmp = source.find(e => e.id === evicted.employeeId);
           ns[rgKey] = currentAsgn.filter((_, i) => i !== guardIdx);
@@ -5281,6 +5325,7 @@ function buildAutoFill(sourceEmps, cfg, empTimeOffDays, empPatterns, extShiftsAr
       // the entry (the same-day loop below skips the destination shift, so this
       // was invisible to it and surfaced as [Dedup] removals at the very end).
       if ((sched[cellKey(day, shiftId)] || []).some(a => a.employeeId === empId)) return false;
+      if ((extBlockedBySlot[cellKey(day, shiftId)] || new Set()).has(empId)) return false; // own extended duty covers it
       if (!domains[emp.id]?.[cellKey(day, shiftId)]?.size) return false;
       const policyPos = (emp.qualifications || []).includes("Supervisor") && isWeekday(day)
         ? "Supervisor" : (emp.qualifications || []).find(p => POSITIONS.includes(p));
@@ -5510,16 +5555,19 @@ function buildAutoFill(sourceEmps, cfg, empTimeOffDays, empPatterns, extShiftsAr
       }
 
       const placedEmps = new Set();
+      const usedDisplaced = new Set(); // each removed entry goes back at most once
       for (const sl of slotsByMRV) {
         const key = cellKey(sl.day, sl.shiftId);
-        const cap = getSlotCount(sl.day, sl.shiftId);
-        const currentCount = (work[key] || []).length;
+        // Regular staff only, against the cap reduced by overlapping extended duties.
+        const cap = slotCap(sl.day, sl.shiftId);
+        const currentCount = (work[key] || []).filter(a => a.position !== "Supervisor").length;
         const slotsLeft = cap - currentCount;
         if (slotsLeft <= 0) continue;
 
         // Find best employees to fill this slot
         const slotCandidates = [];
         for (const d of displaced) {
+          if (usedDisplaced.has(d)) continue;
           if (placedEmps.has(d.empId + "__" + sl.day)) continue; // already placed on this day
           const emp = empMap.get(d.empId);
           if (!emp) continue;
@@ -5552,13 +5600,15 @@ function buildAutoFill(sourceEmps, cfg, empTimeOffDays, empPatterns, extShiftsAr
           // `displaced` (worked 2+ destroyed slots). placedEmps was only
           // consulted at candidate-build time, so the second entry slipped
           // through and duplicated them in this slot ([Dedup] at end-stage).
-          if (placedEmps.has(c.d.empId + "__" + sl.day)) continue;
+          if (usedDisplaced.has(c.d) || placedEmps.has(c.d.empId + "__" + sl.day)) continue;
           if ((work[key] || []).some(a => a.employeeId === c.d.empId)) continue;
-          // Re-check position with updated slot state
+          // Re-check eligibility and position against the slot as it is now.
+          if (!btCanWorkSlot(c.d.empId, work, sl.day, sl.shiftId)) continue;
           const pos = btPickPosition(c.emp, work[key] || [], sl.day, sl.shiftId);
           if (!pos) continue;
           work[key] = [...(work[key] || []), { employeeId: c.d.empId, position: pos }];
           placedEmps.add(c.d.empId + "__" + sl.day);
+          usedDisplaced.add(c.d);
           placed++;
         }
       }
@@ -5568,7 +5618,7 @@ function buildAutoFill(sourceEmps, cfg, empTimeOffDays, empPatterns, extShiftsAr
         const key = cellKey(sl.day, sl.shiftId);
         const origAsgn = sched[key] || [];
         const newAsgn = work[key] || [];
-        if (newAsgn.length < origAsgn.length) return null; // lost bodies, reject
+        if (newAsgn.length !== origAsgn.length) return null; // headcount must not change either way
         if (!rolePreserved(origAsgn, newAsgn)) return null; // lost role coverage
       }
 
@@ -6110,6 +6160,7 @@ function buildAutoFill(sourceEmps, cfg, empTimeOffDays, empPatterns, extShiftsAr
       ]) {
         const cap = slotCap(day, shift.id);
         const currentAsgn = ns[key] || [];
+        const regularCount = currentAsgn.filter(a => a.position !== "Supervisor").length;
 
         // Find a Guard-only body in this slot we can swap out
         const swapOutIdx = currentAsgn.findIndex(a => {
@@ -6120,9 +6171,12 @@ function buildAutoFill(sourceEmps, cfg, empTimeOffDays, empPatterns, extShiftsAr
 
         // Find a replacement who covers the missing role
         const assigned = new Set(currentAsgn.map(a => a.employeeId));
+        const span5c = shiftInterval(day, shift.id);
         const replacement = sourceEmps.find(e => {
           if (assigned.has(e.id)) return false;
           if (!(e.qualifications||[]).includes(missingRole)) return false;
+          // Already on an extended duty over this slot: a regular row would be an uncounted mirror.
+          if (extIntervalsForFill.some(i => i.source === "extended" && i.employeeId === e.id && intervalsOverlap(i, span5c))) return false;
           if ((e.unavailableDays||[]).includes(day)) return false;
           if (empTimeOffDays && empTimeOffDays.has(e.id + "__" + day)) return false;
           if ((e.blockedShifts||[]).includes(shift.id)) return false;
@@ -6139,7 +6193,10 @@ function buildAutoFill(sourceEmps, cfg, empTimeOffDays, empPatterns, extShiftsAr
 
         if (!replacement) continue; // no one available — gap remains, surfaces as violation
 
-        if (swapOutIdx !== -1) {
+        if (regularCount < cap) {
+          // Slot short — add the replacement rather than displacing anyone.
+          ns[key] = [...currentAsgn, { employeeId: replacement.id, position: missingRole }];
+        } else if (swapOutIdx !== -1) {
           // Swap: remove Guard-only body, insert replacement
           const removed = currentAsgn[swapOutIdx];
           const removedEmp = sourceEmps.find(x => x.id === removed.employeeId);
@@ -6153,9 +6210,6 @@ function buildAutoFill(sourceEmps, cfg, empTimeOffDays, empPatterns, extShiftsAr
             shiftsWorked[removedEmp.id] = Math.max(0, (shiftsWorked[removedEmp.id]||0) - 1);
             clearDayIfFree(removedEmp.id, day);
           }
-        } else if (currentAsgn.length < cap) {
-          // Slot not full — just add the replacement
-          ns[key] = [...currentAsgn, { employeeId: replacement.id, position: missingRole }];
         } else {
           continue; // slot full, no Guard-only to swap — gap remains
         }
@@ -6474,12 +6528,16 @@ function violationMinimizerPass(ns, sourceEmps, cfg, empTimeOffDays, extShiftsAr
     if (shiftMarkedOff(emp, day, shiftId, empTimeOffDays)) return 92;
     if ((emp.blockedShifts||[]).includes(shiftId)) return 90;
     if (!canWorkShiftOnDay(emp, day, shiftId, empTimeOffDays)) return 80;
+    // Off the weekly plan only matters when they actually prefer another shift
+    // that day; a plan shift picked for someone with no preference is arbitrary.
     if (isFT(emp) && !isSup(emp)) {
-      const p = plan[emp.id];
-      if (p && !onPlanShift(p, emp, day, shiftId, empTimeOffDays)) return 70;
+      const p = plan[emp.id], prefs = dayPreferredShifts(emp, day, empTimeOffDays);
+      if (p && !onPlanShift(p, emp, day, shiftId, empTimeOffDays) && prefs.length && !prefs.includes(shiftId)) return 70;
     }
     return 0;
   };
+  // Credited hours (worked + PTO) against the 40h full-time line.
+  const credited = e => (hourTracker[e.id] || 0) + (ptoHoursByEmployee[e.id] || 0);
 
   let fixCount = 0;
   for (let sweep = 0; sweep < MAX_SWEEPS; sweep++) {
@@ -6491,7 +6549,12 @@ function violationMinimizerPass(ns, sourceEmps, cfg, empTimeOffDays, extShiftsAr
         for (let ai = 0; ai < asgn.length; ai++) {
           const a   = asgn[ai];
           const emp = empMap.get(a.employeeId);
-          if (!emp || severity(emp, day, shift.id) === 0) continue;
+          const sev = emp ? severity(emp, day, shift.id) : 0;
+          if (!emp || sev === 0) continue;
+          // A preference-only swap (below 80 = no rule broken) may not leave the
+          // outgoing full-timer short of 40h or push the incoming one past it.
+          const softOnly = sev < 80;
+          if (softOnly && isFT(emp) && credited(emp) - SHIFT_HOURS < FT_MIN_HOURS) continue;
           // Test snapshot with this employee removed from the slot
           const testSched = { ...ns, [key]: ns[key].filter(x => x.employeeId !== emp.id) };
           const asgnSet = new Set(asgn.map(x => x.employeeId));
@@ -6504,6 +6567,7 @@ function violationMinimizerPass(ns, sourceEmps, cfg, empTimeOffDays, extShiftsAr
             if (cand.maxShiftsPerWeek != null && (shiftsWorked[cand.id] || 0) >= cand.maxShiftsPerWeek) return false;
             if (isFT(cand) && (hourTracker[cand.id]||0) >= OT_RELIEF_THRESHOLD) return false;
             if (cand.employmentType === "on-call") return false; // never swap IN on-call during violation fix
+            if (softOnly && isFT(cand) && credited(cand) + SHIFT_HOURS > FT_MIN_HOURS) return false;
             return true;
           });
           if (!candidates.length) continue;
@@ -13634,7 +13698,7 @@ function ScheduleGrid({ onOpenTestModal }) {
     const enrichedPatterns = boundaryPatterns(history, weekStart, empPatterns);
 
     // ── Single-attempt worker — pure function, no side effects ───────────────
-    const attempt = (jitter) => {
+    const attempt = (jitter, withProactive = true) => {
       if(hasDutyLocks(schedule,extShifts || [],handoffs || [])) {
         const seed=attempt.lockedSeed || {schedule,extShifts:extShifts || [],handoffs:handoffs || []};
         const result=buildAutoFill(source,cfg,empTimeOffDays,enrichedPatterns,seed.extShifts,jitter,
@@ -13648,7 +13712,7 @@ function ScheduleGrid({ onOpenTestModal }) {
       // specialist deficits and pre-create 12hr ext shifts so the CSP plans
       // around pre-committed coverage rather than discovering gaps afterward.
       const proactiveExts = [];
-      for (const ext of deployProactiveExtShifts(source, cfg, empTimeOffDays, manualExtShifts)) {
+      for (const ext of withProactive ? deployProactiveExtShifts(source, cfg, empTimeOffDays, manualExtShifts) : []) {
         const opts = { extShifts: [...manualExtShifts, ...proactiveExts], empTimeOffDays, ptoHoursByEmployee, empPatterns: enrichedPatterns };
         if (!scheduleChangeIssues({}, {}, source, cfg, opts, { ...opts, extShifts: [...opts.extShifts, ext] }).length) proactiveExts.push(ext);
       }
@@ -13880,7 +13944,9 @@ function ScheduleGrid({ onOpenTestModal }) {
       }
 
       attemptNum++;
-      let result = attempt(attemptNum > 1);
+      // Step 0's up-front 12h pairs help some rosters and hurt others, so odd
+      // attempts use them and even attempts plan without; the best week wins.
+      let result = attempt(attemptNum > 1, attemptNum % 2 === 1);
       if (result.errors > 0) result = repairGaps(result);
 
       result=improveSchedulePreferences(result,{source,accountingRoster,cfg,empTimeOffDays,ptoHoursByEmployee,enrichedPatterns,fairnessHistory});

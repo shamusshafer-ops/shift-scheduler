@@ -176,7 +176,7 @@ test('production autofill uses the protected draft instead of rebuilding over a 
  const s=fixture();s.schedule.Sunday__first[0].locked=true;s.schedule.Monday__first.pop();
  const scope={...c,source:s.employees,cfg,empTimeOffDays:new Set(),enrichedPatterns:{},extShifts:[],handoffs:[],schedule:s.schedule,
   accountingRoster:s.employees,ptoHoursByEmployee:{},fairnessHistory:{},preservedSchedule:{},preservedHandoffs:[],excludeSet:new Set(),swingDesig:{},validateSchedule:validate};
- const start=html.indexOf('    const attempt = (jitter) => {'),end=html.indexOf('    // ── Commit best result',start);
+ const start=html.indexOf('    const attempt = (jitter, withProactive = true) => {'),end=html.indexOf('    // ── Commit best result',start);
  const run=new Function(...Object.keys(scope),html.slice(start,end)+'return attempt;')(...Object.values(scope));
  const result=run(false);assert.equal(result.errors,0);assert.equal(result.searchInfo.termination,'locked_draft_repair');
  assert.equal(lockedDutyIssues(s.schedule,result.ns).length,0);assert(result.ns.Monday__first.some(a=>a.employeeId==='sup'));
