@@ -546,6 +546,10 @@ const HANDOFF_EXT_EQUIV = {
   "first:late-stay":     ["day", 0],
   "third:early-arrival": ["night", 0],
 };
+// A split pair's halves are the 2P–2A and 2A–2P shapes, so split eligibility
+// also allows those swings (and the matching late stay / early arrival).
+const swingShapeAllowed = (emp, swingId) => (emp.swingEligible || []).includes(swingId) ||
+  (!!emp.splitShiftEligible && (swingId === "swing-2p-2a" || swingId === "swing-2a-2p"));
 const handoffAllowedLikeDuty = (emp, h) => {
   const key = h.sourceShiftId + ":" + h.type;
   if (HANDOFF_SWING_IDS[key]) return true; // eligibility checked separately
@@ -768,6 +772,34 @@ function extendedWorkIntervals(ext) {
 
 const intervalsOverlap = (a, b) => a.start < b.end && b.start < a.end;
 
+// The duty a handoff joins. It may sit on the neighbouring day: staying late
+// from Sunday's third shift into Monday first (10P–10A), or arriving at 02:00
+// Tuesday for Monday's third shift from Tuesday first (2A–2P).
+function handoffSourceSpan(h) {
+  const target = shiftInterval(h.day, h.targetShiftId);
+  let source = shiftInterval(h.day, h.sourceShiftId);
+  if (!target || !source) return null;
+  if (h.type === "late-stay" && source.end > target.start) source = { start: source.start - 24, end: source.end - 24 };
+  if (h.type === "early-arrival" && source.start < target.end) source = { start: source.start + 24, end: source.end + 24 };
+  return source;
+}
+// Who can cover part of a shift for 4h: the shift before staying late, the shift
+// after arriving early. Across midnight that is the previous night's third shift
+// into first (10P–10A) and the next morning's first shift arriving at 02:00 for
+// third (2A–2P). Eligibility is checked by policy.
+function handoffSourcesFor(day, shiftId) {
+  const di = DAYS.indexOf(day);
+  const before = { first: [di - 1, "third"], second: [di, "first"], third: [di, "second"] }[shiftId];
+  const after = { first: [di, "second"], second: [di, "third"], third: [di + 1, "first"] }[shiftId];
+  if (di < 0 || !before) return [];
+  return [
+    ...(before[0] >= 0 ? [{ sourceDay: DAYS[before[0]], sourceShiftId: before[1], type: "late-stay" }] : []),
+    ...(after[0] < DAYS.length ? [{ sourceDay: DAYS[after[0]], sourceShiftId: after[1], type: "early-arrival" }] : []),
+  ];
+}
+// Day the handoff's source duty starts on (null when that is outside this week).
+const handoffSourceDay = h => { const span = handoffSourceSpan(h); return span ? DAYS[Math.floor(span.start / 24)] ?? null : null; };
+
 function collectCoverageIntervals(schedule, extShiftsArg = [], handoffsArg = []) {
   const extIntervals = (extShiftsArg || []).flatMap(extendedWorkIntervals);
   const intervals = [...extIntervals];
@@ -788,10 +820,8 @@ function collectCoverageIntervals(schedule, extShiftsArg = [], handoffsArg = [])
     if (!target || !Number.isFinite(hours) || hours <= 0 || hours > SHIFT_HOURS) continue;
     const late = h.type === "late-stay", early = h.type === "early-arrival";
     if (!late && !early) continue;
-    let source = shiftInterval(h.day, h.sourceShiftId);
+    const source = handoffSourceSpan(h);
     if (!source) continue;
-    if (late && source.end > target.start) source = { start: source.start - 24, end: source.end - 24 };
-    if (early && source.start < target.end) source = { start: source.start + 24, end: source.end + 24 };
     if ((late && source.end !== target.start) || (early && source.start !== target.end)) continue;
     // An orphan handoff is not staffed: its employee must actually work the
     // source shift at the boundary from which they stay late / arrive early.
@@ -1286,7 +1316,7 @@ function employeePolicyIssues(emp, schedule, cfg = {}, options = {}) {
     if (!intervals.some(i => i.handoff === h)) add("invalid_handoff", `handoff on ${h.day} has no valid adjoining source or duration`);
     if (!(emp.qualifications || []).includes(h.position)) add("qualification", `not qualified for handoff position ${h.position}`);
     const swingId = HANDOFF_SWING_IDS[h.sourceShiftId + ":" + h.type];
-    if (swingId && !(emp.swingEligible || []).includes(swingId))
+    if (swingId && !swingShapeAllowed(emp, swingId))
       add("swing_eligibility", `${h.type === "late-stay" ? "late stay" : "early arrival"} on ${h.day} works the ${EXT_PAIRS_BY_ID.get(swingId).label.split(" / ")[0]} swing, which is not selected`);
     // The weekday test uses the calendar day the handoff's hours fall on: arriving
     // early for Friday's third shift is 02:00–06:00 Saturday (a weekend 2A–2P).
@@ -2347,7 +2377,7 @@ function trimOvertimeProposal(proposal, employees, limits, credits = {}) {
     const lockedHandoffs=(result.handoffs || []).filter(h=>h.employeeId===emp.id && h.locked);
     const protectedDuty=d=>d.ext?.locked || Object.entries(result.ns).some(([key,a])=>
       a.some(v=>v.employeeId===emp.id&&v.locked) && shiftInterval(...key.split('__'))?.start===d.start) ||
-      lockedHandoffs.some(h=>intervalsOverlap(d,shiftInterval(h.day,h.sourceShiftId)));
+      lockedHandoffs.some(h=>{const span=handoffSourceSpan(h);return span && intervalsOverlap(d,span);});
     const duties = intervals.filter(i => i.source !== "handoff").sort((a, b) => Number(!!protectedDuty(b))-Number(!!protectedDuty(a)) || a.start - b.start);
     let used = intervals.filter(i=>i.source==='handoff' && i.handoff?.locked).reduce((sum,i)=>sum+i.end-i.start,0);
     // Locked duties are kept first, in order, while they fit. Of the rest, keep
@@ -2771,6 +2801,124 @@ function scheduleQuality(result, employees, cfg = {}, options = {}, baseline) {
   }
   const hard=options.skipPolicy ? validateStaffing(ns,exts,handoffs,intervals).length : validateAssignmentPolicy(ns,employees,cfg,{...options,extShifts:exts,handoffs}).length;
   return [hard,body+roles,body,shortfall,supervisorExtra,noDayOff,overtime,doubleShiftCount(intervals),spread,preferences,changes];
+}
+
+// Relay repair: swings, splits and handoffs replace existing duties rather than
+// add to them (a full shift has no room for an extra 4h body), so a gap that the
+// single-duty repairs could not close is re-solved together with the shifts
+// next to it: everything else is held fixed while the complete search rebuilds
+// that neighbourhood from its full duty menu (8h duties, eligible 12h halves,
+// swings and splits, and adjoining 4h handoffs, across midnight too). The
+// result is kept only when the whole week ranks better.
+const RELAY_NEIGHBOURS = { first: [[-1, "second"], [-1, "third"], [0, "first"], [0, "second"]],
+  second: [[0, "first"], [0, "second"], [0, "third"]], third: [[0, "second"], [0, "third"], [1, "first"]] };
+function relayNeighbourhood(day, shiftId) {
+  const di = DAYS.indexOf(day);
+  return RELAY_NEIGHBOURS[shiftId].map(([d, sid]) => DAYS[di + d] ? cellKey(DAYS[di + d], sid) : null).filter(Boolean);
+}
+// Could anyone holding `role` be on duty during [start, end) in some legal way
+// (8h shift, eligible 12h half, swing, split or adjoining handoff), ignoring who
+// else is busy? Only person-level rules count here (qualification, blocked and
+// required shifts, availability, eligibility), so "no" is certain.
+const RELAY_STATIC_RULES = new Set(["qualification", "blocked_shift", "required_shift", "availability", "availability_data",
+  "swing_eligibility", "extended_eligibility", "supervisor_slot", "training", "invalid_handoff", "invalid_extended"]);
+function roleReachable(role, day, shiftId, start, end, roster, cfg = {}, empTimeOffDays) {
+  const span = shiftInterval(day, shiftId), di = DAYS.indexOf(day);
+  const covers = intervals => intervals.some(i => i.start <= start && i.end >= end);
+  const legal = (emp, ns, extShifts = [], handoffs = []) =>
+    !employeePolicyIssues(emp, ns, cfg, { extShifts, handoffs, empTimeOffDays }).some(i => RELAY_STATIC_RULES.has(i.type));
+  for (const emp of roster) {
+    if (emp.inTraining || !(emp.qualifications || []).includes(role)) continue;
+    if (canFillPos(emp, role, day) && covers([span]) && legal(emp, { [cellKey(day, shiftId)]: [{ employeeId: emp.id, position: role }] })) return true;
+    for (const d of [DAYS[di - 1], day].filter(Boolean)) for (const pair of EXT_PAIRS) for (const half of [0, 1]) {
+      if (!canWorkExtHalf(emp, pair.id, half)) continue;
+      const ext = { day: d, pairId: pair.id, empAId: half ? null : emp.id, empBId: half ? emp.id : null };
+      if (covers(extendedWorkIntervals(ext)) && legal(emp, {}, [ext])) return true;
+    }
+    for (const { sourceDay, sourceShiftId, type } of handoffSourcesFor(day, shiftId)) {
+      const h = { day, employeeId: emp.id, type, sourceShiftId, targetShiftId: shiftId, position: role, hours: HANDOFF_HOURS };
+      const hs = type === "late-stay" ? { start: span.start, end: span.start + HANDOFF_HOURS } : { start: span.end - HANDOFF_HOURS, end: span.end };
+      const sourcePosition = POSITIONS.find(p => (emp.qualifications || []).includes(p) && canFillPos(emp, p, sourceDay));
+      if (!sourcePosition || !covers([hs])) continue;
+      if (legal(emp, { [cellKey(sourceDay, sourceShiftId)]: [{ employeeId: emp.id, position: sourcePosition }] }, [], [h])) return true;
+    }
+  }
+  return false;
+}
+// A gap is worth a neighbourhood search only if every missing hour is reachable.
+function relayGapPossible(day, shiftId, coverage, roster, cfg, empTimeOffDays) {
+  for (const seg of coverage.segments || []) for (const role of seg.missing || []) {
+    for (let t = seg.start; t < seg.end; t++) if (!roleReachable(role, day, shiftId, t, Math.min(seg.end, t + 1), roster, cfg, empTimeOffDays)) return false;
+  }
+  return true;
+}
+function repairWithRelays(input, context) {
+  const {accountingRoster, cfg = {}, empTimeOffDays, ptoHoursByEmployee = {}, enrichedPatterns = {}, fairnessHistory = {}, searchInput} = context;
+  // maxGaps lets the page run one neighbourhood per tick; `tried` carries over.
+  const started = Date.now(), maxMs = Number.isFinite(context.relayRepairMs) ? Math.max(0, Math.min(10000, context.relayRepairMs)) : 3000;
+  const perGapMs = Number.isFinite(context.relayGapMs) ? context.relayGapMs : 1500, settleMs = 150;
+  const maxGaps = Number.isFinite(context.relayMaxGaps) ? context.relayMaxGaps : Infinity;
+  const info = {tried: 0, applied: 0, limited: false, done: false};
+  if (!searchInput?.weekStart || !Array.isArray(accountingRoster) || !accountingRoster.length) return {...input, relayInfo: info};
+  const qualityOf = w => scheduleQuality(w, accountingRoster, cfg, {empTimeOffDays, ptoHoursByEmployee, empPatterns: enrichedPatterns, fairnessHistory});
+  let best = {...input, autoExtShifts: input.autoExtShifts || [], handoffs: input.handoffs || []}, bestQuality = qualityOf(best);
+  const gapsOf = w => ALL_SLOTS.filter(slot => !analyzeShiftCoverage(slot.day, slot.shiftId, w.ns, accountingRoster, w.autoExtShifts, w.handoffs).ok);
+  const tried = context.relayTried || new Set();
+  for (let gap; ;) {
+    gap = gapsOf(best).find(g => !tried.has(cellKey(g.day, g.shiftId)));
+    if (!gap) { info.done = true; break; }
+    if (Date.now() - started >= maxMs || info.tried >= maxGaps) { info.limited = Date.now() - started >= maxMs; break; }
+    tried.add(cellKey(gap.day, gap.shiftId));
+    const gapCoverage = analyzeShiftCoverage(gap.day, gap.shiftId, best.ns, accountingRoster, best.autoExtShifts, best.handoffs);
+    if (!relayGapPossible(gap.day, gap.shiftId, gapCoverage, accountingRoster, cfg, empTimeOffDays)) { info.skipped = (info.skipped || 0) + 1; continue; }
+    const targets = relayNeighbourhood(gap.day, gap.shiftId);
+    // Hold everything outside the neighbourhood; keep the manager's own locks.
+    const lockSig = (key, v) => key + "__" + v.employeeId + "__" + v.position;
+    const userLocked = new Set(Object.entries(best.ns).flatMap(([key, a]) => a.filter(v => v.locked).map(v => lockSig(key, v))));
+    const extSig = e => canonicalJSON({day: e.day, pairId: e.pairId, a: e.empAId || null, b: e.empBId || null});
+    const userLockedExt = new Set(best.autoExtShifts.filter(e => e.locked).map(extSig));
+    const userLockedHandoff = new Set(best.handoffs.filter(h => h.locked).map(h => canonicalJSON({...h, locked: undefined})));
+    const touches = span => targets.some(key => intervalsOverlap(span, shiftInterval(...key.split("__"))));
+    const schedule = Object.fromEntries(Object.entries(best.ns).map(([key, a]) => [key, a.map(v => targets.includes(key) && !v.locked ? {...v} : {...v, locked: true})]));
+    const extShifts = best.autoExtShifts.filter(e => !e.carryIn).map(e => e.locked || !extendedWorkIntervals(e).some(touches) ? {...e, locked: true} : {...e});
+    const handoffs = best.handoffs.map(h => h.locked || !targets.includes(cellKey(h.day, h.targetShiftId)) ? {...h, locked: true} : {...h});
+    let solver;
+    try {
+      solver = createCompleteScheduleSearch({...searchInput, employees: accountingRoster, cfg, schedule, extShifts, handoffs, fairnessHistory,
+        targetSlots: targets, optimizeOvertime: true});
+    } catch (e) { continue; }
+    info.tried++;
+    // Stop once a fix has stopped improving: the rebalance stage evens hours later.
+    const gapStarted = Date.now();
+    let result, foundAt = null;
+    do {
+      result = solver.advance({maxSteps: 400, timeSliceMs: 50});
+      if (result.solution && foundAt == null) foundAt = Date.now();
+    } while (["searching", "optimizing"].includes(result.status) && Date.now() - gapStarted < perGapMs &&
+      Date.now() - started < maxMs && !(foundAt != null && Date.now() - foundAt >= settleMs));
+    result = solver.cancel?.() || result;
+    const w = result.solution;
+    if (!w) continue;
+    // Drop the temporary holds again; only the manager's locks stay.
+    const candidate = {...best,
+      ns: Object.fromEntries(Object.entries(w.ns).map(([key, a]) => [key, a.map(v => { const {locked, ...rest} = v; return userLocked.has(lockSig(key, v)) ? v : rest; })])),
+      autoExtShifts: [...w.autoExtShifts.map(e => { const {locked, ...rest} = e; return userLockedExt.has(extSig(e)) ? e : {...rest, approvedAt: rest.approvedAt || "auto-fill", auto: true}; }),
+        ...best.autoExtShifts.filter(e => e.carryIn)],
+      handoffs: w.handoffs.map(h => { const {locked, ...rest} = h; return userLockedHandoff.has(canonicalJSON(rest)) ? h : rest; })};
+    const q = qualityOf(candidate);
+    if (compareScheduleQuality(q, bestQuality) < 0) {
+      best = candidate; bestQuality = q; info.applied++;
+      // The week changed around the earlier failures: they may work now. Every
+      // applied fix ranks strictly better, so this cannot repeat forever.
+      tried.clear(); tried.add(cellKey(gap.day, gap.shiftId));
+    }
+  }
+  info.elapsedMs = Date.now() - started;
+  if (!info.applied) return {...input, relayInfo: info};
+  const assignLog = {...(input.assignLog || {})};
+  for (const [key, a] of Object.entries(best.ns)) for (const v of a) if (!(input.ns[key] || []).some(n => n.employeeId === v.employeeId))
+    assignLog[key + "__" + v.employeeId] = {phase: "Relay repair", reason: "Neighbouring shifts re-planned with swings, splits or handoffs to close a gap"};
+  return {...best, assignLog, relayInfo: info};
 }
 
 // Bounded atomic repair: move a qualified employee, then backfill the vacated duty.
@@ -3744,8 +3892,7 @@ function repairScheduleGaps(result, context) {
         return cost;
       };
 
-      const ADJACENT_HANDOFF = { first: ["second"], second: ["first", "third"], third: ["second"] };
-      const shiftOrder = { first: 0, second: 1, third: 2 };
+      const handoffSources = handoffSourcesFor;
 
       for (const gap of gaps) {
         const gapKey = cellKey(gap.day, gap.shiftId);
@@ -3841,9 +3988,8 @@ function repairScheduleGaps(result, context) {
         }
 
         // Type: handoff — 4h partial shift from adjacent shift employee
-        const adjShifts = ADJACENT_HANDOFF[gap.shiftId] || [];
-        for (const adjShiftId of adjShifts) {
-          const adjKey = cellKey(gap.day, adjShiftId);
+        for (const { sourceDay, sourceShiftId: adjShiftId, type: hoType } of handoffSources(gap.day, gap.shiftId)) {
+          const adjKey = cellKey(sourceDay, adjShiftId);
           const adjAsgn = ns[adjKey] || [];
           for (const a of adjAsgn) {
             if (handoffs.some(h => h.day === gap.day && h.employeeId === a.employeeId && h.targetShiftId === gap.shiftId)) continue;
@@ -3855,7 +4001,6 @@ function repairScheduleGaps(result, context) {
             if ((emp.blockedShifts || []).includes(gap.shiftId)) continue;
             if (shiftMarkedOff(emp, gap.day, gap.shiftId, empTimeOffDays)) continue;
 
-            const hoType = shiftOrder[adjShiftId] < shiftOrder[gap.shiftId] ? "late-stay" : "early-arrival";
             // Build current bodies including previously-added handoffs for role check
             const handoffBodiesInGap = handoffs.filter(h => h.day === gap.day && h.targetShiftId === gap.shiftId);
             const allBodies = [...(ns[gapKey] || []), ...handoffBodiesInGap.map(h => {
@@ -3984,30 +4129,23 @@ function repairScheduleGaps(result, context) {
         }
 
         // Strategy 3: handoff — pull qualified employee from adjacent shift for 4h
-        const adjShiftsForRole = ADJACENT_HANDOFF[rg.shiftId] || [];
-        for (const adjSid of adjShiftsForRole) {
-          const adjAsgn = ns[cellKey(rg.day, adjSid)] || [];
+        for (const { sourceDay, sourceShiftId: adjSid, type: hoType } of handoffSources(rg.day, rg.shiftId)) {
+          const adjAsgn = ns[cellKey(sourceDay, adjSid)] || [];
+          const proposal = a => ({ day: rg.day, employeeId: a.employeeId, type: hoType,
+            sourceShiftId: adjSid, targetShiftId: rg.shiftId, position: rg.role, hours: HANDOFF_HOURS });
           const cand = adjAsgn.find(a => {
             if (a.position === "Supervisor") return false;
             const e = source.find(x => x.id === a.employeeId);
-            const proposed = { day: rg.day, employeeId: e?.id, type: shiftOrder[adjSid] < shiftOrder[rg.shiftId] ? "late-stay" : "early-arrival",
-              sourceShiftId: adjSid, targetShiftId: rg.shiftId, position: rg.role, hours: HANDOFF_HOURS };
             // Check the whole schedule, not only the moving employee: a handoff into
             // an already-full shift would add a fourth regular body (overstaffing).
             const hoOpts = { extShifts: autoExtShifts, handoffs, empTimeOffDays, ptoHoursByEmployee, creditHourLimits, empPatterns: enrichedPatterns };
             return e && (e.qualifications || []).includes(rg.role) &&
-              !scheduleChangeIssues(ns, ns, accountingRoster, cfg, hoOpts, { ...hoOpts, handoffs: [...handoffs, proposed] }).length &&
+              !scheduleChangeIssues(ns, ns, accountingRoster, cfg, hoOpts, { ...hoOpts, handoffs: [...handoffs, proposal(a)] }).length &&
               !handoffs.some(h => h.day === rg.day && h.employeeId === e.id && h.targetShiftId === rg.shiftId);
           });
           if (cand) {
-            const emp = source.find(e => e.id === cand.employeeId);
-            const hoType = shiftOrder[adjSid] < shiftOrder[rg.shiftId] ? "late-stay" : "early-arrival";
-            handoffs.push({
-              day: rg.day, employeeId: emp.id, type: hoType,
-              sourceShiftId: adjSid, targetShiftId: rg.shiftId,
-              position: rg.role, hours: HANDOFF_HOURS,
-            });
-            if (hourTracker) hourTracker[emp.id] = (hourTracker[emp.id] || 0) + HANDOFF_HOURS;
+            handoffs.push(proposal(cand));
+            if (hourTracker) hourTracker[cand.employeeId] = (hourTracker[cand.employeeId] || 0) + HANDOFF_HOURS;
             changed = true;
             if (!analyzeShiftCoverage(rg.day, rg.shiftId, ns, accountingRoster, autoExtShifts, handoffs).missing.includes(rg.role)) break;
           }
@@ -14209,7 +14347,8 @@ function ScheduleGrid({ onOpenTestModal }) {
     // eligible candidate, generate ALL feasible candidates across all strategy
     // types, score each by estimated cost, and apply cheapest first. This picks
     // the least-disruptive repair for each gap.
-    const repairContext={source,accountingRoster,cfg,empTimeOffDays,ptoHoursByEmployee,enrichedPatterns,validateSchedule,fairnessHistory};
+    const repairContext={source,accountingRoster,cfg,empTimeOffDays,ptoHoursByEmployee,enrichedPatterns,validateSchedule,fairnessHistory,
+      searchInput:{weekStart,timeOffReqs:timeOffReqs || [],weekAvailability,history,empPatterns,excludedIds:afExclude || [],trainingBlocks:trainingBlocks || []}};
     // Single-call form of the repair stages (the loop below runs them one tick each).
     const repairGaps = result => {
       const context={source,accountingRoster,cfg,empTimeOffDays,ptoHoursByEmployee,enrichedPatterns,validateSchedule,fairnessHistory};
@@ -14233,6 +14372,8 @@ function ScheduleGrid({ onOpenTestModal }) {
     let prevBestQuality = null;
     let running = null; // the attempt in progress, resumed slice by slice
     let post = null;    // a finished attempt still going through repair stages
+    let relaysDone = false; // the one relay-repair pass on the best week
+    const RELAY_BUDGET_MS = 10000;
 
     const tick = () => {
       if (autoFillCancelRef.current) {
@@ -14265,18 +14406,35 @@ function ScheduleGrid({ onOpenTestModal }) {
       // Each repair stage runs in its own tick (each has its own time budget).
       if (post.stage === "gaps") { post.result = repairScheduleGaps(post.result, repairContext); post.stage = "completion"; setTimeout(tick, 0); return; }
       if (post.stage === "completion") { post.result = repairScheduleCompletion(post.result, repairContext); post.stage = "rebalance"; setTimeout(tick, 0); return; }
+      // Once, on the best week: re-plan the shifts around each remaining gap with
+      // swings, splits and handoffs. One neighbourhood per tick.
+      if (post.stage === "relays") {
+        post.relayTried ||= new Set(); post.relayStarted ||= Date.now();
+        const relayLeft = RELAY_BUDGET_MS - (Date.now() - post.relayStarted);
+        post.result = repairWithRelays(post.result, { ...repairContext, relayMaxGaps: 1, relayTried: post.relayTried, relayRepairMs: Math.max(0, relayLeft) });
+        if (!post.result.relayInfo.done && relayLeft > 0) { setTimeout(tick, 0); return; }
+        post.result.issues = validateSchedule(post.result.ns, post.result.autoExtShifts, accountingRoster, post.result.handoffs);
+        post.result.errors = post.result.issues.filter(i => i.level === "error").length;
+        post.stage = "rebalance"; setTimeout(tick, 0); return;
+      }
       if (post.stage === "rebalance") { post.result = rebalanceOvertime(post.result, repairContext); post.stage = "improve"; setTimeout(tick, 0); return; }
       let result = post.result;
+      const wasFinal = !!post.final;
       post = null;
 
       result=improveSchedulePreferences(result,{source,accountingRoster,cfg,empTimeOffDays,ptoHoursByEmployee,enrichedPatterns,fairnessHistory});
       result.issues=validateSchedule(result.ns,result.autoExtShifts,accountingRoster,result.handoffs);
       result.errors=result.issues.filter(i=>i.level==='error').length;result.warns=result.issues.filter(i=>i.level==='warn').length;
       result.quality=scheduleQuality(result,accountingRoster,cfg,{empTimeOffDays,ptoHoursByEmployee,empPatterns:enrichedPatterns,fairnessHistory},schedule);
-      if (!best || compareScheduleQuality(result.quality,best.quality)<0) best=result;
-      if (prevBestQuality && compareScheduleQuality(best.quality,prevBestQuality)>=0) plateauCount++;
-      else plateauCount=0;
-      prevBestQuality=[...best.quality];
+      if (wasFinal) {
+        relaysDone = true;
+        if (compareScheduleQuality(result.quality,best.quality)<0) best=result;
+      } else {
+        if (!best || compareScheduleQuality(result.quality,best.quality)<0) best=result;
+        if (prevBestQuality && compareScheduleQuality(best.quality,prevBestQuality)>=0) plateauCount++;
+        else plateauCount=0;
+        prevBestQuality=[...best.quality];
+      }
 
       setAutoFillProgress({ attempt: attemptNum, bestErrors: best.errors, bestWarns: best.warns, bestOvertime: best.quality[QUALITY.overtime] });
 
@@ -14292,6 +14450,11 @@ function ScheduleGrid({ onOpenTestModal }) {
       }
 
       if (complete || attemptNum >= MAX_ATTEMPTS || plateauCount >= PLATEAU_LIMIT) {
+        if (!complete && !relaysDone && best.errors > 0) {
+          post = { result: best, stage: "relays", final: true };
+          setAutoFillProgress({ attempt: attemptNum, bestErrors: best.errors, bestWarns: best.warns, bestOvertime: best.quality[QUALITY.overtime], relays: true });
+          setTimeout(tick, 0); return;
+        }
         if(!proposalIsCurrent({baseStamp:runBaseStamp})){discardStaleProposal();setAutoFillRunning(false);return;}
         startCompleteSearch(accountingRoster, best, complete ? { supervisorExtensions: q[QUALITY.supervisorExtensions], withoutDayOff: q[QUALITY.noDayOff], overtime: q[QUALITY.overtime] } : undefined);
         return;
@@ -14301,7 +14464,7 @@ function ScheduleGrid({ onOpenTestModal }) {
     };
 
     setTimeout(tick, 0);
-  }, [employees, setSchedule, setExtShifts, cfg, empTimeOffDays, empPatterns, extShifts, schedule, weekStart, history, timeOffReqs, handoffs, afExclude, ptoHoursByEmployee, swingDesig, isReadOnly, assignLog, fairnessHistory, trainingBlocks, autoFillRunning, pendingProposal, generationInputsReady]);
+  }, [employees, setSchedule, setExtShifts, cfg, empTimeOffDays, empPatterns, extShifts, schedule, weekStart, history, timeOffReqs, weekAvailability, handoffs, afExclude, ptoHoursByEmployee, swingDesig, isReadOnly, assignLog, fairnessHistory, trainingBlocks, autoFillRunning, pendingProposal, generationInputsReady]);
 
   useEffect(()=>{
     if(pendingAutoFill&&pendingAutoFill.length>0&&generationInputsReady&&!isReadOnly&&!autoFillRunning&&!pendingProposal){
@@ -14946,7 +15109,7 @@ function ScheduleGrid({ onOpenTestModal }) {
                       const adjShifts = shift.id==="first" ? ["second"] : shift.id==="second" ? ["first","third"] : ["second"];
                       const is16h = adjShifts.some(otherId => getAsgn(day,otherId).some(x=>x.employeeId===a.employeeId));
                       const hoInto = handoffs.find(h => h.day === day && h.targetShiftId === shift.id && h.employeeId === a.employeeId);
-                      const hoFrom = handoffs.find(h => h.day === day && h.sourceShiftId === shift.id && h.employeeId === a.employeeId);
+                      const hoFrom = handoffs.find(h => handoffSourceDay(h) === day && h.sourceShiftId === shift.id && h.employeeId === a.employeeId);
                       const borderCol = hasFatigue?"var(--ss-fatigue-60)":hasReqViol?"var(--ss-danger-60)":hasPrefWarn?"var(--ss-warning-50)":isOnCallSlot?"var(--ss-warning-60)":pC(a.position,t)+"30";
                       const bgCol     = hasFatigue?"var(--ss-fatigue-18)":hasReqViol?"var(--ss-danger-0d)":hasPrefWarn?"var(--ss-warning-0a)":pC(a.position,t)+"15";
                       const dotCol    = hasFatigue?"var(--ss-fatigue)":pC(a.position,t);
@@ -15506,6 +15669,7 @@ function ScheduleGrid({ onOpenTestModal }) {
                     ? ` — best: ${autoFillProgress.bestErrors} error${autoFillProgress.bestErrors!==1?"s":""}`
                     + (autoFillProgress.bestWarns > 0 ? `, ${autoFillProgress.bestWarns} warn${autoFillProgress.bestWarns!==1?"s":""}` : "")
                     : ` — ✓ complete week (${autoFillProgress.bestOvertime}h overtime); next: searching for a better one`}
+                  {autoFillProgress.relays ? " · trying swings, splits and handoffs for the remaining gaps" : ""}
                 </span>
               )}
             </div>

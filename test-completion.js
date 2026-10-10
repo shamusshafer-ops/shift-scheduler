@@ -155,7 +155,7 @@ test('production autofill comparison uses completeness quality and resets platea
  const start=html.indexOf('      result.quality=scheduleQuality('),end=html.indexOf('      setAutoFillProgress',start);
  const {input,context,roster}=chainFixture(),better=repairScheduleCompletion(input,context);
  const oldQuality=scheduleQuality(input,roster,cfg,{},input.ns);
- const run=new Function(...Object.keys(core),'result','accountingRoster','cfg','empTimeOffDays','ptoHoursByEmployee','enrichedPatterns','schedule','best','prevBestQuality','plateauCount','const fairnessHistory={};'+html.slice(start,end)+'return {best,plateauCount};')(...Object.values(core),better,roster,cfg,new Set(),{},{},input.ns,{...input,quality:oldQuality},oldQuality,2);
+ const run=new Function(...Object.keys(core),'result','accountingRoster','cfg','empTimeOffDays','ptoHoursByEmployee','enrichedPatterns','schedule','best','prevBestQuality','plateauCount','wasFinal','relaysDone','const fairnessHistory={};'+html.slice(start,end)+'return {best,plateauCount};')(...Object.values(core),better,roster,cfg,new Set(),{},{},input.ns,{...input,quality:oldQuality},oldQuality,2,false,false);
  assert.equal(run.best,better);
  assert.equal(run.plateauCount,0);
 });

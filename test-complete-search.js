@@ -152,11 +152,21 @@ test('production complete candidates use ordinary proposal commit and overtime s
 test('production infeasibility leaves the current draft untouched',()=>{
  const h=uiHarness({status:'infeasible',phase:'regular-hours',solution:null,reasons:['exhausted']});h.ui.startCompleteSearch();h.queue.shift()();assert(!h.events.some(e=>['commit','pending'].includes(e[0])));assert.equal(h.events.at(-1)[1].status,'infeasible');
 });
-function handOff(best,complete,attemptNum=10) {
- const start=html.indexOf('      if (complete || attemptNum >= MAX_ATTEMPTS || plateauCount >= PLATEAU_LIMIT) {'),end=html.indexOf('      setTimeout(tick, 0);',start);const calls=[];
- new Function('complete','q','QUALITY','attemptNum','MAX_ATTEMPTS','plateauCount','PLATEAU_LIMIT','proposalIsCurrent','runBaseStamp','startCompleteSearch','accountingRoster','discardStaleProposal','setAutoFillRunning','best',html.slice(start,end))(complete,best.quality,c.QUALITY,attemptNum,10,attemptNum>=10?3:0,3,()=>true,'base',(...args)=>calls.push(args),[],()=>assert.fail('stale'),()=>{},best);
+// relaysDone: the one relay-repair pass on the best week has already run.
+function handOff(best,complete,attemptNum=10,relaysDone=true) {
+ const start=html.indexOf('      if (complete || attemptNum >= MAX_ATTEMPTS || plateauCount >= PLATEAU_LIMIT) {'),end=html.indexOf('\n      setTimeout(tick, 0);\n',start);const calls=[];
+ const state={post:null,ticks:0};
+ new Function('complete','q','QUALITY','attemptNum','MAX_ATTEMPTS','plateauCount','PLATEAU_LIMIT','proposalIsCurrent','runBaseStamp','startCompleteSearch','accountingRoster','discardStaleProposal','setAutoFillRunning','best','relaysDone','state','setAutoFillProgress','setTimeout','tick',
+  'let post=null;try{'+html.slice(start,end)+'\n}finally{state.post=post;}')(complete,best.quality,c.QUALITY,attemptNum,10,attemptNum>=10?3:0,3,()=>true,'base',(...args)=>calls.push(args),[],()=>assert.fail('stale'),()=>{},best,relaysDone,state,()=>{},()=>{state.ticks++;},()=>{});
+ calls.state=state;
  return calls;
 }
+test('an unfinished best week gets one relay-repair pass before the complete search',()=>{
+ const best={ns:{},errors:2,quality:[0,8,8,0,0,0,0,0,0]},calls=handOff(best,false,10,false);
+ assert.equal(calls.length,0,'the complete search waits for the relay pass');
+ assert.equal(calls.state.post.stage,'relays');assert.equal(calls.state.post.final,true);assert.equal(calls.state.post.result,best);
+ assert.equal(calls.state.ticks,1);
+});
 test('a heuristic plateau hands off to complete search without committing the incomplete candidate',()=>{
  const best={ns:{},errors:2,quality:[0,8,8,0,0,0,0,0,0]},calls=handOff(best,false);
  assert.equal(calls.length,1);
