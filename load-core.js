@@ -50,7 +50,7 @@ const exportsList = [
   "extendedCoverageFloor", "getEffectiveSlotCount", "getSlotCount",
   "HANDOFF_HOURS", "computeWeekStats",
   "employeePolicyIssues", "validateAssignmentPolicy", "scheduleChangeIssues", "assignmentIssues",
-  "proposedSwap", "canWorkExtHalf", "calcHours", "buildPrevWeekData", "boundaryPatterns", "publicationRecordIntact", "orphanedHandoffs", "handoffsOrphanedByChange", "extEmployeesKnown", "carryInFromWeek", "carryInRecords", "withoutCarryIn", "WEEK_SWITCH_WAIT", "DRAFT_CHANGED_WHILE_SAVING",
+  "proposedSwap", "canWorkExtHalf", "calcHours", "buildPrevWeekData", "boundaryPatterns", "publicationRecordIntact", "orphanedHandoffs", "handoffsOrphanedByChange", "extEmployeesKnown", "newRowsInsideOwnExtended", "overtimeIncreases", "carryInFromWeek", "carryInRecords", "withoutCarryIn", "WEEK_SWITCH_WAIT", "DRAFT_CHANGED_WHILE_SAVING",
   "filterPolicyAssignments", "getFatigueIssues", "deployProactiveExtShifts", "getPreferredShiftId", "ps",
   "buildPtoCredits", "weeklyEmployeeHours", "normalizedWorkedHours", "buildWeeklyAccounting",
   "validISODate", "dateRangeISO", "weekDatesISO", "isPaidTimeOff", "validPtoHours", "ptoRequestErrors",
