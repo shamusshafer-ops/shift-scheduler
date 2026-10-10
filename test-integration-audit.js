@@ -31,7 +31,11 @@ test('a weekday supervisor handoff supplies regular coverage only as the 14:00-1
 test('a handoff onto a sixth day counts against working-day and weekend caps',()=>{
  const schedule=Object.fromEntries(c.DAYS.slice(1,6).map(d=>[d+'__third',[assignment()]]));
  const issues=c.employeePolicyIssues(employee('g',{maxWeekendDays:0}),schedule,{maxConsecutiveShifts:5,maxConsecutiveNights:7},{handoffs:[handoff()]});
- assert(issues.some(i=>i.type==='consecutive_days'));assert(issues.some(i=>i.type==='weekend_days'));
+ assert(issues.some(i=>i.type==='weekend_days'));
+ // The consecutive-day limit is a preference: a warning, not a hard rule.
+ assert(!issues.some(i=>i.type==='consecutive_days'));
+ const stretch=c.stretchIssues(employee('g'),schedule,{maxConsecutiveShifts:5,maxConsecutiveNights:7},{handoffs:[handoff()]});
+ assert(stretch.some(i=>i.type==='consecutive_days' && i.level==='warn'));
  assert.equal(c.buildPrevWeekData(schedule,[],[handoff()]).trailingDays.g,6);
 });
 test('ordinary overnight shifts retain their starting-day accounting',()=>{

@@ -4,7 +4,7 @@ const assert = require("node:assert/strict");
 const fs = require("node:fs");
 const core = require("./load-core");
 const { DAYS, employeePolicyIssues: check, assignmentIssues, scheduleChangeIssues,
-  proposedSwap, canWorkExtHalf, calcConsecutiveNights, boundaryPatterns, validateAssignmentPolicy } = core;
+  proposedSwap, canWorkExtHalf, calcConsecutiveNights, boundaryPatterns, validateAssignmentPolicy, stretchIssues } = core;
 const emp = (extra = {}) => ({ id: "e", name: "Employee", qualifications: ["Guard"], employmentType: "full-time", ...extra });
 const a = (id = "e", position = "Guard") => ({ employeeId: id, position });
 const sched = (days, sid = "first") => Object.fromEntries(days.map(day => [day + "__" + sid, [a()]]));
@@ -15,8 +15,11 @@ test("night counter walks nights, not intervening daytime slots", () => {
   const s = sched(["Sunday", "Monday", "Tuesday"], "third");
   assert.equal(calcConsecutiveNights("e", s, "Tuesday", "third"), 3);
   assert.equal(calcConsecutiveNights("e", s, "Wednesday", "third"), 3);
-  assert(types(assignmentIssues(emp(), "Wednesday", "third", "Guard", s)).includes("consecutive_nights"));
-  assert(!types(check(emp(), s)).includes("consecutive_nights"));
+  // Night limits are preferences: a warning past the limit, never a hard rule.
+  assert(!types(assignmentIssues(emp(), "Wednesday", "third", "Guard", s)).includes("consecutive_nights"));
+  const four = sched(["Sunday", "Monday", "Tuesday", "Wednesday"], "third");
+  assert.deepEqual(stretchIssues(emp(), four, { maxConsecutiveNights: 3 }).map(i => [i.type, i.level]), [["consecutive_nights", "warn"]]);
+  assert.deepEqual(stretchIssues(emp(), s, { maxConsecutiveNights: 3 }), []);
 });
 
 test("same-week Saturday never extends the Sunday run", () => {
@@ -122,14 +125,17 @@ test("handoffs need authorization and cannot evade hours or rest limits", () => 
   const s = sched(["Sunday", "Monday", "Tuesday", "Thursday", "Friday"]);
   const e = emp({ ext12hPref: "day", overtimePref: "blocked" });
   assert(types(check(e, s, {}, options({ handoffs: [h] }))).includes("no_overtime"));
-  assert(types(check(emp({ ext12hPref: "day", requiredShift: "first" }), s, {}, options({ handoffs: [h] }))).includes("required_shift"));
+  // Staying until 18:00 is the 06:00–18:00 half: allowed when that half is.
+  assert(!types(check(emp({ ext12hPref: "day", requiredShift: "first" }), s, {}, options({ handoffs: [h] }))).includes("required_shift"));
+  assert(types(check(emp({ ext12hPref: "night", requiredShift: "first" }), s, {}, options({ handoffs: [h] }))).includes("required_shift"));
   assert(types(check(e, {}, {}, options({ handoffs: [h] }))).includes("invalid_handoff"));
 });
 
-test("actual previous week extends nights and rest, stale patterns do not", () => {
+test("actual previous week extends rest, stale patterns do not; streaks restart each week", () => {
   const history = [{ weekStart: "2026-08-30", schedule: sched(["Thursday", "Friday", "Saturday"], "third") }];
   const p = boundaryPatterns(history, "2026-09-06", {});
-  assert(types(check(emp(), sched(["Sunday"], "third"), {}, options({ empPatterns: p }))).includes("consecutive_nights"));
+  // Consecutive nights count within one schedule week only.
+  assert(!types(check(emp(), sched(["Sunday"], "third"), {}, options({ empPatterns: p }))).includes("consecutive_nights"));
   assert(types(check(emp(), sched(["Sunday"]), {}, options({ empPatterns: p }))).includes("continuous_hours"));
   assert.deepEqual(check(emp(), sched(["Sunday"]), {}, options({ empPatterns: boundaryPatterns([], "2026-09-06", { e: { trailingDays: 7 } }) })), []);
 });

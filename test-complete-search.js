@@ -78,7 +78,8 @@ test('eligible 12-hour halves can provide continuous coverage that regular dutie
  const timeOffReqs=[{id:'early-end',empId:'early',type:'partial',status:'approved',startDate:'2026-09-06',endDate:'2026-09-06',startTime:'18:00',endTime:'22:00',paid:false},
  {id:'late-start',empId:'late',type:'partial',status:'approved',startDate:'2026-09-06',endDate:'2026-09-06',startTime:'14:00',endTime:'18:00',paid:false}];
  roster[0].qualifications=['Scale'];roster[1].qualifications=['Guard'];
- const i=input(roster,{timeOffReqs}),r=solve(i);assert.equal(r.status,'feasible');assert(r.solution.autoExtShifts.length>=2);assert(c.analyzeShiftCoverage('Sunday','second',r.solution.ns,roster,r.solution.autoExtShifts,r.solution.handoffs).ok);assert.deepEqual(policy(r,i),[]);
+ const i=input(roster,{timeOffReqs}),r=solve(i);assert.equal(r.status,'feasible');// A 12h half or the same hours as a late stay / early arrival (equally legal).
+ assert(r.solution.autoExtShifts.length+r.solution.handoffs.length>=2);assert(c.analyzeShiftCoverage('Sunday','second',r.solution.ns,roster,r.solution.autoExtShifts,r.solution.handoffs).ok);assert.deepEqual(policy(r,i),[]);
 });
 test('adjoining handoffs are searched together with their source duties',()=>{
  const roster=[...oneDay(['scale','guard']),e('early',{qualifications:['Medical'],willing16h:true,requiredShift:'first',canWorkOtherShifts:true}),e('late',{qualifications:['Medical'],willing16h:true,requiredShift:'third',canWorkOtherShifts:true})];

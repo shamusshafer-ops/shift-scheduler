@@ -539,6 +539,19 @@ const HANDOFF_SWING_IDS = {
   "second:late-stay":     "swing-2p-2a",
   "third:late-stay":      "swing-10p-10a",
 };
+// A handoff joined to its source shift that works the same hours as a 12h
+// half (staying until 18:00 = 06:00–18:00, arriving at 18:00 = 18:00–06:00)
+// is allowed for anyone allowed that half, required-shift staff included.
+const HANDOFF_EXT_EQUIV = {
+  "first:late-stay":     ["day", 0],
+  "third:early-arrival": ["night", 0],
+};
+const handoffAllowedLikeDuty = (emp, h) => {
+  const key = h.sourceShiftId + ":" + h.type;
+  if (HANDOFF_SWING_IDS[key]) return true; // eligibility checked separately
+  const equiv = HANDOFF_EXT_EQUIV[key];
+  return !!equiv && canWorkExtHalf(emp, equiv[0], equiv[1]);
+};
 const FT_MIN_HOURS = 40;
 // MAX_CONSECUTIVE_NIGHTS and MIN_REST_HOURS are now user-configurable via SettingsCtx.
 // Fallback values used in module-level helpers that can't access context:
@@ -1218,7 +1231,8 @@ function calcConsecutiveHours(empId, schedule, day, shiftId, extShifts, handoffs
 function getFatigueIssues(empId, schedule, cfg, employees, extShifts, handoffs = [], empPatterns = {}) {
   const emp = (employees || []).find(e => e.id === empId) || { id: empId, name: empId, qualifications: [], willing16h: true };
   const types = { consecutive_nights: "consecutive_nights", short_rest: "short_rest", continuous_hours: "over_16h", split_double: "split_double" };
-  return employeePolicyIssues(emp, schedule, cfg || {}, { extShifts: extShifts || [], handoffs, empPatterns })
+  return [...employeePolicyIssues(emp, schedule, cfg || {}, { extShifts: extShifts || [], handoffs, empPatterns }),
+    ...stretchIssues(emp, schedule, cfg || {}, { extShifts: extShifts || [], handoffs })]
     .filter(i => types[i.type]).map(i => ({ ...i, type: types[i.type],
       count: i.type === "consecutive_nights" ? (cfg?.maxConsecutiveNights ?? MAX_CONSECUTIVE_NIGHTS) + i.amount : undefined,
       restHours: i.type === "short_rest" ? (cfg?.minRestHours ?? MIN_REST_HOURS) - i.amount : undefined,
@@ -1321,9 +1335,9 @@ function employeePolicyIssues(emp, schedule, cfg = {}, options = {}) {
       // shift is checked by canWorkExtHalf; regular work and handoffs need permission.
       if (i.source === "extended" && (emp.qualifications || []).includes("Supervisor") && isWeekday(day))
         add("supervisor_slot", `weekday supervisor requires the dedicated first-shift position (${day} ${s.id})`);
-      // Extended duties are checked by canWorkExtHalf. A swing-shaped handoff is
-      // allowed like the swing itself (its eligibility is checked above).
-      if (i.source !== "extended" && !(i.source === "handoff" && HANDOFF_SWING_IDS[i.handoff.sourceShiftId + ":" + i.handoff.type]) &&
+      // Extended duties are checked by canWorkExtHalf. A handoff shaped like a
+      // swing or a 12h half is allowed like that duty (swing eligibility above).
+      if (i.source !== "extended" && !(i.source === "handoff" && handoffAllowedLikeDuty(emp, i.handoff)) &&
           !canWorkShiftOnDay(emp, day, s.id, di >= 0 && di < 7 ? empTimeOffDays : null))
         add("required_shift", `requires ${emp.requiredShift}; no cross-shift authorization (${day} ${s.id})`);
     }
@@ -1334,19 +1348,11 @@ function employeePolicyIssues(emp, schedule, cfg = {}, options = {}) {
   const weekendDays = [...dutyDays].filter(d => d >= 0 && d < 7 && (d === 0 || d === 6)).length;
   if (emp.maxWeekendDays != null && weekendDays > emp.maxWeekendDays)
     add("weekend_days", `${weekendDays} weekend days exceeds maximum ${emp.maxWeekendDays}`, weekendDays - emp.maxWeekendDays);
+  // Consecutive days/nights are preferences, not hard rules: see stretchIssues.
+  // Autofill's own planning (strictStretches) stays inside them; only repairs
+  // that cover a shift may go over.
+  if (options.strictStretches) for (const st of stretchIssues(emp, schedule, cfg, options)) add(st.type, st.msg, st.amount);
   const pattern = empPatterns[emp.id] || {};
-  let run = pattern.trailingDays || 0, maxDays = 0;
-  for (let di = 0; di < 7; di++) { run = dutyDays.has(di) ? run + 1 : 0; maxDays = Math.max(maxDays, run); }
-  const dayCap = cfg.maxConsecutiveShifts ?? 5;
-  if (maxDays > dayCap) add("consecutive_days", `${maxDays} consecutive working days exceeds ${dayCap}`, maxDays - dayCap);
-  run = pattern.trailingNights || 0;
-  let maxNights = 0, maxNightDay = 0;
-  for (let di = 0; di < 7; di++) {
-    run = nightDays.has(di) ? run + 1 : 0;
-    if (run > maxNights) { maxNights = run; maxNightDay = di; }
-  }
-  const nightCap = cfg.maxConsecutiveNights ?? MAX_CONSECUTIVE_NIGHTS;
-  if (maxNights > nightCap) add("consecutive_nights", `${maxNights} consecutive nights exceeds ${nightCap}`, maxNights - nightCap, { day: DAYS[maxNightDay], shiftId: "third" });
 
   const blocks = [];
   const prior = pattern.prevWorkIntervals || (pattern.prevWeekLastSlot ? (() => {
@@ -1391,6 +1397,35 @@ function employeePolicyIssues(emp, schedule, cfg = {}, options = {}) {
   const approvedLimit = options.creditHourLimits?.[emp.id];
   if (approvedLimit != null && credited > approvedLimit)
     add("overtime_approval_limit", `${credited}h exceeds the approved limit of ${approvedLimit}h`, credited - approvedLimit);
+  return issues;
+}
+
+// Consecutive-day and consecutive-night limits are preferences counted within
+// one schedule week: a run that continues from last week starts again on
+// Sunday. Autofill plans inside them and goes over only when that is what
+// covers a shift; going over is a warning, never a hard error.
+function employeeStretches(emp, schedule, options = {}) {
+  const { extShifts = [], handoffs = [] } = options;
+  const own = {};
+  for (const [key, a] of Object.entries(schedule || {})) { const mine = a.filter(v => v.employeeId === emp.id); if (mine.length) own[key] = mine; }
+  const intervals = collectCoverageIntervals(own, extShifts.filter(e => !e.carryIn && (e.empAId === emp.id || e.empBId === emp.id)),
+    handoffs.filter(h => h.employeeId === emp.id)).filter(i => i.employeeId === emp.id && !i.carryIn);
+  const dutyDays = new Set(), nightDays = new Set();
+  for (const i of intervals) {
+    dutyDays.add(Math.floor(i.start / 24));
+    for (let di = 0; di < 7; di++) if (intervalsOverlap(i, shiftInterval(DAYS[di], "third"))) nightDays.add(di);
+  }
+  const longest = days => { let run = 0, best = 0, end = 0; for (let di = 0; di < 7; di++) { run = days.has(di) ? run + 1 : 0; if (run > best) { best = run; end = di; } } return [best, end]; };
+  const [maxDays, maxDayEnd] = longest(dutyDays), [maxNights, maxNightDay] = longest(nightDays);
+  return { maxDays, maxDayEnd, maxNights, maxNightDay };
+}
+function stretchIssues(emp, schedule, cfg = {}, options = {}) {
+  const { maxDays, maxDayEnd, maxNights, maxNightDay } = employeeStretches(emp, schedule, options);
+  const dayCap = cfg.maxConsecutiveShifts ?? 5, nightCap = cfg.maxConsecutiveNights ?? MAX_CONSECUTIVE_NIGHTS, issues = [];
+  if (maxDays > dayCap) issues.push({ level: "warn", type: "consecutive_days", employeeId: emp.id, amount: maxDays - dayCap, day: DAYS[maxDayEnd],
+    msg: `${emp.name}: ${maxDays} consecutive working days this week (preferred limit ${dayCap})` });
+  if (maxNights > nightCap) issues.push({ level: "warn", type: "consecutive_nights", employeeId: emp.id, amount: maxNights - nightCap, day: DAYS[maxNightDay], shiftId: "third",
+    msg: `${emp.name}: ${maxNights} consecutive nights this week (preferred limit ${nightCap})` });
   return issues;
 }
 
@@ -1826,7 +1861,13 @@ function deployProactiveExtShifts(sourceEmps, cfg, empTimeOffDays, existingExtSh
             return bSpec - aSpec;
           });
 
-          const empOther = otherCands.length ? otherCands[0] : null;
+          // A half that covers only part of the target shift (18:00–06:00 joins
+          // second shift at 18:00) leaves the rest to the partner, who must then
+          // hold the role too, or the pair opens a gap instead of closing one.
+          const providerWork = extendedWorkIntervals({day, pairId: pair.id, [providerSlot ? "empBId" : "empAId"]: chosenProvider.id});
+          const targetSpan = shiftInterval(day, targetShift.id);
+          const providerCoversTarget = providerWork.some(i => i.start <= targetSpan.start && i.end >= targetSpan.end);
+          const empOther = otherCands.find(e => providerCoversTarget || (e.qualifications || []).includes(role)) || null;
           // Require a partner — lone half-pair deploys create "early arrival"
           // or "stay late" ext shifts with no one covering the opposite half.
           // If no partner is available, skip; reactive deployment may still
@@ -2517,6 +2558,103 @@ function improveSchedulePreferences(input,context) {
   return result;
 }
 
+// Move single regular duties away from people carrying overtime, doubles or a
+// 7-day week, to someone who can take them without breaking a rule. Total
+// overtime never rises and coverage never drops: a move is kept only when it
+// improves, in order, coverage, shortfall, days off, total overtime, doubles,
+// the overtime spread and preferences for the slot and the two people involved.
+function rebalanceOvertime(input,context) {
+  const {source,accountingRoster=source,cfg={},fairnessHistory={},ptoHoursByEmployee={},empTimeOffDays,enrichedPatterns={},creditHourLimits}=context;
+  const exts=input.autoExtShifts || [],handoffs=input.handoffs || [];
+  const options={extShifts:exts,handoffs,empTimeOffDays,empPatterns:enrichedPatterns,ptoHoursByEmployee,creditHourLimits};
+  const maxMs=Number.isFinite(context.rebalanceSearchMs)?Math.max(0,Math.min(3000,context.rebalanceSearchMs)):1000;
+  const started=Date.now(),allowed=new Map(source.map(e=>[e.id,e]));
+  let ns=input.ns,moves=0,nodes=0,limited=false;
+  const timeUp=()=>{if(Date.now()-started>=maxMs) limited=true;return limited;};
+  const personCost=(emp,sched)=>{
+    const intervals=collectCoverageIntervals(sched,exts,handoffs).filter(i=>i.employeeId===emp.id);
+    const h=weeklyEmployeeHours(emp,sched,exts,handoffs,ptoHoursByEmployee);
+    const over=Math.max(0,h.creditedHours-FT_MIN_HOURS),wants=(emp.overtimePref || cfg.defaultOvertimePref)==='preferred';
+    return [h.shortfallHours || 0,employeeDutyDays(emp.id,intervals).size>=DAYS.length?1:0,over,doubleShiftCount(intervals),over*over*(wants?0.5:1),
+      preferenceFairnessCost(emp,sched,exts,handoffs,fairnessHistory,empTimeOffDays)];
+  };
+  // Ranked cost of the touched slots and people (the rest of the week is unchanged).
+  const vector=(sched,slots,people)=>{
+    const total=[0,0,0,0,0,0,0,0];
+    for(const {day,shiftId} of slots){const c=analyzeShiftCoverage(day,shiftId,sched,accountingRoster,exts,handoffs);total[0]+=c.bodyGapHours+c.roleGapHours;total[1]+=c.bodyGapHours;}
+    for(const emp of people) personCost(emp,sched).forEach((v,i)=>total[i+2]+=v);
+    return total;
+  };
+  const burdened=emp=>{const c=personCost(emp,ns);return c[1]>0 || c[2]>0 || c[3]>0;};
+  // A real 8h regular duty of emp on slot (not a display copy inside a 12h half).
+  const regularDuty=(sched,intervals,empId,slot)=>{
+    const row=(sched[cellKey(slot.day,slot.shiftId)] || []).find(v=>v.employeeId===empId);
+    if(!row || row.locked || row.position==='Supervisor') return null;
+    const span=shiftInterval(slot.day,slot.shiftId);
+    return intervals.some(i=>i.source==='regular' && i.employeeId===empId && i.start===span.start) ? row : null;
+  };
+  const positionsFor=(emp,row,day)=>[row.position,...POSITIONS.filter(p=>p!==row.position)].filter(p=>(emp.qualifications || []).includes(p) && canFillPos(emp,p,day));
+  const reassign=(sched,slot,row,taker,position)=>{const key=cellKey(slot.day,slot.shiftId);return {...sched,[key]:sched[key].map(v=>v===row?{employeeId:taker.id,position}:v)};};
+  // Keep `next` if it ranks better for the touched slots/people and breaks no rule.
+  const better=(next,slots,people)=>{
+    nodes++;
+    if(orphanedHandoffs(next,exts,handoffs).length) return false;
+    if(compareScheduleQuality(vector(next,slots,people),vector(ns,slots,people))>=0) return false;
+    return !scheduleChangeIssues(ns,next,people,cfg,options).length;
+  };
+  for(let pass=0;pass<40 && !timeUp();pass++) {
+    const intervals=collectCoverageIntervals(ns,exts,handoffs);
+    const hours=new Map([...allowed.values()].map(e=>[e.id,weeklyEmployeeHours(e,ns,exts,handoffs,ptoHoursByEmployee).creditedHours]));
+    const givers=[...allowed.values()].filter(burdened).sort((a,b)=>hours.get(b.id)-hours.get(a.id));
+    const takers=[...allowed.values()].filter(e=>!e.inTraining).sort((a,b)=>hours.get(a.id)-hours.get(b.id));
+    const free=(emp,slot,sched=ns,spans=intervals)=>!spans.some(i=>i.employeeId===emp.id && intervalsOverlap(i,shiftInterval(slot.day,slot.shiftId)));
+    let found=null;
+    // One move: a duty goes from the giver to someone with fewer hours.
+    single:for(const giver of givers) for(const slot of ALL_SLOTS) {
+      const row=regularDuty(ns,intervals,giver.id,slot);if(!row) continue;
+      for(const taker of takers) {
+        if(taker.id===giver.id || hours.get(taker.id)>=hours.get(giver.id) || !free(taker,slot)) continue;
+        for(const position of positionsFor(taker,row,slot.day)) {
+          if(timeUp()) break single;
+          const next=reassign(ns,slot,row,taker,position);
+          if(better(next,[slot],[giver,taker])){found=next;break single;}
+        }
+      }
+    }
+    // Two moves: the taker hands one of their duties within a day of it to a third person.
+    if(!found && !limited) chain:for(const giver of givers) for(const slot of ALL_SLOTS) {
+      const row=regularDuty(ns,intervals,giver.id,slot);if(!row) continue;
+      const di=DAYS.indexOf(slot.day);
+      for(const taker of takers) {
+        if(taker.id===giver.id || !free(taker,slot)) continue;
+        for(const position of positionsFor(taker,row,slot.day)) {
+          const first=reassign(ns,slot,row,taker,position);
+          for(const near of ALL_SLOTS) {
+            if(Math.abs(DAYS.indexOf(near.day)-di)>1 || cellKey(near.day,near.shiftId)===cellKey(slot.day,slot.shiftId)) continue;
+            const row2=regularDuty(first,intervals,taker.id,near);if(!row2) continue;
+            for(const third of takers) {
+              if(third.id===giver.id || third.id===taker.id || hours.get(third.id)>=hours.get(giver.id) || !free(third,near)) continue;
+              for(const position2 of positionsFor(third,row2,near.day)) {
+                if(timeUp()) break chain;
+                const next=reassign(first,near,row2,third,position2);
+                if(better(next,[slot,near],[giver,taker,third])){found=next;break chain;}
+              }
+            }
+          }
+        }
+      }
+    }
+    if(!found) break;
+    ns=found;moves++;
+  }
+  if(!moves) return {...input,rebalanceInfo:{moves,nodes,limited,elapsedMs:Date.now()-started}};
+  const assignLog={...(input.assignLog || {})};
+  for(const [key,a] of Object.entries(input.ns)) for(const v of a) if(!(ns[key] || []).some(n=>n.employeeId===v.employeeId)) delete assignLog[key+'__'+v.employeeId];
+  for(const [key,a] of Object.entries(ns)) for(const v of a) if(!(input.ns[key] || []).some(n=>n.employeeId===v.employeeId))
+    assignLog[key+'__'+v.employeeId]={phase:'Overtime balance',reason:'Moved so overtime, doubles and 7-day weeks are not piled on one person'};
+  return {...input,ns,assignLog,rebalanceInfo:{moves,nodes,limited,elapsedMs:Date.now()-started}};
+}
+
 // Floor for total overtime. Coverage needs a fixed number of person-hours; what
 // the roster cannot supply within 40 credited hours each must be overtime. Each
 // person's capacity is deliberately generous (rest, streak and pairing rules are
@@ -2588,12 +2726,32 @@ function employeesWithoutDayOff(employees, schedule, extShifts = [], handoffs = 
 // Positions in the scheduleQuality vector, most important first. Comparison is
 // lexicographic: a complete week always beats one with gaps; the supervisor's
 // weekday 12-hour days are a last resort used only to complete the week; then
-// everyone getting a day off beats overtime savings; preferences break ties.
-const QUALITY = { hard: 0, coverage: 1, body: 2, shortfall: 3, supervisorExtensions: 4, noDayOff: 5, overtime: 6, preferences: 7, changes: 8 };
+// everyone getting a day off beats overtime savings. With total overtime
+// settled, it should not pile onto one person: fewer doubles (a continuous
+// block over 12h), then an even spread (sum of squared hours over 40).
+// Preferences break the remaining ties.
+const QUALITY = { hard: 0, coverage: 1, body: 2, shortfall: 3, supervisorExtensions: 4, noDayOff: 5, overtime: 6, doubles: 7, spread: 8, preferences: 9, changes: 10 };
+const DOUBLE_BLOCK_HOURS = 12;
+// Continuous work blocks longer than 12h (1+2, 2+3, a 12h half plus a handoff).
+function doubleShiftCount(intervals, employeeId) {
+  const own = intervals.filter(i => !i.carryIn && (employeeId == null || i.employeeId === employeeId)).sort((a, b) => a.start - b.start);
+  const byEmp = new Map();
+  for (const i of own) { if (!byEmp.has(i.employeeId)) byEmp.set(i.employeeId, []); byEmp.get(i.employeeId).push(i); }
+  let count = 0;
+  for (const list of byEmp.values()) {
+    let start = null, end = -Infinity;
+    for (const i of list) {
+      if (i.start > end) { if (start != null && end - start > DOUBLE_BLOCK_HOURS) count++; start = i.start; }
+      end = Math.max(end, i.end);
+    }
+    if (start != null && end - start > DOUBLE_BLOCK_HOURS) count++;
+  }
+  return count;
+}
 function scheduleQuality(result, employees, cfg = {}, options = {}, baseline) {
   const ns=result.ns || result.schedule || {}, exts=result.autoExtShifts || [], handoffs=result.handoffs || [];
   const intervals=collectCoverageIntervals(ns,exts,handoffs);
-  let body=0,roles=0,shortfall=0,overtime=0,preferences=0,changes=0;
+  let body=0,roles=0,shortfall=0,overtime=0,spread=0,preferences=0,changes=0;
   const noDayOff=employeesWithoutDayOff(employees,ns,exts,handoffs,intervals).length,supervisorExtra=supervisorExtensions(employees,handoffs);
   for (const slot of ALL_SLOTS) {
     const c=analyzeShiftCoverage(slot.day,slot.shiftId,ns,employees,exts,handoffs,intervals);
@@ -2601,7 +2759,9 @@ function scheduleQuality(result, employees, cfg = {}, options = {}, baseline) {
   }
   for (const emp of employees) {
     const h=weeklyEmployeeHours(emp,ns,exts,handoffs,options.ptoHoursByEmployee || {});
-    shortfall+=h.shortfallHours || 0;overtime+=Math.max(0,h.creditedHours-FT_MIN_HOURS);
+    // Someone who asked for overtime absorbs it before others (half weight).
+    const over=Math.max(0,h.creditedHours-FT_MIN_HOURS),wantsOvertime=(emp.overtimePref || cfg.defaultOvertimePref)==='preferred';
+    shortfall+=h.shortfallHours || 0;overtime+=over;spread+=over*over*(wantsOvertime?0.5:1);
     preferences+=preferenceFairnessCost(emp,ns,exts,handoffs,options.fairnessHistory,options.empTimeOffDays);
   }
   if (baseline) {
@@ -2610,7 +2770,7 @@ function scheduleQuality(result, employees, cfg = {}, options = {}, baseline) {
     changes=[...before].filter(k=>!after.has(k)).length+[...after].filter(k=>!before.has(k)).length;
   }
   const hard=options.skipPolicy ? validateStaffing(ns,exts,handoffs,intervals).length : validateAssignmentPolicy(ns,employees,cfg,{...options,extShifts:exts,handoffs}).length;
-  return [hard,body+roles,body,shortfall,supervisorExtra,noDayOff,overtime,preferences,changes];
+  return [hard,body+roles,body,shortfall,supervisorExtra,noDayOff,overtime,doubleShiftCount(intervals),spread,preferences,changes];
 }
 
 // Bounded atomic repair: move a qualified employee, then backfill the vacated duty.
@@ -4211,17 +4371,15 @@ function* buildAutoFillSteps(sourceEmps, cfg, empTimeOffDays, empPatterns, extSh
   // BACKWARD from the candidate day, so filling an earlier day after later days
   // were already assigned could silently create 6-10 day streaks (e.g. assign
   // Monday when Tue-Sat are already worked). This looks both directions and
-  // joins the previous week's trailing run when the backward run reaches Sunday.
+  // counts within the schedule week (a run from last week starts again on Sunday).
   const exceedsConsecDays = (empId, day) => {
     const wd = dayWorked[empId] || new Set();
     const idx = dayIdx(day);
     let run = 1;
-    let reachedSunday = (idx === 0);
     for (let i = idx - 1; i >= 0; i--) {
-      if (wd.has(DAYS[i])) { run++; if (i === 0) reachedSunday = true; }
+      if (wd.has(DAYS[i])) run++;
       else break;
     }
-    if (reachedSunday) run += (empPatterns && empPatterns[empId]?.trailingDays) || 0;
     for (let i = idx + 1; i < 7; i++) {
       if (wd.has(DAYS[i])) run++; else break;
     }
@@ -4633,7 +4791,7 @@ function* buildAutoFillSteps(sourceEmps, cfg, empTimeOffDays, empPatterns, extSh
 
     // Count consecutive days worked to detect overwork, including cross-week tail.
     const todayIdx = dayIdx(day);
-    const prevTail = (empPatterns && empPatterns[emp.id]?.trailingDays) || 0;
+    const prevTail = 0; // streaks count within the schedule week
     let consec = 0;
     for (let i = todayIdx - 1; i >= 0; i--) {
       if (dayWorked[emp.id].has(DAYS[i])) consec++; else break;
@@ -4885,7 +5043,7 @@ function* buildAutoFillSteps(sourceEmps, cfg, empTimeOffDays, empPatterns, extSh
         const pos = (emp.qualifications || []).includes("Supervisor") && isWeekday(day)
           ? "Supervisor" : (emp.qualifications || []).find(p => POSITIONS.includes(p));
         return !!pos && !assignmentIssues(emp, day, shiftId, pos, this.schedule, cfg,
-          { extShifts: extShiftsArg || [], empTimeOffDays, empPatterns, ptoHoursByEmployee }).length;
+          { extShifts: extShiftsArg || [], empTimeOffDays, empPatterns, ptoHoursByEmployee, strictStretches: true }).length;
       }
 
       assign(empId, position, slotIdx) {
@@ -5414,7 +5572,7 @@ function* buildAutoFillSteps(sourceEmps, cfg, empTimeOffDays, empPatterns, extSh
       const policyPos = (emp.qualifications || []).includes("Supervisor") && isWeekday(day)
         ? "Supervisor" : (emp.qualifications || []).find(p => POSITIONS.includes(p));
       if (!policyPos || assignmentIssues(emp, day, shiftId, policyPos, sched, cfg,
-        { extShifts: extShiftsArg || [], empTimeOffDays, empPatterns, ptoHoursByEmployee }).length) return false;
+        { extShifts: extShiftsArg || [], empTimeOffDays, empPatterns, ptoHoursByEmployee, strictStretches: true }).length) return false;
       if (empTimeOffDays && empTimeOffDays.has(empId + "__" + day)) return false;
       for (const s of SHIFTS) {
         if (s.id === shiftId) continue;
@@ -5464,7 +5622,7 @@ function* buildAutoFillSteps(sourceEmps, cfg, empTimeOffDays, empPatterns, extSh
       let strk = 0, ms = 0;
       for (const d of DAYS) { if (wd.has(d)) { strk++; ms = Math.max(ms, strk); } else strk = 0; }
       if (wd.has("Sunday")) {
-        const prevTail = (empPatterns && empPatterns[empId]?.trailingDays) || 0;
+        const prevTail = 0; // streaks count within the schedule week
         if (prevTail) {
           let h = 0;
           for (const d of DAYS) { if (wd.has(d)) h++; else break; }
@@ -5963,7 +6121,7 @@ function* buildAutoFillSteps(sourceEmps, cfg, empTimeOffDays, empPatterns, extSh
           const pos = pickPosition(emp, asgn, day, shift.id);
           if (!pos) continue;
           if (assignmentIssues(emp, day, shift.id, pos, { ...ns, [key]: asgn }, cfg,
-              { extShifts: extShiftsArg || [], empTimeOffDays, empPatterns, ptoHoursByEmployee }).length) continue;
+              { extShifts: extShiftsArg || [], empTimeOffDays, empPatterns, ptoHoursByEmployee, strictStretches: true }).length) continue;
           // Guard-only preference handled by backtracking; post-processing is last resort
           if (weekendCapHit(emp, day)) continue;
           hourTracker[emp.id]  = (hourTracker[emp.id]  || 0) + SHIFT_HOURS;
@@ -6523,7 +6681,7 @@ function* buildAutoFillSteps(sourceEmps, cfg, empTimeOffDays, empPatterns, extSh
   }
 
   const filtered = filterPolicyAssignments(ns, sourceEmps, cfg,
-    { extShifts: extShiftsArg || [], handoffs:weeklyOptions.preservedHandoffs || [], preservedSchedule, empTimeOffDays, empPatterns, ptoHoursByEmployee });
+    { extShifts: extShiftsArg || [], handoffs:weeklyOptions.preservedHandoffs || [], preservedSchedule, empTimeOffDays, empPatterns, ptoHoursByEmployee, strictStretches: true });
   const accepted = filtered.schedule, policyRejected = filtered.rejected;
   Object.assign(ns, accepted);
   for (const emp of sourceEmps) {
@@ -6594,7 +6752,7 @@ function violationMinimizerPass(ns, sourceEmps, cfg, empTimeOffDays, extShiftsAr
     // isClean previously checked rest/consec-hours/consec-nights but NOT
     // consecutive days — the swap-in winner could be handed a 6th straight day.
     const maxDays = cfg?.maxConsecutiveShifts ?? 5;
-    const tail = (empPatterns && empPatterns[emp.id]?.trailingDays) || 0;
+    const tail = 0; // streaks count within the schedule week
     const worksOn = (d) => (d === day) || SHIFTS.some(s => (sched[cellKey(d, s.id)]||[]).some(x => x.employeeId === emp.id));
     let streak = worksOn(DAYS[0]) ? tail + 1 : 0, mxStreak = streak;
     for (let i = 1; i < 7; i++) { streak = worksOn(DAYS[i]) ? streak + 1 : 0; mxStreak = Math.max(mxStreak, streak); }
@@ -13679,6 +13837,7 @@ function ScheduleGrid({ onOpenTestModal }) {
       empPatterns: boundaryPatterns(history, weekStart, empPatterns) };
     const issues = [...validateCoverage(sched, allRoster, allExts, allHandoffs).filter(i=>i.type!=='overstaffed'),
       ...validateAssignmentPolicy(sched, allRoster, cfg, options), ...accounting.issues,
+      ...allRoster.flatMap(e => stretchIssues(e, sched, cfg, options)),
       ...employeesWithoutDayOff(allRoster, sched, allExts, allHandoffs).map(e => ({ level: "warn", type: "no_day_off", employeeId: e.id,
         msg: `${e.name} has no day off this week` }))];
     return issues;
@@ -14100,12 +14259,13 @@ function ScheduleGrid({ onOpenTestModal }) {
         do { step = running.next(); } while (!step.done && Date.now() < sliceEnd);
         if (!step.done) { setTimeout(tick, 0); return; }
         running = null;
-        post = { result: step.value, stage: step.value.errors > 0 ? "gaps" : "improve" };
+        post = { result: step.value, stage: step.value.errors > 0 ? "gaps" : "rebalance" };
         setTimeout(tick, 0); return;
       }
       // Each repair stage runs in its own tick (each has its own time budget).
       if (post.stage === "gaps") { post.result = repairScheduleGaps(post.result, repairContext); post.stage = "completion"; setTimeout(tick, 0); return; }
-      if (post.stage === "completion") { post.result = repairScheduleCompletion(post.result, repairContext); post.stage = "improve"; setTimeout(tick, 0); return; }
+      if (post.stage === "completion") { post.result = repairScheduleCompletion(post.result, repairContext); post.stage = "rebalance"; setTimeout(tick, 0); return; }
+      if (post.stage === "rebalance") { post.result = rebalanceOvertime(post.result, repairContext); post.stage = "improve"; setTimeout(tick, 0); return; }
       let result = post.result;
       post = null;
 
@@ -17465,13 +17625,13 @@ function SettingsPanel({ themeName, setThemeName, customTheme, setCustomTheme, m
 
       {settingsTab==="rules" && (
         <Section title="Consecutive Shifts">
-        <Row label="Max consecutive night shifts"
-          desc="Employees assigned to 3rd shift (2200–0600) more than this many shifts in a row will trigger a fatigue warning. Auto-fill will avoid exceeding this limit. Default: 3.">
+        <Row label="Preferred max consecutive nights"
+          desc="Counted within one schedule week (a run from last week starts again on Sunday). Auto-fill plans inside this limit and goes over only when that is what covers a shift; going over shows a fatigue warning. Default: 3.">
           <Stepper value={cfg.maxConsecutiveNights} min={1} max={7} unit="nights"
             onChange={v => update("maxConsecutiveNights", v)} />
         </Row>
-        <Row label="Max consecutive any shifts"
-          desc="Maximum number of consecutive shifts of any type before the auto-fill scheduler enforces a break. Default: 5.">
+        <Row label="Preferred max consecutive days"
+          desc="Working days in a row, counted within one schedule week (a run from last week starts again on Sunday). Auto-fill plans inside this limit and goes over only when that is what covers a shift; going over shows a warning. Default: 5.">
           <Stepper value={cfg.maxConsecutiveShifts ?? 5} min={1} max={7} unit="shifts"
             onChange={v => update("maxConsecutiveShifts", v)} />
         </Row>
