@@ -53,21 +53,40 @@ function runWeek(employees, { cfg, weekStart, history = [], empPatterns = {}, se
     preservedHandoffs: [], swingDesig: {}, validateSchedule };
   const scope = new Proxy(ctx, { has: () => true, get: (t, k) => k === Symbol.unscopables ? undefined : (k in t ? t[k] : core[k] ?? global[k]) });
   const attempt = new Function('ctx', `with(ctx){ const attempt=(jitter,withProactive=true)=>{const s=attemptSteps(jitter,withProactive);let st;do{st=s.next();}while(!st.done);return st.value;};\n${attemptSrc}\n return attempt; }`)(scope);
-  const repairContext = { source: employees, accountingRoster: employees, cfg, empTimeOffDays, ptoHoursByEmployee, enrichedPatterns, validateSchedule, fairnessHistory };
-  let best = null, prev = null, plateau = 0;
-  for (let n = 1; n <= attempts; n++) {
-    let r = quiet(() => attempt(n > 1, n % 2 === 1));
-    if (r.errors > 0) r = quiet(() => core.repairScheduleCompletion(core.repairScheduleGaps(r, repairContext), repairContext));
+  const repairContext = { source: employees, accountingRoster: employees, cfg, empTimeOffDays, ptoHoursByEmployee, enrichedPatterns, validateSchedule, fairnessHistory,
+    searchInput: { weekStart, timeOffReqs: [], weekAvailability: null, history, empPatterns, excludedIds: [], trainingBlocks: [] },
+    ...JSON.parse(process.env.REPAIR_OPTS || '{}') };
+  const finish = r => {
     r = quiet(() => core.rebalanceOvertime(r, repairContext));
     r = quiet(() => core.improveSchedulePreferences(r, repairContext));
     r.issues = validateSchedule(r.ns, r.autoExtShifts, employees, r.handoffs);
     r.errors = r.issues.filter(i => i.level === 'error').length;
     r.quality = core.scheduleQuality(r, employees, cfg, { empTimeOffDays, ptoHoursByEmployee, empPatterns: enrichedPatterns, fairnessHistory }, {});
+    return r;
+  };
+  let best = null, prev = null, plateau = 0;
+  for (let n = 1; n <= attempts; n++) {
+    let r = quiet(() => attempt(n > 1, n % 2 === 1));
+    if (r.errors > 0) r = quiet(() => core.repairScheduleCompletion(core.repairScheduleGaps(r, repairContext), repairContext));
+    r = finish(r);
     r.attempt = n;
     if (!best || core.compareScheduleQuality(r.quality, best.quality) < 0) best = r;
     plateau = prev && core.compareScheduleQuality(best.quality, prev) >= 0 ? plateau + 1 : 0;
     prev = [...best.quality];
     if (plateau >= 3) break;
+  }
+  // As the page: once, on the best week, relay repair (one neighbourhood per tick).
+  if (best.errors > 0) {
+    const relayTried = new Set(), started = Date.now(), total = Number(process.env.RELAY_TOTAL_MS) || 10000;
+    let r = best;
+    for (;;) {
+      const left = total - (Date.now() - started);
+      r = quiet(() => core.repairWithRelays(r, { ...repairContext, relayMaxGaps: 1, relayTried, relayRepairMs: Math.max(0, left) }));
+      if (r.relayInfo.done || left <= 0) break;
+    }
+    best.relayMs = Date.now() - started;
+    r = finish(r);
+    if (core.compareScheduleQuality(r.quality, best.quality) < 0) { r.attempt = best.attempt; r.relayMs = best.relayMs; best = r; }
   }
   best.overtimeFloor = core.overtimeLowerBound(employees, { empTimeOffDays, ptoHoursByEmployee });
   return best;
@@ -97,11 +116,14 @@ function summarize(employees, r) {
   const errors = {};
   for (const i of r.issues.filter(i => i.level === 'error')) errors[i.type] = (errors[i.type] || 0) + 1;
   return { errors: r.errors, byType: errors, gapHours: q.coverage, overtime: q.overtime, floor: r.overtimeFloor, doubles: q.doubles,
-    maxHours: Math.max(...hours), noDayOff: q.noDayOff, preferences: q.preferences };
+    maxHours: Math.max(...hours), noDayOff: q.noDayOff, preferences: q.preferences, relayMs: r.relayMs };
 }
 
 if (require.main === module) {
-  const { employees, settings } = loadRoster(arg('roster', path.join(REPO, 'fixtures/roster-2026-09-27.json')));
+  const loaded = loadRoster(arg('roster', path.join(REPO, 'fixtures/roster-2026-09-27.json'))), settings = loaded.settings;
+  // --set "D Pete,L Hillenburg" --as '{"splitShiftEligible":true}' tries a roster change without editing the file.
+  const changed = arg('set', '').split(',').filter(Boolean), patch = JSON.parse(arg('as', '{}'));
+  const employees = loaded.employees.map(e => changed.includes(e.name) ? { ...e, ...patch } : e);
   const cfg = { maxConsecutiveShifts: 6, maxConsecutiveNights: 6, minRestHours: 8, ...settings, ...JSON.parse(arg('cfg', '{}')) };
   const seeds = arg('seeds', '1,2,3').split(',').map(Number), weeks = Number(arg('weeks', 1));
   console.log('settings', JSON.stringify(cfg));
