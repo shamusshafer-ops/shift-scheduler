@@ -717,6 +717,12 @@ const getEffectiveSlotCount = (d, s, extShifts, employees = []) =>
     getSlotCount(d, s) - analyzeShiftCoverage(d,s,{},employees,extShifts || []).maxRegular);
 const getAvailPos  = (d, s) => POSITIONS;                       // Sup slot handled separately
 const cellKey      = (d,s) => d+"__"+s;
+// Firefox only starts an HTML5 drag when the dataTransfer carries data. A
+// private type also keeps a stray drop from being treated as a link or text.
+const DRAG_MIME = "application/x-shift-scheduler";
+const startDragData = (e, payload) => {
+  try { e.dataTransfer.setData(DRAG_MIME, String(payload)); e.dataTransfer.effectAllowed = "move"; } catch (_) {}
+};
 
 // Supervisor employees fill ONLY the dedicated Supervisor slot on weekday 1st shift.
 // They cannot fill Guard/Scale/Medical on weekday 1st (that's handled by regular slots).
@@ -14093,12 +14099,13 @@ function ScheduleGrid({ onOpenTestModal }) {
     if (srcDay === tgtDay && srcShift === tgtShift) return;
     const tgtAsgn = getAsgn(tgtDay, tgtShift);
     const tgtCap  = getEffectiveSlotCount(tgtDay, tgtShift, extShifts, employees);
-    if (tgtAsgn.length >= tgtCap) return;           // target full
-    if (tgtAsgn.some(a => a.employeeId === empId)) return; // already there
+    const where = `${tgtDay} ${tgtShift} shift`;
+    if (tgtAsgn.length >= tgtCap) { showAlert({ title: "Shift is full", message: `${where} is full. Drop onto a person there to swap places.`, variant: "info" }); return; }
+    if (tgtAsgn.some(a => a.employeeId === empId)) { showAlert({ title: "Already scheduled", message: `They already work ${where}.`, variant: "info" }); return; }
     const emp = employees.find(e => e.id === empId);
     if (!emp) return;
     const ap = getAssignable(emp, tgtDay, tgtShift);
-    if (!ap.length) return;                          // not qualified for target slot
+    if (!ap.length) { showAlert({ title: "Cannot move here", message: `${emp.name} cannot work ${where} (qualification, availability or shift rules).`, variant: "info" }); return; }
     const tgtSt = getStatus(tgtDay, tgtShift);
     let pos = ap.includes(srcPos) ? srcPos : null;  // keep same role if possible
     if (!pos) {
@@ -14227,10 +14234,14 @@ function ScheduleGrid({ onOpenTestModal }) {
   const handleDrop = async (d,s) => {
     if(!dragEmp) return;
     const cur=getAsgn(d,s);
-    if(cur.length>=getEffectiveSlotCount(d,s, extShifts, employees)||cur.some(a=>a.employeeId===dragEmp.id)) return;
+    if(cur.some(a=>a.employeeId===dragEmp.id)) { showAlert({title:"Already scheduled",message:`${dragEmp.name} already works ${d} ${s} shift.`,variant:"info"}); return; }
+    if(cur.length>=getEffectiveSlotCount(d,s, extShifts, employees)) { showAlert({title:"Shift is full",message:`${d} ${s} shift is full. Remove someone first, or drag a person already on the grid onto them to swap.`,variant:"info"}); return; }
     // Hard block: maxShiftsPerWeek cap reached
-    if(dragEmp.maxShiftsPerWeek!=null && countShiftsInWeek(dragEmp.id,schedule)>=dragEmp.maxShiftsPerWeek) return;
-    const ap=getAssignable(dragEmp,d,s); if(!ap.length) return;
+    if(dragEmp.maxShiftsPerWeek!=null && countShiftsInWeek(dragEmp.id,schedule)>=dragEmp.maxShiftsPerWeek) {
+      showAlert({title:"Weekly limit reached",message:`${dragEmp.name} is already at their ${dragEmp.maxShiftsPerWeek}-shift weekly limit.`,variant:"info"}); return;
+    }
+    const ap=getAssignable(dragEmp,d,s);
+    if(!ap.length) { showAlert({title:"Cannot assign here",message:`${dragEmp.name} cannot work ${d} ${s} shift (qualification, availability or shift rules).`,variant:"info"}); return; }
     const st=getStatus(d,s);
 
     let pos;
@@ -15476,6 +15487,7 @@ function ScheduleGrid({ onOpenTestModal }) {
                           onDragStart={e=>{
                             if(isReadOnly||swapSource||subSource){e.preventDefault();return;}
                             e.stopPropagation();
+                            startDragData(e, a.employeeId);
                             setDragChip({employeeId:a.employeeId,day,shiftId:shift.id,position:a.position});
                             setDragEmp(null);
                           }}
@@ -15851,7 +15863,7 @@ function ScheduleGrid({ onOpenTestModal }) {
           const fatigueN  = getFatigueIssues(emp.id, schedule, cfg, employees, extShifts||[], handoffs || [], boundaryPatterns(history, weekStart, empPatterns)).length;
           const borderCol = fatigueN>0 ? "var(--ss-fatigue)" : isFT&&hours>40 ? "var(--ss-warning)" : "var(--ss-border)";
           return (
-            <span key={emp.id} draggable onDragStart={()=>setDragEmp(emp)} onDragEnd={()=>setDragEmp(null)}
+            <span key={emp.id} draggable onDragStart={e=>{startDragData(e, emp.id);setDragEmp(emp);}} onDragEnd={()=>setDragEmp(null)}
               style={{fontSize:10,fontWeight:600,padding:"4px 10px",borderRadius:4,background:"var(--ss-surface)",
                 border:"1px solid "+borderCol,cursor:"grab",color:"var(--ss-text)",display:"flex",alignItems:"center",gap:4}}>
               {emp.name}
