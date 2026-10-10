@@ -4166,7 +4166,17 @@ function boundaryPatterns(history, weekStart, patterns = {}) {
   return result;
 }
 
-function buildAutoFill(sourceEmps, cfg, empTimeOffDays, empPatterns, extShiftsArg, jitter = false, weeklyOptions = {}) {
+// Runs autofill to completion. The UI drives buildAutoFillSteps directly so the
+// page stays responsive; every other caller gets the same result in one call.
+function buildAutoFill(...args) {
+  const steps = buildAutoFillSteps(...args);
+  let step;
+  do { step = steps.next(); } while (!step.done);
+  return step.value;
+}
+// Resumable autofill: yields (no value) every few hundred annealing iterations
+// so a caller can hand control back to the browser between slices.
+function* buildAutoFillSteps(sourceEmps, cfg, empTimeOffDays, empPatterns, extShiftsArg, jitter = false, weeklyOptions = {}) {
   if(hasDutyLocks(weeklyOptions.seedSchedule || {},extShiftsArg || [],weeklyOptions.seedHandoffs || []))
     return buildLockedAutoFill(sourceEmps,cfg,empTimeOffDays,empPatterns,extShiftsArg,weeklyOptions);
   let searchInfo = {termination:"not_started",nodes:0,elapsedMs:0};
@@ -5715,6 +5725,7 @@ function buildAutoFill(sourceEmps, cfg, empTimeOffDays, empPatterns, extShiftsAr
 
     let attempts = 0, accepted = 0, uphill = 0, improvements = 0, lnsAccepted = 0;
     for (let iter = 0; iter < SA_ITERATIONS; iter++) {
+      if (iter % 250 === 249) yield; // let the page breathe; results are unchanged
       attempts++;
       let candidate = null;
       let wasLNS = false;
@@ -13823,9 +13834,16 @@ function ScheduleGrid({ onOpenTestModal }) {
 
     // ── Single-attempt worker — pure function, no side effects ───────────────
     const attempt = (jitter, withProactive = true) => {
+      const steps = attemptSteps(jitter, withProactive);
+      let step;
+      do { step = steps.next(); } while (!step.done);
+      return step.value;
+    };
+    // The same attempt, resumable: the loop below runs it in short time slices.
+    function* attemptSteps(jitter, withProactive = true) {
       if(hasDutyLocks(schedule,extShifts || [],handoffs || [])) {
         const seed=attempt.lockedSeed || {schedule,extShifts:extShifts || [],handoffs:handoffs || []};
-        const result=buildAutoFill(source,cfg,empTimeOffDays,enrichedPatterns,seed.extShifts,jitter,
+        const result=yield* buildAutoFillSteps(source,cfg,empTimeOffDays,enrichedPatterns,seed.extShifts,jitter,
           {seedSchedule:seed.schedule,seedHandoffs:seed.handoffs,roster:accountingRoster,ptoHoursByEmployee,fairnessHistory});
         attempt.lockedSeed={schedule:result.schedule,extShifts:result.autoExtShifts,handoffs:result.handoffs};
         return {...result,ns:result.schedule};
@@ -13842,7 +13860,7 @@ function ScheduleGrid({ onOpenTestModal }) {
       }
       const inputExtShifts = [...manualExtShifts, ...proactiveExts];
 
-      const {schedule:ns, hourTracker, shiftsWorked, usedPatterns, assignLog, policyRejected, searchInfo} = buildAutoFill(source, cfg, empTimeOffDays, enrichedPatterns, inputExtShifts, jitter,
+      const {schedule:ns, hourTracker, shiftsWorked, usedPatterns, assignLog, policyRejected, searchInfo} = yield* buildAutoFillSteps(source, cfg, empTimeOffDays, enrichedPatterns, inputExtShifts, jitter,
         { ptoHoursByEmployee, preservedSchedule, preservedHandoffs, roster: accountingRoster });
 
       for (const [key, asgn] of Object.entries(preservedSchedule)) ns[key] = [...(ns[key] || []), ...asgn];
@@ -14032,6 +14050,8 @@ function ScheduleGrid({ onOpenTestModal }) {
     // eligible candidate, generate ALL feasible candidates across all strategy
     // types, score each by estimated cost, and apply cheapest first. This picks
     // the least-disruptive repair for each gap.
+    const repairContext={source,accountingRoster,cfg,empTimeOffDays,ptoHoursByEmployee,enrichedPatterns,validateSchedule,fairnessHistory};
+    // Single-call form of the repair stages (the loop below runs them one tick each).
     const repairGaps = result => {
       const context={source,accountingRoster,cfg,empTimeOffDays,ptoHoursByEmployee,enrichedPatterns,validateSchedule,fairnessHistory};
       return repairScheduleCompletion(repairScheduleGaps(result,context),context);
@@ -14052,6 +14072,8 @@ function ScheduleGrid({ onOpenTestModal }) {
     let attemptNum = 0;
     let plateauCount = 0;
     let prevBestQuality = null;
+    let running = null; // the attempt in progress, resumed slice by slice
+    let post = null;    // a finished attempt still going through repair stages
 
     const tick = () => {
       if (autoFillCancelRef.current) {
@@ -14067,11 +14089,25 @@ function ScheduleGrid({ onOpenTestModal }) {
         return;
       }
 
-      attemptNum++;
       // Step 0's up-front 12h pairs help some rosters and hurt others, so odd
       // attempts use them and even attempts plan without; the best week wins.
-      let result = attempt(attemptNum > 1, attemptNum % 2 === 1);
-      if (result.errors > 0) result = repairGaps(result);
+      if (!post) {
+        if (!running) { attemptNum++; running = attemptSteps(attemptNum > 1, attemptNum % 2 === 1); }
+        // Work in ~40ms slices and hand the page back in between, so it stays
+        // responsive and Cancel / Use best now are honoured within a slice.
+        const sliceEnd = Date.now() + 40;
+        let step;
+        do { step = running.next(); } while (!step.done && Date.now() < sliceEnd);
+        if (!step.done) { setTimeout(tick, 0); return; }
+        running = null;
+        post = { result: step.value, stage: step.value.errors > 0 ? "gaps" : "improve" };
+        setTimeout(tick, 0); return;
+      }
+      // Each repair stage runs in its own tick (each has its own time budget).
+      if (post.stage === "gaps") { post.result = repairScheduleGaps(post.result, repairContext); post.stage = "completion"; setTimeout(tick, 0); return; }
+      if (post.stage === "completion") { post.result = repairScheduleCompletion(post.result, repairContext); post.stage = "improve"; setTimeout(tick, 0); return; }
+      let result = post.result;
+      post = null;
 
       result=improveSchedulePreferences(result,{source,accountingRoster,cfg,empTimeOffDays,ptoHoursByEmployee,enrichedPatterns,fairnessHistory});
       result.issues=validateSchedule(result.ns,result.autoExtShifts,accountingRoster,result.handoffs);
