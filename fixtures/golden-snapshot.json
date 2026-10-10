@@ -1,35 +1,35 @@
 {
- "recordedAt": "2026-10-09T10:55:28.213Z",
+ "recordedAt": "2026-10-10T11:22:14.622Z",
  "summary": {
-  "harness/baseline/12345": "c1135cd2113c3dde",
-  "harness/baseline/777": "97307277d698fc40",
-  "harness/baseline/2026": "843f6c790c1b9813",
-  "harness/pto_specialist/12345": "1b414c1d762fb2ff",
-  "harness/pto_specialist/777": "711f238c45f4f87d",
-  "harness/pto_specialist/2026": "66cde1462dedf5ac",
-  "harness/tight/12345": "8ad3d3993c9bb078",
-  "harness/tight/777": "5cd4629ff90ec740",
-  "harness/tight/2026": "aece16b586b98c38",
-  "harness/infeasible_day/12345": "daa0c02fb7fbc6ef",
-  "harness/infeasible_day/777": "00e531f1833922e7",
-  "harness/infeasible_day/2026": "1151c54b654c3874",
-  "harness/carryover/12345": "c7fd1cb5aab80890",
-  "harness/carryover/777": "7c8d84001dbd87c1",
-  "harness/carryover/2026": "97997959d68f6c15",
-  "harness/multi_pref/12345": "c1135cd2113c3dde",
-  "harness/multi_pref/777": "685a47e16a0a9b7a",
-  "harness/multi_pref/2026": "843f6c790c1b9813",
-  "real-roster/12345": "afb16676a3035ac2",
-  "real-roster-availability/12345": "e66e67727a421551",
-  "real-roster-step0/12345": "f3c98c5be326970d",
-  "real-roster/777": "afb16676a3035ac2",
-  "real-roster-availability/777": "86c8f4b62d8737b2",
-  "real-roster-step0/777": "f3c98c5be326970d",
-  "real-roster/2026": "827461301a3cecb1",
-  "real-roster-availability/2026": "1f2c9b399dfd86fe",
-  "real-roster-step0/2026": "f3c98c5be326970d",
-  "backup-roster/12345": "82be7bfaa011bee5",
-  "backup-roster/777": "d96a1ee46424135f",
+  "harness/baseline/12345": "7ac90a14f4848133",
+  "harness/baseline/777": "26f129792ab4f4c2",
+  "harness/baseline/2026": "f469267945238617",
+  "harness/pto_specialist/12345": "1ccf7119e95d9598",
+  "harness/pto_specialist/777": "dd2dd1d52dc81331",
+  "harness/pto_specialist/2026": "9520d4f3942132e8",
+  "harness/tight/12345": "c33318ab38bb9be6",
+  "harness/tight/777": "f1f914944e8745ed",
+  "harness/tight/2026": "e913579efb9d7c07",
+  "harness/infeasible_day/12345": "28ca6d4a39ae49fe",
+  "harness/infeasible_day/777": "5c3a0b0fd585b10c",
+  "harness/infeasible_day/2026": "17b671fd514dc48b",
+  "harness/carryover/12345": "ee26f43718d75b50",
+  "harness/carryover/777": "a2cdf9e498f23c00",
+  "harness/carryover/2026": "0ee517d7abbcbba1",
+  "harness/multi_pref/12345": "7ac90a14f4848133",
+  "harness/multi_pref/777": "45e4fa4bf0d22d66",
+  "harness/multi_pref/2026": "f469267945238617",
+  "real-roster/12345": "932a35e8c2836fec",
+  "real-roster-availability/12345": "5d49a644acf6f4f8",
+  "real-roster-step0/12345": "2d8cd1130ecc35c0",
+  "real-roster/777": "932a35e8c2836fec",
+  "real-roster-availability/777": "b8bf8c68b02c3b2d",
+  "real-roster-step0/777": "2d8cd1130ecc35c0",
+  "real-roster/2026": "0f254b0e418f534d",
+  "real-roster-availability/2026": "898b4d05ca54b20a",
+  "real-roster-step0/2026": "2d8cd1130ecc35c0",
+  "backup-roster/12345": "361d39190465f67b",
+  "backup-roster/777": "c79bfeba473d06b6",
   "repair/completion": "c0be4625a98cc025",
   "repair/gaps": "c94e91725ff5cda6"
  },
@@ -384,6 +384,8 @@
     0,
     0,
     24,
+    0,
+    192,
     40,
     0
    ]
@@ -738,6 +740,8 @@
     0,
     0,
     24,
+    0,
+    192,
     40,
     0
    ]
@@ -1092,6 +1096,8 @@
     0,
     0,
     24,
+    0,
+    192,
     48,
     0
    ]
@@ -1446,6 +1452,8 @@
     0,
     0,
     16,
+    0,
+    128,
     48,
     0
    ]
@@ -1787,7 +1795,7 @@
      "shiftId": "third",
      "employeeId": "e8",
      "reasons": [
-      "Med Harris: 4 consecutive nights exceeds 3"
+      "Med Harris: Med Harris: 4 consecutive nights this week (preferred limit 3)"
      ]
     }
    ],
@@ -1816,6 +1824,8 @@
     0,
     0,
     16,
+    0,
+    128,
     40,
     0
    ]
@@ -2170,6 +2180,8 @@
     0,
     0,
     24,
+    0,
+    192,
     24,
     0
    ]
@@ -2521,6 +2533,8 @@
     0,
     0,
     32,
+    0,
+    256,
     48,
     0
    ]
@@ -2877,6 +2891,8 @@
     0,
     0,
     32,
+    0,
+    256,
     40,
     0
    ]
@@ -3233,6 +3249,8 @@
     0,
     0,
     32,
+    0,
+    256,
     40,
     0
    ]
@@ -3574,7 +3592,7 @@
      "shiftId": "third",
      "employeeId": "e7",
      "reasons": [
-      "Scale Grant: 4 consecutive nights exceeds 3"
+      "Scale Grant: Scale Grant: 4 consecutive nights this week (preferred limit 3)"
      ]
     }
    ],
@@ -3613,6 +3631,8 @@
     0,
     0,
     8,
+    0,
+    64,
     48,
     0
    ]
@@ -3978,6 +3998,8 @@
     0,
     0,
     8,
+    0,
+    64,
     48,
     0
    ]
@@ -4343,6 +4365,8 @@
     0,
     0,
     8,
+    0,
+    64,
     64,
     0
    ]
@@ -4351,12 +4375,12 @@
    "schedule": {
     "Sunday__first": [
      {
-      "employeeId": "e3",
-      "position": "Medical"
+      "employeeId": "e5",
+      "position": "Guard"
      },
      {
-      "employeeId": "e15",
-      "position": "Scale"
+      "employeeId": "e3",
+      "position": "Medical"
      },
      {
       "employeeId": "e14",
@@ -4365,19 +4389,23 @@
     ],
     "Sunday__second": [
      {
-      "employeeId": "e4",
+      "employeeId": "e6",
       "position": "Medical"
      },
      {
-      "employeeId": "e11",
-      "position": "Guard"
+      "employeeId": "e4",
+      "position": "Scale"
      },
      {
-      "employeeId": "e5",
+      "employeeId": "e12",
       "position": "Guard"
      }
     ],
     "Sunday__third": [
+     {
+      "employeeId": "e8",
+      "position": "Medical"
+     },
      {
       "employeeId": "e7",
       "position": "Scale"
@@ -4385,10 +4413,6 @@
      {
       "employeeId": "e10",
       "position": "Guard"
-     },
-     {
-      "employeeId": "e8",
-      "position": "Medical"
      }
     ],
     "Monday__first": [
@@ -4411,26 +4435,26 @@
     ],
     "Monday__second": [
      {
-      "employeeId": "e4",
+      "employeeId": "e6",
+      "position": "Medical"
+     },
+     {
+      "employeeId": "e5",
       "position": "Scale"
      },
      {
       "employeeId": "e11",
       "position": "Guard"
-     },
-     {
-      "employeeId": "e12",
-      "position": "Guard"
      }
     ],
     "Monday__third": [
      {
-      "employeeId": "e8",
-      "position": "Medical"
-     },
-     {
       "employeeId": "e7",
       "position": "Scale"
+     },
+     {
+      "employeeId": "e8",
+      "position": "Medical"
      },
      {
       "employeeId": "e10",
@@ -4447,32 +4471,32 @@
       "position": "Medical"
      },
      {
-      "employeeId": "e9",
-      "position": "Guard"
-     },
-     {
       "employeeId": "e2",
       "position": "Scale"
+     },
+     {
+      "employeeId": "e9",
+      "position": "Guard"
      }
     ],
     "Tuesday__second": [
      {
-      "employeeId": "e6",
-      "position": "Medical"
+      "employeeId": "e11",
+      "position": "Guard"
      },
      {
       "employeeId": "e5",
-      "position": "Scale"
+      "position": "Guard"
      },
      {
-      "employeeId": "e12",
-      "position": "Guard"
+      "employeeId": "e4",
+      "position": "Medical"
      }
     ],
     "Tuesday__third": [
      {
       "employeeId": "e7",
-      "position": "Scale"
+      "position": "Guard"
      },
      {
       "employeeId": "e14",
@@ -4489,26 +4513,26 @@
       "position": "Supervisor"
      },
      {
+      "employeeId": "e3",
+      "position": "Medical"
+     },
+     {
       "employeeId": "e2",
       "position": "Scale"
      },
      {
       "employeeId": "e9",
       "position": "Guard"
-     },
-     {
-      "employeeId": "e4",
-      "position": "Medical"
      }
     ],
     "Wednesday__second": [
      {
-      "employeeId": "e5",
-      "position": "Scale"
-     },
-     {
       "employeeId": "e6",
       "position": "Medical"
+     },
+     {
+      "employeeId": "e12",
+      "position": "Scale"
      },
      {
       "employeeId": "e11",
@@ -4517,8 +4541,72 @@
     ],
     "Wednesday__third": [
      {
-      "employeeId": "e13",
+      "employeeId": "e10",
+      "position": "Guard"
+     },
+     {
+      "employeeId": "e8",
+      "position": "Guard"
+     },
+     {
+      "employeeId": "e5",
+      "position": "Scale"
+     }
+    ],
+    "Thursday__first": [
+     {
+      "employeeId": "e1",
+      "position": "Supervisor"
+     },
+     {
+      "employeeId": "e2",
+      "position": "Scale"
+     },
+     {
+      "employeeId": "e3",
       "position": "Medical"
+     },
+     {
+      "employeeId": "e9",
+      "position": "Guard"
+     }
+    ],
+    "Thursday__second": [
+     {
+      "employeeId": "e4",
+      "position": "Scale"
+     },
+     {
+      "employeeId": "e6",
+      "position": "Guard"
+     },
+     {
+      "employeeId": "e12",
+      "position": "Guard"
+     }
+    ],
+    "Thursday__third": [
+     {
+      "employeeId": "e7",
+      "position": "Scale"
+     },
+     {
+      "employeeId": "e8",
+      "position": "Medical"
+     },
+     {
+      "employeeId": "e10",
+      "position": "Guard"
+     }
+    ],
+    "Friday__first": [
+     {
+      "employeeId": "e1",
+      "position": "Supervisor"
+     },
+     {
+      "employeeId": "e9",
+      "position": "Guard"
      },
      {
       "employeeId": "e15",
@@ -4529,43 +4617,21 @@
       "position": "Guard"
      }
     ],
-    "Thursday__first": [
+    "Friday__second": [
      {
-      "employeeId": "e1",
-      "position": "Supervisor"
+      "employeeId": "e6",
+      "position": "Medical"
      },
      {
-      "employeeId": "e9",
-      "position": "Guard"
-     },
-     {
-      "employeeId": "e2",
+      "employeeId": "e4",
       "position": "Scale"
      },
      {
-      "employeeId": "e8",
-      "position": "Medical"
-     }
-    ],
-    "Thursday__second": [
-     {
-      "employeeId": "e4",
-      "position": "Guard"
-     },
-     {
-      "employeeId": "e5",
-      "position": "Guard"
-     },
-     {
-      "employeeId": "e6",
+      "employeeId": "e11",
       "position": "Guard"
      }
     ],
-    "Thursday__third": [
-     {
-      "employeeId": "e10",
-      "position": "Guard"
-     },
+    "Friday__third": [
      {
       "employeeId": "e7",
       "position": "Scale"
@@ -4573,48 +4639,6 @@
      {
       "employeeId": "e13",
       "position": "Medical"
-     }
-    ],
-    "Friday__first": [
-     {
-      "employeeId": "e1",
-      "position": "Supervisor"
-     },
-     {
-      "employeeId": "e2",
-      "position": "Scale"
-     },
-     {
-      "employeeId": "e3",
-      "position": "Medical"
-     },
-     {
-      "employeeId": "e9",
-      "position": "Guard"
-     }
-    ],
-    "Friday__second": [
-     {
-      "employeeId": "e6",
-      "position": "Medical"
-     },
-     {
-      "employeeId": "e11",
-      "position": "Guard"
-     },
-     {
-      "employeeId": "e5",
-      "position": "Scale"
-     }
-    ],
-    "Friday__third": [
-     {
-      "employeeId": "e8",
-      "position": "Medical"
-     },
-     {
-      "employeeId": "e7",
-      "position": "Scale"
      },
      {
       "employeeId": "e10",
@@ -4623,30 +4647,30 @@
     ],
     "Saturday__first": [
      {
-      "employeeId": "e3",
-      "position": "Medical"
-     },
-     {
       "employeeId": "e14",
       "position": "Guard"
      },
      {
-      "employeeId": "e4",
+      "employeeId": "e2",
       "position": "Scale"
+     },
+     {
+      "employeeId": "e15",
+      "position": "Medical"
      }
     ],
     "Saturday__second": [
      {
-      "employeeId": "e6",
-      "position": "Medical"
+      "employeeId": "e5",
+      "position": "Guard"
      },
      {
       "employeeId": "e11",
       "position": "Guard"
      },
      {
-      "employeeId": "e12",
-      "position": "Scale"
+      "employeeId": "e4",
+      "position": "Medical"
      }
     ],
     "Saturday__third": [
@@ -4655,11 +4679,11 @@
       "position": "Scale"
      },
      {
-      "employeeId": "e8",
-      "position": "Medical"
+      "employeeId": "e13",
+      "position": "Guard"
      },
      {
-      "employeeId": "e10",
+      "employeeId": "e8",
       "position": "Guard"
      }
     ]
@@ -4685,7 +4709,7 @@
    "policyRejected": [],
    "searchInfo": {
     "termination": "candidate_found",
-    "nodes": 86,
+    "nodes": 67,
     "partialMode": false
    },
    "issues": [],
@@ -4697,7 +4721,9 @@
     0,
     0,
     8,
-    24,
+    0,
+    64,
+    16,
     0
    ]
   },
@@ -4705,30 +4731,30 @@
    "schedule": {
     "Sunday__first": [
      {
+      "employeeId": "e3",
+      "position": "Medical"
+     },
+     {
       "employeeId": "e2",
-      "position": "Scale"
+      "position": "Guard"
      },
      {
       "employeeId": "e14",
       "position": "Guard"
-     },
-     {
-      "employeeId": "e4",
-      "position": "Medical"
      }
     ],
     "Sunday__second": [
+     {
+      "employeeId": "e4",
+      "position": "Scale"
+     },
      {
       "employeeId": "e12",
       "position": "Guard"
      },
      {
-      "employeeId": "e11",
-      "position": "Guard"
-     },
-     {
       "employeeId": "e6",
-      "position": "Medical"
+      "position": "Guard"
      }
     ],
     "Sunday__third": [
@@ -4741,7 +4767,7 @@
       "position": "Guard"
      },
      {
-      "employeeId": "e13",
+      "employeeId": "e8",
       "position": "Medical"
      }
     ],
@@ -4755,22 +4781,22 @@
       "position": "Medical"
      },
      {
-      "employeeId": "e9",
-      "position": "Guard"
+      "employeeId": "e2",
+      "position": "Scale"
      },
      {
-      "employeeId": "e5",
-      "position": "Scale"
+      "employeeId": "e9",
+      "position": "Guard"
      }
     ],
     "Monday__second": [
      {
-      "employeeId": "e4",
+      "employeeId": "e5",
       "position": "Scale"
      },
      {
-      "employeeId": "e14",
-      "position": "Guard"
+      "employeeId": "e4",
+      "position": "Medical"
      },
      {
       "employeeId": "e11",
@@ -4783,15 +4809,61 @@
       "position": "Medical"
      },
      {
+      "employeeId": "e10",
+      "position": "Guard"
+     },
+     {
       "employeeId": "e7",
       "position": "Scale"
+     }
+    ],
+    "Tuesday__first": [
+     {
+      "employeeId": "e1",
+      "position": "Supervisor"
+     },
+     {
+      "employeeId": "e3",
+      "position": "Medical"
+     },
+     {
+      "employeeId": "e2",
+      "position": "Scale"
+     },
+     {
+      "employeeId": "e9",
+      "position": "Guard"
+     }
+    ],
+    "Tuesday__second": [
+     {
+      "employeeId": "e6",
+      "position": "Medical"
+     },
+     {
+      "employeeId": "e11",
+      "position": "Guard"
+     },
+     {
+      "employeeId": "e12",
+      "position": "Scale"
+     }
+    ],
+    "Tuesday__third": [
+     {
+      "employeeId": "e7",
+      "position": "Scale"
+     },
+     {
+      "employeeId": "e13",
+      "position": "Medical"
      },
      {
       "employeeId": "e10",
       "position": "Guard"
      }
     ],
-    "Tuesday__first": [
+    "Wednesday__first": [
      {
       "employeeId": "e1",
       "position": "Supervisor"
@@ -4809,60 +4881,14 @@
       "position": "Guard"
      }
     ],
-    "Tuesday__second": [
-     {
-      "employeeId": "e5",
-      "position": "Scale"
-     },
-     {
-      "employeeId": "e6",
-      "position": "Medical"
-     },
-     {
-      "employeeId": "e11",
-      "position": "Guard"
-     }
-    ],
-    "Tuesday__third": [
-     {
-      "employeeId": "e7",
-      "position": "Scale"
-     },
-     {
-      "employeeId": "e8",
-      "position": "Medical"
-     },
-     {
-      "employeeId": "e13",
-      "position": "Guard"
-     }
-    ],
-    "Wednesday__first": [
-     {
-      "employeeId": "e1",
-      "position": "Supervisor"
-     },
-     {
-      "employeeId": "e9",
-      "position": "Guard"
-     },
+    "Wednesday__second": [
      {
       "employeeId": "e4",
       "position": "Scale"
      },
      {
-      "employeeId": "e14",
-      "position": "Guard"
-     }
-    ],
-    "Wednesday__second": [
-     {
-      "employeeId": "e6",
-      "position": "Medical"
-     },
-     {
       "employeeId": "e5",
-      "position": "Scale"
+      "position": "Guard"
      },
      {
       "employeeId": "e11",
@@ -4875,12 +4901,12 @@
       "position": "Medical"
      },
      {
-      "employeeId": "e10",
-      "position": "Guard"
-     },
-     {
       "employeeId": "e15",
       "position": "Scale"
+     },
+     {
+      "employeeId": "e14",
+      "position": "Guard"
      }
     ],
     "Thursday__first": [
@@ -4889,29 +4915,29 @@
       "position": "Supervisor"
      },
      {
-      "employeeId": "e3",
-      "position": "Medical"
-     },
-     {
       "employeeId": "e2",
       "position": "Scale"
      },
      {
       "employeeId": "e9",
       "position": "Guard"
+     },
+     {
+      "employeeId": "e8",
+      "position": "Medical"
      }
     ],
     "Thursday__second": [
      {
-      "employeeId": "e5",
+      "employeeId": "e4",
       "position": "Scale"
      },
      {
-      "employeeId": "e4",
-      "position": "Medical"
+      "employeeId": "e6",
+      "position": "Guard"
      },
      {
-      "employeeId": "e11",
+      "employeeId": "e5",
       "position": "Guard"
      }
     ],
@@ -4921,7 +4947,7 @@
       "position": "Scale"
      },
      {
-      "employeeId": "e8",
+      "employeeId": "e13",
       "position": "Medical"
      },
      {
@@ -4935,15 +4961,15 @@
       "position": "Supervisor"
      },
      {
-      "employeeId": "e2",
+      "employeeId": "e9",
+      "position": "Guard"
+     },
+     {
+      "employeeId": "e15",
       "position": "Scale"
      },
      {
-      "employeeId": "e3",
-      "position": "Medical"
-     },
-     {
-      "employeeId": "e9",
+      "employeeId": "e14",
       "position": "Guard"
      }
     ],
@@ -4953,22 +4979,22 @@
       "position": "Medical"
      },
      {
-      "employeeId": "e5",
-      "position": "Scale"
+      "employeeId": "e11",
+      "position": "Guard"
      },
      {
-      "employeeId": "e12",
-      "position": "Guard"
+      "employeeId": "e5",
+      "position": "Scale"
      }
     ],
     "Friday__third": [
      {
-      "employeeId": "e8",
-      "position": "Medical"
-     },
-     {
       "employeeId": "e7",
       "position": "Scale"
+     },
+     {
+      "employeeId": "e8",
+      "position": "Medical"
      },
      {
       "employeeId": "e10",
@@ -4977,16 +5003,16 @@
     ],
     "Saturday__first": [
      {
-      "employeeId": "e2",
-      "position": "Guard"
-     },
-     {
       "employeeId": "e3",
       "position": "Medical"
      },
      {
-      "employeeId": "e15",
+      "employeeId": "e14",
       "position": "Guard"
+     },
+     {
+      "employeeId": "e4",
+      "position": "Scale"
      }
     ],
     "Saturday__second": [
@@ -4995,11 +5021,11 @@
       "position": "Medical"
      },
      {
-      "employeeId": "e4",
+      "employeeId": "e12",
       "position": "Guard"
      },
      {
-      "employeeId": "e12",
+      "employeeId": "e11",
       "position": "Guard"
      }
     ],
@@ -5013,7 +5039,7 @@
       "position": "Medical"
      },
      {
-      "employeeId": "e14",
+      "employeeId": "e5",
       "position": "Guard"
      }
     ]
@@ -5039,7 +5065,7 @@
    "policyRejected": [],
    "searchInfo": {
     "termination": "candidate_found",
-    "nodes": 86,
+    "nodes": 67,
     "partialMode": false
    },
    "issues": [],
@@ -5051,6 +5077,8 @@
     0,
     0,
     8,
+    0,
+    64,
     24,
     0
    ]
@@ -5059,16 +5087,16 @@
    "schedule": {
     "Sunday__first": [
      {
-      "employeeId": "e3",
-      "position": "Medical"
-     },
-     {
       "employeeId": "e2",
       "position": "Scale"
      },
      {
-      "employeeId": "e14",
+      "employeeId": "e10",
       "position": "Guard"
+     },
+     {
+      "employeeId": "e3",
+      "position": "Medical"
      }
     ],
     "Sunday__second": [
@@ -5081,7 +5109,7 @@
       "position": "Guard"
      },
      {
-      "employeeId": "e5",
+      "employeeId": "e14",
       "position": "Guard"
      }
     ],
@@ -5091,11 +5119,11 @@
       "position": "Scale"
      },
      {
-      "employeeId": "e6",
+      "employeeId": "e8",
       "position": "Medical"
      },
      {
-      "employeeId": "e10",
+      "employeeId": "e13",
       "position": "Guard"
      }
     ],
@@ -5109,12 +5137,12 @@
       "position": "Guard"
      },
      {
-      "employeeId": "e15",
-      "position": "Medical"
+      "employeeId": "e5",
+      "position": "Scale"
      },
      {
-      "employeeId": "e14",
-      "position": "Guard"
+      "employeeId": "e6",
+      "position": "Medical"
      }
     ],
     "Monday__second": [
@@ -5123,11 +5151,11 @@
       "position": "Scale"
      },
      {
-      "employeeId": "e11",
+      "employeeId": "e12",
       "position": "Guard"
      },
      {
-      "employeeId": "e5",
+      "employeeId": "e11",
       "position": "Guard"
      }
     ],
@@ -5137,12 +5165,12 @@
       "position": "Medical"
      },
      {
-      "employeeId": "e7",
-      "position": "Scale"
+      "employeeId": "e10",
+      "position": "Guard"
      },
      {
-      "employeeId": "e13",
-      "position": "Guard"
+      "employeeId": "e7",
+      "position": "Scale"
      }
     ],
     "Tuesday__first": [
@@ -5159,36 +5187,36 @@
       "position": "Guard"
      },
      {
-      "employeeId": "e3",
+      "employeeId": "e15",
       "position": "Medical"
      }
     ],
     "Tuesday__second": [
      {
-      "employeeId": "e5",
-      "position": "Scale"
-     },
-     {
-      "employeeId": "e15",
+      "employeeId": "e6",
       "position": "Medical"
      },
      {
-      "employeeId": "e12",
+      "employeeId": "e5",
+      "position": "Guard"
+     },
+     {
+      "employeeId": "e11",
       "position": "Guard"
      }
     ],
     "Tuesday__third": [
      {
-      "employeeId": "e8",
-      "position": "Medical"
-     },
-     {
       "employeeId": "e7",
       "position": "Guard"
      },
      {
-      "employeeId": "e10",
+      "employeeId": "e14",
       "position": "Guard"
+     },
+     {
+      "employeeId": "e8",
+      "position": "Medical"
      }
     ],
     "Wednesday__first": [
@@ -5197,26 +5225,26 @@
       "position": "Supervisor"
      },
      {
-      "employeeId": "e2",
-      "position": "Scale"
+      "employeeId": "e9",
+      "position": "Guard"
      },
      {
-      "employeeId": "e3",
+      "employeeId": "e4",
       "position": "Medical"
      },
      {
-      "employeeId": "e14",
+      "employeeId": "e3",
       "position": "Guard"
      }
     ],
     "Wednesday__second": [
      {
       "employeeId": "e6",
-      "position": "Guard"
+      "position": "Medical"
      },
      {
-      "employeeId": "e5",
-      "position": "Scale"
+      "employeeId": "e12",
+      "position": "Guard"
      },
      {
       "employeeId": "e11",
@@ -5225,15 +5253,15 @@
     ],
     "Wednesday__third": [
      {
-      "employeeId": "e4",
-      "position": "Scale"
-     },
-     {
-      "employeeId": "e8",
+      "employeeId": "e10",
       "position": "Guard"
      },
      {
-      "employeeId": "e10",
+      "employeeId": "e15",
+      "position": "Scale"
+     },
+     {
+      "employeeId": "e13",
       "position": "Guard"
      }
     ],
@@ -5257,29 +5285,29 @@
     ],
     "Thursday__second": [
      {
-      "employeeId": "e11",
-      "position": "Guard"
-     },
-     {
-      "employeeId": "e12",
-      "position": "Guard"
-     },
-     {
       "employeeId": "e6",
       "position": "Medical"
+     },
+     {
+      "employeeId": "e5",
+      "position": "Scale"
+     },
+     {
+      "employeeId": "e14",
+      "position": "Guard"
      }
     ],
     "Thursday__third": [
-     {
-      "employeeId": "e10",
-      "position": "Guard"
-     },
      {
       "employeeId": "e7",
       "position": "Scale"
      },
      {
-      "employeeId": "e13",
+      "employeeId": "e10",
+      "position": "Guard"
+     },
+     {
+      "employeeId": "e8",
       "position": "Medical"
      }
     ],
@@ -5293,26 +5321,26 @@
       "position": "Guard"
      },
      {
-      "employeeId": "e3",
-      "position": "Medical"
-     },
-     {
       "employeeId": "e2",
       "position": "Scale"
+     },
+     {
+      "employeeId": "e3",
+      "position": "Medical"
      }
     ],
     "Friday__second": [
      {
-      "employeeId": "e4",
-      "position": "Guard"
-     },
-     {
-      "employeeId": "e6",
-      "position": "Guard"
+      "employeeId": "e5",
+      "position": "Scale"
      },
      {
       "employeeId": "e11",
       "position": "Guard"
+     },
+     {
+      "employeeId": "e4",
+      "position": "Medical"
      }
     ],
     "Friday__third": [
@@ -5325,22 +5353,22 @@
       "position": "Medical"
      },
      {
-      "employeeId": "e13",
+      "employeeId": "e10",
       "position": "Guard"
      }
     ],
     "Saturday__first": [
      {
-      "employeeId": "e3",
-      "position": "Medical"
-     },
-     {
-      "employeeId": "e5",
+      "employeeId": "e2",
       "position": "Guard"
      },
      {
       "employeeId": "e14",
       "position": "Guard"
+     },
+     {
+      "employeeId": "e3",
+      "position": "Medical"
      }
     ],
     "Saturday__second": [
@@ -5363,11 +5391,11 @@
       "position": "Scale"
      },
      {
-      "employeeId": "e8",
+      "employeeId": "e13",
       "position": "Medical"
      },
      {
-      "employeeId": "e10",
+      "employeeId": "e5",
       "position": "Guard"
      }
     ]
@@ -5376,13 +5404,13 @@
    "shiftsWorked": {
     "e1": 5,
     "e2": 5,
-    "e3": 6,
+    "e3": 5,
     "e4": 5,
     "e5": 5,
     "e6": 5,
     "e7": 6,
     "e8": 5,
-    "e9": 4,
+    "e9": 5,
     "e10": 5,
     "e11": 5,
     "e12": 3,
@@ -5393,7 +5421,7 @@
    "policyRejected": [],
    "searchInfo": {
     "termination": "candidate_found",
-    "nodes": 86,
+    "nodes": 67,
     "partialMode": false
    },
    "issues": [],
@@ -5401,11 +5429,13 @@
     0,
     0,
     0,
+    0,
+    0,
+    0,
     8,
     0,
-    0,
-    16,
-    24,
+    64,
+    40,
     0
    ]
   },
@@ -5759,6 +5789,8 @@
     0,
     0,
     24,
+    0,
+    192,
     40,
     0
    ]
@@ -6113,6 +6145,8 @@
     0,
     0,
     24,
+    0,
+    192,
     48,
     0
    ]
@@ -6467,6 +6501,8 @@
     0,
     0,
     24,
+    0,
+    192,
     48,
     0
    ]
@@ -6821,6 +6857,8 @@
     0,
     2,
     48,
+    0,
+    640,
     40,
     0
    ]
@@ -7175,6 +7213,8 @@
     0,
     1,
     48,
+    1,
+    640,
     80,
     0
    ]
@@ -7183,19 +7223,11 @@
    "schedule": {
     "Sunday__first": [
      {
-      "employeeId": "psi-3",
-      "position": "Scale"
-     },
-     {
       "employeeId": "psi-9",
       "position": "Guard"
      }
     ],
     "Sunday__second": [
-     {
-      "employeeId": "psi-8",
-      "position": "Scale"
-     },
      {
       "employeeId": "1775402072570",
       "position": "Guard"
@@ -7204,10 +7236,6 @@
     "Sunday__third": [
      {
       "employeeId": "psi-12",
-      "position": "Guard"
-     },
-     {
-      "employeeId": "psi-15",
       "position": "Guard"
      }
     ],
@@ -7221,7 +7249,7 @@
       "position": "Scale"
      },
      {
-      "employeeId": "psi-9",
+      "employeeId": "psi-11",
       "position": "Guard"
      }
     ],
@@ -7241,7 +7269,7 @@
       "position": "Guard"
      },
      {
-      "employeeId": "psi-11",
+      "employeeId": "psi-9",
       "position": "Guard"
      }
     ],
@@ -7251,19 +7279,43 @@
       "position": "Supervisor"
      },
      {
+      "employeeId": "psi-3",
+      "position": "Scale"
+     },
+     {
       "employeeId": "psi-2",
       "position": "Medical"
+     },
+     {
+      "employeeId": "psi-4",
+      "position": "Guard"
      }
     ],
     "Tuesday__second": [
      {
       "employeeId": "psi-8",
+      "position": "Scale"
+     },
+     {
+      "employeeId": "psi-10",
+      "position": "Guard"
+     },
+     {
+      "employeeId": "1775402072570",
       "position": "Guard"
      }
     ],
     "Tuesday__third": [
      {
+      "employeeId": "psi-13",
+      "position": "Scale"
+     },
+     {
       "employeeId": "psi-11",
+      "position": "Guard"
+     },
+     {
+      "employeeId": "psi-12",
       "position": "Guard"
      }
     ],
@@ -7301,7 +7353,7 @@
     ],
     "Wednesday__third": [
      {
-      "employeeId": "psi-15",
+      "employeeId": "psi-13",
       "position": "Scale"
      },
      {
@@ -7309,8 +7361,8 @@
       "position": "Guard"
      },
      {
-      "employeeId": "psi-13",
-      "position": "Scale"
+      "employeeId": "psi-15",
+      "position": "Guard"
      }
     ],
     "Thursday__first": [
@@ -7393,12 +7445,12 @@
     ],
     "Friday__third": [
      {
-      "employeeId": "psi-12",
-      "position": "Guard"
-     },
-     {
       "employeeId": "psi-15",
       "position": "Scale"
+     },
+     {
+      "employeeId": "psi-12",
+      "position": "Guard"
      },
      {
       "employeeId": "psi-11",
@@ -7439,12 +7491,12 @@
       "position": "Guard"
      },
      {
-      "employeeId": "psi-13",
+      "employeeId": "psi-15",
       "position": "Scale"
      },
      {
-      "employeeId": "psi-15",
-      "position": "Guard"
+      "employeeId": "psi-13",
+      "position": "Scale"
      }
     ]
    },
@@ -7476,23 +7528,10 @@
      "proactive": true
     },
     {
-     "pairId": "day",
-     "day": "Tuesday",
-     "empAId": "psi-3",
-     "empBId": "psi-13",
-     "roles": [
-      "Scale",
-      "Medical"
-     ],
-     "approvedAt": "auto-fill",
-     "auto": true,
-     "proactive": true
-    },
-    {
      "pairId": "night",
-     "day": "Tuesday",
+     "day": "Sunday",
      "empAId": "psi-8",
-     "empBId": "psi-10",
+     "empBId": "psi-3",
      "roles": [
       "Scale"
      ],
@@ -7505,30 +7544,25 @@
     "psi-1": 1,
     "psi-2": 4,
     "psi-3": 6,
-    "psi-4": 3,
+    "psi-4": 4,
     "psi-6": 5,
-    "psi-8": 7,
+    "psi-8": 6,
     "psi-9": 5,
-    "psi-10": 1,
+    "psi-10": 2,
     "psi-11": 5,
-    "psi-12": 6,
-    "psi-13": 3,
+    "psi-12": 7,
+    "psi-13": 4,
     "psi-14": 2,
-    "psi-15": 5,
-    "1775402072570": 3
+    "psi-15": 4,
+    "1775402072570": 4
    },
    "policyRejected": [],
    "searchInfo": {
     "termination": "candidate_found",
-    "nodes": 41,
+    "nodes": 43,
     "partialMode": false
    },
    "issues": [
-    [
-     "coverage",
-     "error",
-     "Coverage gap: Tuesday second — 2/3 bodies (14:00–22:00)"
-    ],
     [
      "role",
      "error",
@@ -7542,7 +7576,7 @@
     [
      "role",
      "error",
-     "No Medical on Tuesday second (14:00–18:00)"
+     "No Medical on Tuesday second (14:00–22:00)"
     ],
     [
      "role",
@@ -7552,13 +7586,15 @@
    ],
    "quality": [
     0,
-    36,
-    8,
-    20,
+    32,
     0,
-    2,
+    8,
+    0,
+    3,
     72,
-    96,
+    0,
+    1120,
+    92,
     0
    ]
   },
@@ -7912,6 +7948,8 @@
     0,
     2,
     48,
+    0,
+    640,
     40,
     0
    ]
@@ -8266,6 +8304,8 @@
     0,
     1,
     48,
+    1,
+    640,
     72,
     0
    ]
@@ -8274,19 +8314,11 @@
    "schedule": {
     "Sunday__first": [
      {
-      "employeeId": "psi-3",
-      "position": "Scale"
-     },
-     {
       "employeeId": "psi-9",
       "position": "Guard"
      }
     ],
     "Sunday__second": [
-     {
-      "employeeId": "psi-8",
-      "position": "Scale"
-     },
      {
       "employeeId": "1775402072570",
       "position": "Guard"
@@ -8295,10 +8327,6 @@
     "Sunday__third": [
      {
       "employeeId": "psi-12",
-      "position": "Guard"
-     },
-     {
-      "employeeId": "psi-15",
       "position": "Guard"
      }
     ],
@@ -8312,7 +8340,7 @@
       "position": "Scale"
      },
      {
-      "employeeId": "psi-9",
+      "employeeId": "psi-11",
       "position": "Guard"
      }
     ],
@@ -8332,7 +8360,7 @@
       "position": "Guard"
      },
      {
-      "employeeId": "psi-11",
+      "employeeId": "psi-9",
       "position": "Guard"
      }
     ],
@@ -8342,19 +8370,43 @@
       "position": "Supervisor"
      },
      {
+      "employeeId": "psi-3",
+      "position": "Scale"
+     },
+     {
       "employeeId": "psi-2",
       "position": "Medical"
+     },
+     {
+      "employeeId": "psi-4",
+      "position": "Guard"
      }
     ],
     "Tuesday__second": [
      {
       "employeeId": "psi-8",
+      "position": "Scale"
+     },
+     {
+      "employeeId": "psi-10",
+      "position": "Guard"
+     },
+     {
+      "employeeId": "1775402072570",
       "position": "Guard"
      }
     ],
     "Tuesday__third": [
      {
+      "employeeId": "psi-13",
+      "position": "Scale"
+     },
+     {
       "employeeId": "psi-11",
+      "position": "Guard"
+     },
+     {
+      "employeeId": "psi-12",
       "position": "Guard"
      }
     ],
@@ -8392,7 +8444,7 @@
     ],
     "Wednesday__third": [
      {
-      "employeeId": "psi-15",
+      "employeeId": "psi-13",
       "position": "Scale"
      },
      {
@@ -8400,8 +8452,8 @@
       "position": "Guard"
      },
      {
-      "employeeId": "psi-13",
-      "position": "Scale"
+      "employeeId": "psi-15",
+      "position": "Guard"
      }
     ],
     "Thursday__first": [
@@ -8484,12 +8536,12 @@
     ],
     "Friday__third": [
      {
-      "employeeId": "psi-12",
-      "position": "Guard"
-     },
-     {
       "employeeId": "psi-15",
       "position": "Scale"
+     },
+     {
+      "employeeId": "psi-12",
+      "position": "Guard"
      },
      {
       "employeeId": "psi-11",
@@ -8530,12 +8582,12 @@
       "position": "Guard"
      },
      {
-      "employeeId": "psi-13",
+      "employeeId": "psi-15",
       "position": "Scale"
      },
      {
-      "employeeId": "psi-15",
-      "position": "Guard"
+      "employeeId": "psi-13",
+      "position": "Scale"
      }
     ]
    },
@@ -8567,23 +8619,10 @@
      "proactive": true
     },
     {
-     "pairId": "day",
-     "day": "Tuesday",
-     "empAId": "psi-3",
-     "empBId": "psi-13",
-     "roles": [
-      "Scale",
-      "Medical"
-     ],
-     "approvedAt": "auto-fill",
-     "auto": true,
-     "proactive": true
-    },
-    {
      "pairId": "night",
-     "day": "Tuesday",
+     "day": "Sunday",
      "empAId": "psi-8",
-     "empBId": "psi-10",
+     "empBId": "psi-3",
      "roles": [
       "Scale"
      ],
@@ -8596,30 +8635,25 @@
     "psi-1": 1,
     "psi-2": 4,
     "psi-3": 6,
-    "psi-4": 3,
+    "psi-4": 4,
     "psi-6": 5,
-    "psi-8": 7,
+    "psi-8": 6,
     "psi-9": 5,
-    "psi-10": 1,
+    "psi-10": 2,
     "psi-11": 5,
-    "psi-12": 6,
-    "psi-13": 3,
+    "psi-12": 7,
+    "psi-13": 4,
     "psi-14": 2,
-    "psi-15": 5,
-    "1775402072570": 3
+    "psi-15": 4,
+    "1775402072570": 4
    },
    "policyRejected": [],
    "searchInfo": {
     "termination": "candidate_found",
-    "nodes": 41,
+    "nodes": 43,
     "partialMode": false
    },
    "issues": [
-    [
-     "coverage",
-     "error",
-     "Coverage gap: Tuesday second — 2/3 bodies (14:00–22:00)"
-    ],
     [
      "role",
      "error",
@@ -8633,7 +8667,7 @@
     [
      "role",
      "error",
-     "No Medical on Tuesday second (14:00–18:00)"
+     "No Medical on Tuesday second (14:00–22:00)"
     ],
     [
      "role",
@@ -8643,13 +8677,15 @@
    ],
    "quality": [
     0,
-    36,
-    8,
-    20,
+    32,
     0,
-    2,
+    8,
+    0,
+    3,
     72,
-    96,
+    0,
+    1120,
+    92,
     0
    ]
   },
@@ -9003,6 +9039,8 @@
     0,
     2,
     48,
+    0,
+    640,
     40,
     0
    ]
@@ -9357,6 +9395,8 @@
     0,
     1,
     48,
+    1,
+    640,
     80,
     0
    ]
@@ -9365,19 +9405,11 @@
    "schedule": {
     "Sunday__first": [
      {
-      "employeeId": "psi-3",
-      "position": "Scale"
-     },
-     {
       "employeeId": "psi-9",
       "position": "Guard"
      }
     ],
     "Sunday__second": [
-     {
-      "employeeId": "psi-8",
-      "position": "Scale"
-     },
      {
       "employeeId": "1775402072570",
       "position": "Guard"
@@ -9386,10 +9418,6 @@
     "Sunday__third": [
      {
       "employeeId": "psi-12",
-      "position": "Guard"
-     },
-     {
-      "employeeId": "psi-15",
       "position": "Guard"
      }
     ],
@@ -9403,7 +9431,7 @@
       "position": "Scale"
      },
      {
-      "employeeId": "psi-9",
+      "employeeId": "psi-11",
       "position": "Guard"
      }
     ],
@@ -9423,7 +9451,7 @@
       "position": "Guard"
      },
      {
-      "employeeId": "psi-11",
+      "employeeId": "psi-9",
       "position": "Guard"
      }
     ],
@@ -9433,19 +9461,43 @@
       "position": "Supervisor"
      },
      {
+      "employeeId": "psi-3",
+      "position": "Scale"
+     },
+     {
       "employeeId": "psi-2",
       "position": "Medical"
+     },
+     {
+      "employeeId": "psi-4",
+      "position": "Guard"
      }
     ],
     "Tuesday__second": [
      {
       "employeeId": "psi-8",
+      "position": "Scale"
+     },
+     {
+      "employeeId": "psi-10",
+      "position": "Guard"
+     },
+     {
+      "employeeId": "1775402072570",
       "position": "Guard"
      }
     ],
     "Tuesday__third": [
      {
+      "employeeId": "psi-13",
+      "position": "Scale"
+     },
+     {
       "employeeId": "psi-11",
+      "position": "Guard"
+     },
+     {
+      "employeeId": "psi-12",
       "position": "Guard"
      }
     ],
@@ -9483,7 +9535,7 @@
     ],
     "Wednesday__third": [
      {
-      "employeeId": "psi-15",
+      "employeeId": "psi-13",
       "position": "Scale"
      },
      {
@@ -9491,8 +9543,8 @@
       "position": "Guard"
      },
      {
-      "employeeId": "psi-13",
-      "position": "Scale"
+      "employeeId": "psi-15",
+      "position": "Guard"
      }
     ],
     "Thursday__first": [
@@ -9575,12 +9627,12 @@
     ],
     "Friday__third": [
      {
-      "employeeId": "psi-12",
-      "position": "Guard"
-     },
-     {
       "employeeId": "psi-15",
       "position": "Scale"
+     },
+     {
+      "employeeId": "psi-12",
+      "position": "Guard"
      },
      {
       "employeeId": "psi-11",
@@ -9621,12 +9673,12 @@
       "position": "Guard"
      },
      {
-      "employeeId": "psi-13",
+      "employeeId": "psi-15",
       "position": "Scale"
      },
      {
-      "employeeId": "psi-15",
-      "position": "Guard"
+      "employeeId": "psi-13",
+      "position": "Scale"
      }
     ]
    },
@@ -9658,23 +9710,10 @@
      "proactive": true
     },
     {
-     "pairId": "day",
-     "day": "Tuesday",
-     "empAId": "psi-3",
-     "empBId": "psi-13",
-     "roles": [
-      "Scale",
-      "Medical"
-     ],
-     "approvedAt": "auto-fill",
-     "auto": true,
-     "proactive": true
-    },
-    {
      "pairId": "night",
-     "day": "Tuesday",
+     "day": "Sunday",
      "empAId": "psi-8",
-     "empBId": "psi-10",
+     "empBId": "psi-3",
      "roles": [
       "Scale"
      ],
@@ -9687,30 +9726,25 @@
     "psi-1": 1,
     "psi-2": 4,
     "psi-3": 6,
-    "psi-4": 3,
+    "psi-4": 4,
     "psi-6": 5,
-    "psi-8": 7,
+    "psi-8": 6,
     "psi-9": 5,
-    "psi-10": 1,
+    "psi-10": 2,
     "psi-11": 5,
-    "psi-12": 6,
-    "psi-13": 3,
+    "psi-12": 7,
+    "psi-13": 4,
     "psi-14": 2,
-    "psi-15": 5,
-    "1775402072570": 3
+    "psi-15": 4,
+    "1775402072570": 4
    },
    "policyRejected": [],
    "searchInfo": {
     "termination": "candidate_found",
-    "nodes": 41,
+    "nodes": 43,
     "partialMode": false
    },
    "issues": [
-    [
-     "coverage",
-     "error",
-     "Coverage gap: Tuesday second — 2/3 bodies (14:00–22:00)"
-    ],
     [
      "role",
      "error",
@@ -9724,7 +9758,7 @@
     [
      "role",
      "error",
-     "No Medical on Tuesday second (14:00–18:00)"
+     "No Medical on Tuesday second (14:00–22:00)"
     ],
     [
      "role",
@@ -9734,13 +9768,15 @@
    ],
    "quality": [
     0,
-    36,
-    8,
-    20,
+    32,
     0,
-    2,
+    8,
+    0,
+    3,
     72,
-    96,
+    0,
+    1120,
+    92,
     0
    ]
   },
@@ -10094,6 +10130,8 @@
     0,
     2,
     48,
+    0,
+    640,
     40,
     0
    ]
@@ -10448,6 +10486,8 @@
     0,
     2,
     48,
+    0,
+    640,
     40,
     0
    ]
