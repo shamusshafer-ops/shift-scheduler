@@ -126,7 +126,8 @@ function makePipeline(repo) {
     const t0 = Date.now();
     const empTimeOffDays = core.buildTimeOffAvailability(timeOffReqs, weekStart, null);
     const ptoHoursByEmployee = core.buildPtoCredits(employees, timeOffReqs, weekStart).hoursByEmployee;
-    const fairnessHistory = core.buildPreferenceHistory ? core.buildPreferenceHistory(history, employees, weekStart) : {};
+    // Fairness from the benchmark's own earlier weeks (the page reads published weeks), when the version supports it.
+    const fairnessHistory = core.fairnessFromWeeks ? { byEmployee: core.fairnessFromWeeks(history.slice(-8).map(h => ({ ...h, employees: h.employees || employees }))), weeks: history.map(h => h.weekStart) } : {};
     const enrichedPatterns = core.boundaryPatterns(history, weekStart, empPatterns);
     const validateSchedule = (sched, exts, emps, h) => {
       const options = { extShifts: exts || [], handoffs: h || [], empTimeOffDays, ptoHoursByEmployee, empPatterns: enrichedPatterns };
@@ -263,6 +264,16 @@ if (require.main === module) {
       let better = 0, worse = 0;
       for (const [x, y] of pairs) { const u = lex(x), v = lex(y), i = u.findIndex((n, k) => n !== v[k]); if (i >= 0) (v[i] < u[i] ? better++ : worse++); }
       lines.push(`\nPaired by seed on (errors, gaps, FT shortfall, supervisor 12h, 7-day weeks, OT, doubles, OT spread): ${better} better, ${worse} worse, ${pairs.length - better - worse} equal.`);
+      // Across consecutive weeks of one seed: overtime carried by the most-burdened person.
+      const multi = rows => { const by = {}; for (const r of rows.filter(r => r.scenario === name)) (by[r.seed] ||= []).push(r);
+        const lists = Object.values(by).filter(l => l.length > 1); if (!lists.length) return null;
+        const core = require(path.join(HERE, 'load-core')), emps = SCENARIOS[name]().employees;
+        const per = lists.map(l => { const tot = {}; for (const r of l) for (const e of emps) tot[e.id] = (tot[e.id] || 0) + core.weeklyEmployeeHours(e, r.schedule.ns, r.schedule.autoExtShifts, r.schedule.handoffs, {}).overtimeHours;
+          const v = Object.values(tot); return { max: Math.max(...v), squares: v.reduce((n, x) => n + x * x, 0), people: v.filter(x => x > 0).length }; });
+        const m = k => +(per.reduce((n, p) => n + p[k], 0) / per.length).toFixed(1);
+        return { max: m('max'), squares: m('squares'), people: m('people') }; };
+      const ma = multi(a.rows), mb = multi(b.rows);
+      if (ma && mb) lines.push(`Across ${a.rows.filter(r => r.scenario === name && r.seed === a.rows.find(x => x.scenario === name).seed).length} consecutive weeks: max cumulative OT per person ${ma.max} → ${mb.max}; sum of squared cumulative OT ${ma.squares} → ${mb.squares}; people with any OT ${ma.people} → ${mb.people}.`);
     }
     console.log(lines.join('\n'));
     return;

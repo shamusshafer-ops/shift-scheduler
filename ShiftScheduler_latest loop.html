@@ -2545,17 +2545,37 @@ function buildPreferenceHistory(publications,weekStart) {
     const prior=byWeek.get(record.snapshot.weekStart);
     if(!prior || Date.parse(record.publishedAt)>=Date.parse(prior.publishedAt)) byWeek.set(record.snapshot.weekStart,record);
   }
-  for(const record of byWeek.values()) {
-    const s=record.snapshot;
-    const weekTimeOff=buildTimeOffAvailability([],s.weekStart,s.weekAvailability);
-    for(const emp of s.employees) {
-      const b=preferenceBurden(emp,s.schedule,s.extShifts,s.handoffs,weekTimeOff);
+  Object.assign(byEmployee,fairnessFromWeeks([...byWeek.values()].map(record=>record.snapshot)));
+  return {byEmployee,weeks:[...byWeek.keys()].sort()};
+}
+// Per-employee burdens over earlier weeks ({weekStart, employees, schedule,
+// extShifts, handoffs, weekAvailability} each): hours worked, preference
+// conflicts, overtime worked and doubles. Weeks an employee did not work are
+// not counted for them, so part-timers and returning staff are not penalized.
+function fairnessFromWeeks(weeks) {
+  const byEmployee={};
+  for(const s of weeks || []) {
+    const schedule=s.schedule || {},exts=s.extShifts || [],hos=s.handoffs || [];
+    const weekTimeOff=buildTimeOffAvailability([],s.weekStart,s.weekAvailability),intervals=collectCoverageIntervals(schedule,exts,hos);
+    for(const emp of s.employees || []) {
+      const b=preferenceBurden(emp,schedule,exts,hos,weekTimeOff);
       if(!b.workedHours) continue;
-      const row=byEmployee[emp.id] ||= {workedHours:0,penaltyHours:0,weeks:0};
+      const row=byEmployee[emp.id] ||= {workedHours:0,penaltyHours:0,weeks:0,overtimeHours:0,doubles:0};
       row.workedHours+=b.workedHours;row.penaltyHours+=b.penaltyHours;row.weeks++;
+      row.overtimeHours+=weeklyEmployeeHours(emp,schedule,exts,hos,{}).overtimeHours;
+      row.doubles+=doubleShiftCount(intervals.filter(i=>i.employeeId===emp.id && !i.carryIn),emp.id);
     }
   }
-  return {byEmployee,weeks:[...byWeek.keys()].sort()};
+  return byEmployee;
+}
+// Weight on this week's overtime spread: someone who averaged 8h+ overtime a
+// week in recent published weeks counts double, so equal-total weeks hand the
+// overtime to others first. Total overtime ranks above the spread, so this can
+// only redistribute overtime, never add any.
+function historicalOvertimeWeight(empId, fairnessHistory = {}) {
+  const row = fairnessHistory?.byEmployee?.[empId];
+  if (!row?.weeks) return 1;
+  return 1 + Math.min(1, Math.max(0, (row.overtimeHours || 0) / row.weeks / SHIFT_HOURS));
 }
 function preferenceFairnessCost(emp,schedule,extShifts,handoffs,fairnessHistory={},timeOff) {
   const prior=fairnessHistory.byEmployee?.[emp.id],current=preferenceBurden(emp,schedule,extShifts,handoffs,timeOff);
@@ -2760,6 +2780,12 @@ function polishSearchWeek(week, context) {
 // person's capacity is deliberately generous (rest, streak and pairing rules are
 // ignored), so this is a true lower bound, never an estimate.
 function overtimeLowerBound(employees, options = {}) {
+  return overtimeFloorDetails(employees, options).floor;
+}
+// The floor with what drives it: all coverage person-hours against everyone's
+// room under 40, and each role's hours against its holders' room. `binding`
+// names the driver that sets the floor (null when it is 0).
+function overtimeFloorDetails(employees, options = {}) {
   const {empTimeOffDays, ptoHoursByEmployee = {}} = options;
   const required = ALL_SLOTS.reduce((n, s) => n + getSlotCount(s.day, s.shiftId) * SHIFT_HOURS, 0);
   // Every shift also needs a Scale and a Medical hour for each of its hours, and
@@ -2788,8 +2814,14 @@ function overtimeLowerBound(employees, options = {}) {
     for (const role of Object.keys(roleRoom)) if ((emp.qualifications || []).includes(role)) { roleRoom[role] += Math.min(hours, FT_MIN_HOURS); roleHours[role] += hours; }
   }
   // A role nobody can cover at all makes the week infeasible, not costly: no floor from it.
-  const roleFloor = Math.max(0, ...Object.keys(roleRoom).filter(r => roleHours[r] >= roleRequired[r]).map(r => roleRequired[r] - roleRoom[r]));
-  return Math.max(0, required - room, roleFloor);
+  const roles = Object.fromEntries(Object.keys(roleRoom).map(r => [r, { required: roleRequired[r], roomUnder40: roleRoom[r], maxHours: roleHours[r],
+    holders: employees.filter(e => !e.inTraining && (e.qualifications || []).includes(r)).length,
+    coverable: roleHours[r] >= roleRequired[r], overtime: roleHours[r] >= roleRequired[r] ? Math.max(0, roleRequired[r] - roleRoom[r]) : 0 }]));
+  const general = { required, roomUnder40: room, overtime: Math.max(0, required - room) };
+  const drivers = [["all staff", general.overtime], ...Object.entries(roles).map(([r, v]) => [r, v.overtime])];
+  const floor = Math.max(0, ...drivers.map(d => d[1]));
+  return { floor, general, roles, binding: floor > 0 ? drivers.find(d => d[1] === floor)[0] : null,
+    uncoverable: Object.keys(roles).filter(r => !roles[r].coverable && roles[r].holders >= 0 && roleRequired[r] > 0 && roles[r].maxHours < roleRequired[r]) };
 }
 
 // The overtime search stops and applies its best week after this long (excluding
@@ -2920,7 +2952,7 @@ function scheduleQuality(result, employees, cfg = {}, options = {}, baseline) {
     const h=weeklyEmployeeHours(emp,ns,exts,handoffs,options.ptoHoursByEmployee || {});
     // Someone who asked for overtime absorbs it before others (half weight).
     const over=Math.max(0,h.creditedHours-FT_MIN_HOURS),wantsOvertime=(emp.overtimePref || cfg.defaultOvertimePref)==='preferred';
-    shortfall+=h.shortfallHours || 0;overtime+=over;spread+=over*over*(wantsOvertime?0.5:1);
+    shortfall+=h.shortfallHours || 0;overtime+=over;spread+=over*over*(wantsOvertime?0.5:1)*historicalOvertimeWeight(emp.id,options.fairnessHistory);
     const p=employeeWorkPattern(emp.id,intervals,options.empPatterns?.[emp.id]);
     recovery+=p.recovery;pattern+=p.pattern;transitions+=p.transitions;
     preferences+=preferenceFairnessCost(emp,ns,exts,handoffs,options.fairnessHistory,options.empTimeOffDays);
@@ -2942,7 +2974,7 @@ function employeeQuality(emp, ns, exts, handoffs, intervals, cfg = {}, options =
   const own=intervals.filter(i=>i.employeeId===emp.id),p=employeeWorkPattern(emp.id,own,options.empPatterns?.[emp.id]);
   const q=Array(14).fill(0);
   q[QUALITY.shortfall]=h.shortfallHours || 0;q[QUALITY.noDayOff]=employeeDutyDays(emp.id,own).size>=DAYS.length?1:0;q[QUALITY.overtime]=over;
-  q[QUALITY.doubles]=doubleShiftCount(own,emp.id);q[QUALITY.spread]=over*over*(wants?0.5:1);
+  q[QUALITY.doubles]=doubleShiftCount(own,emp.id);q[QUALITY.spread]=over*over*(wants?0.5:1)*historicalOvertimeWeight(emp.id,options.fairnessHistory);
   q[QUALITY.recovery]=p.recovery;q[QUALITY.pattern]=p.pattern;q[QUALITY.transitions]=p.transitions;
   q[QUALITY.preferences]=preferenceFairnessCost(emp,ns,exts,handoffs,options.fairnessHistory,options.empTimeOffDays);
   return q;
@@ -3598,6 +3630,7 @@ function createCompleteScheduleSearch(rawInput) {
       }
     }
     let lastFailure=null;
+    const byId=new Map(roster.map(e=>[e.id,e])),ownMemo=new Map();
     function* visit(state,available,options) {
       nodes++;yield;
       if(aborted || ++restartNodes>nodeLimit){aborted=true;return false;}
@@ -3612,7 +3645,8 @@ function createCompleteScheduleSearch(rawInput) {
           for(const role of segment.missing)needs.push({...slot,time:segment.start,kind:role,deficit:1,segment});
         }
       }
-      for(const emp of roster)if(hours(emp,state).shortfallHours>0)needs.push({kind:'hours',employeeId:emp.id,deficit:hours(emp,state).shortfallHours});
+      const hoursNow=new Map(roster.map(emp=>[emp.id,hours(emp,state)]));
+      for(const emp of roster)if(hoursNow.get(emp.id).shortfallHours>0)needs.push({kind:'hours',employeeId:emp.id,deficit:hoursNow.get(emp.id).shortfallHours});
       for(const h of state.handoffs)if(!spans.some(i=>i.handoff===h))needs.push({kind:'source',employeeId:h.employeeId,handoff:h,deficit:1});
       if(!needs.length) {
         const hard=[...validateAssignmentPolicy(state.ns,roster,cfg,{...options,extShifts:state.autoExtShifts,handoffs:state.handoffs}),
@@ -3632,16 +3666,46 @@ function createCompleteScheduleSearch(rawInput) {
         // an adjoining extension/source. Enumerate further additions before failing.
         needs.push({kind:'finish',deficit:1});
       }
+      // Each candidate is checked against its employee's own duties only:
+      // intervals, policy and hours are per employee, so the own-only state gives
+      // exactly the whole-week answer for that employee. Staffing can change only
+      // in the slots the candidate adds work to (every visited state is already
+      // staffing-clean), so only those are re-checked. Policy results are
+      // memoized per phase by (own duties, candidate).
+      const own=new Map(),others=new Map();
+      const ownState=id=>{
+        if(!own.has(id)) {
+          const ns={};for(const [key,rows] of Object.entries(state.ns)){const r=rows.filter(a=>a.employeeId===id);if(r.length)ns[key]=r;}
+          const o={ns,autoExtShifts:state.autoExtShifts.filter(e=>e.empAId===id || e.empBId===id || (e.carryIn && e.employeeId===id)),handoffs:state.handoffs.filter(h=>h.employeeId===id)};
+          o.spans=spans.filter(i=>i.employeeId===id);o.sig=canonicalJSON({ns:o.ns,x:o.autoExtShifts,h:o.handoffs});o.hours=hours(roster.find(e=>e.id===id),o);
+          own.set(id,o);others.set(id,spans.filter(i=>i.employeeId!==id));
+        }
+        return own.get(id);
+      };
       const viable=[];
       for(const index of available) {
-        const candidate=candidates[index],emp=roster.find(e=>e.id===candidate.employeeId),next=completeSearchApply(state,candidate);
-        if(next && !completeSearchHardIssues(emp,next,cfg,options).length) {
-          const nextSpans=collectCoverageIntervals(next.ns,next.autoExtShifts,next.handoffs).filter(i=>i.employeeId===emp.id);
-          const beforeHours=hours(emp,state),afterHours=hours(emp,next);
-          const seventh=employeeDutyDays(emp.id,spans).size<DAYS.length && employeeDutyDays(emp.id,nextSpans).size>=DAYS.length;
-          const supExt=supervisorExtensions([emp],candidate.handoffs)>0;
-          viable.push({index,candidate,next,nextSpans,added:afterHours.workedHours-beforeHours.workedHours,seventh,supExt,
-            shortfall:beforeHours.shortfallHours, extraOT:Math.max(0,afterHours.creditedHours-40)-Math.max(0,beforeHours.creditedHours-40)});
+        const candidate=candidates[index],emp=byId.get(candidate.employeeId),mine=ownState(emp.id),nextOwn=completeSearchApply(mine,candidate);
+        if(nextOwn) {
+          const key=options.phaseKey+'|'+mine.sig+'|'+index;
+          let ok=ownMemo.get(key);
+          if(ok===undefined){ok=!completeSearchHardIssues(emp,nextOwn,cfg,options).length;if(ownMemo.size>300000)ownMemo.clear();ownMemo.set(key,ok);}
+          const nextSpans=ok?collectCoverageIntervals(nextOwn.ns,nextOwn.autoExtShifts,nextOwn.handoffs).filter(i=>i.employeeId===emp.id):null;
+          if(ok) {
+            const added=nextSpans.filter(i=>!mine.spans.some(o=>o.source===i.source && o.start===i.start && o.end===i.end && o.position===i.position));
+            const touched=new Set();for(const i of added)for(const slot of ALL_SLOTS)if(intervalsOverlap(i,shiftInterval(slot.day,slot.shiftId)))touched.add(cellKey(slot.day,slot.shiftId));
+            const all=[...others.get(emp.id),...nextSpans];
+            for(const key of touched) {
+              const [day,shiftId]=key.split('__'),rows=[...(state.ns[key] || []).filter(a=>a.employeeId!==emp.id),...(nextOwn.ns[key] || [])];
+              if(staffingIssuesForSlot(day,shiftId,{[key]:rows},all).length){ok=false;break;}
+            }
+          }
+          if(ok) {
+            const beforeHours=mine.hours,afterHours=hours(emp,nextOwn);
+            const seventh=employeeDutyDays(emp.id,mine.spans).size<DAYS.length && employeeDutyDays(emp.id,nextSpans).size>=DAYS.length;
+            const supExt=supervisorExtensions([emp],candidate.handoffs)>0;
+            viable.push({index,candidate,nextOwn,nextSpans,added:afterHours.workedHours-beforeHours.workedHours,seventh,supExt,
+              shortfall:beforeHours.shortfallHours, extraOT:Math.max(0,afterHours.creditedHours-40)-Math.max(0,beforeHours.creditedHours-40)});
+          }
         }
         yield;
       }
@@ -3650,7 +3714,7 @@ function createCompleteScheduleSearch(rawInput) {
       for(const emp of roster) {
         const spansPossible=[...spans.filter(i=>i.employeeId===emp.id),...viable.filter(v=>v.candidate.employeeId===emp.id).flatMap(v=>v.nextSpans)].sort((a,b)=>a.start-b.start);
         const total=completeSearchWorkUpperBound(spansPossible,emp,cfg);
-        const current=hours(emp,state),ot=emp.overtimePref && emp.overtimePref!=='neutral'?emp.overtimePref:cfg.defaultOvertimePref;
+        const current=hoursNow.get(emp.id),ot=emp.overtimePref && emp.overtimePref!=='neutral'?emp.overtimePref:cfg.defaultOvertimePref;
         const ceiling=ot==='blocked'?40:(options.creditHourLimits?.[emp.id] ?? Infinity);
         // Room is measured in hours WORKED. PTO is charged only up to 40, so extra
         // work displaces PTO credit instead of adding to it: with a ceiling of 40
@@ -3680,9 +3744,10 @@ function createCompleteScheduleSearch(rawInput) {
           if(need.kind==='finish')return true;
           if(need.kind==='source')return v.candidate.employeeId===need.employeeId && v.nextSpans.some(i=>i.handoff===need.handoff);
           if(need.kind==='hours')return v.candidate.employeeId===need.employeeId && v.added>0;
-          const emp=roster.find(e=>e.id===v.candidate.employeeId);
+          const emp=byId.get(v.candidate.employeeId);
           if(need.kind==='regular' && need.segment.employeeIds.includes(emp.id))return false;
-          const supIds=new Set((v.next.ns[cellKey(need.day,need.shiftId)] || []).filter(a=>a.position==='Supervisor').map(a=>a.employeeId));
+          // Only the candidate's own row in the slot matters for emp's own supervisor test.
+          const supIds=new Set((v.nextOwn.ns[cellKey(need.day,need.shiftId)] || []).filter(a=>a.position==='Supervisor').map(a=>a.employeeId));
           return v.nextSpans.some(i=>i.start<=need.time && i.end>need.time &&
             (need.kind==='Supervisor' ? (i.position==='Supervisor'||supIds.has(emp.id)) :
               i.position!=='Supervisor' && !supIds.has(emp.id) && (need.kind==='regular'||emp.qualifications?.includes(need.kind))));
@@ -3711,7 +3776,8 @@ function createCompleteScheduleSearch(rawInput) {
         // Partition by the first included contributor. Earlier alternatives stay
         // excluded only in later sibling branches; every feasible set is covered.
         remaining.delete(choice.index);
-        if(yield* visit(choice.next,[...remaining],options))return true;
+        const next=completeSearchApply(state,choice.candidate);
+        if(yield* visit(next,[...remaining],options))return true;
         if(aborted)return false;
       }
       return false;
@@ -3750,9 +3816,9 @@ function createCompleteScheduleSearch(rawInput) {
       }
     }
     const limits=Object.fromEntries(roster.map(e=>[e.id,40]));
-    const phases=[{name:'regular-hours',options:{...basicOptions,creditHourLimits:limits}}];
+    const phases=[{name:'regular-hours',options:{...basicOptions,creditHourLimits:limits,phaseKey:'regular-hours'}}];
     if(roster.some(e=>(e.overtimePref && e.overtimePref!=='neutral'?e.overtimePref:cfg.defaultOvertimePref)!=='blocked'))
-      phases.push({name:'overtime-review',options:basicOptions});
+      phases.push({name:'overtime-review',options:{...basicOptions,phaseKey:'overtime-review'}});
     for(const p of phases) {
       phase=p.name;yield;
       if(roster.some(e=>completeSearchHardIssues(e,fixed,cfg,p.options).length))continue;
@@ -13673,7 +13739,7 @@ function SearchProgressPanel({ progress: p, onPause, onResume, onUseBest, onCanc
   const title = p.stopReason === "user" ? "Stopped — best week applied"
     : p.stopReason === "idle" ? `Stopped after ${clock(p.idleLimitMs)} without a better week — best week applied`
     : ({ searching: "Searching for a better week: days off first, then least overtime", paused: "Search paused",
-        feasible: o.proven ? "Finished — no week gives more people a day off or has less overtime" : "Complete week found",
+        feasible: o.proven ? "Finished — no week has fewer supervisor 12h days, more people with a day off, or less overtime" : "Complete week found",
         "no-better": "Finished — autofill's week was already the best possible",
         infeasible: "No complete week fits the current rules", invalid: "Search input or validation error",
         cancelled: "Search cancelled", stale: "Inputs changed — start a new search" })[p.status];
@@ -13701,6 +13767,13 @@ function SearchProgressPanel({ progress: p, onPause, onResume, onUseBest, onCanc
       <div style={{display:"flex",justifyContent:"space-between",fontSize:10,color:"var(--ss-text-dim)",marginTop:3}}>
         <span>{first != null ? "Started at " + hrs(first) : "Looking for a first complete week"}</span><span>Floor {hrs(floor)}</span>
       </div>
+      {p.floorDetails?.binding && <p style={{fontSize:11,color:"var(--ss-text-dim)",margin:"6px 0 0"}}>
+        {p.floorDetails.binding === "all staff"
+          ? `Why overtime: coverage needs ${hrs(p.floorDetails.general.required)} of work; everyone together has at most ${hrs(p.floorDetails.general.roomUnder40)} within 40h each.`
+          : `Why overtime: every hour needs a ${p.floorDetails.binding} holder (${hrs(p.floorDetails.roles[p.floorDetails.binding].required)}); the ${p.floorDetails.roles[p.floorDetails.binding].holders} ${p.floorDetails.binding} holders can work at most ${hrs(p.floorDetails.roles[p.floorDetails.binding].roomUnder40)} within 40h each. Another available ${p.floorDetails.binding} holder (hire or cross-train) lowers this floor.`}
+      </p>}
+      {p.floorDetails?.uncoverable?.length > 0 && <p style={{fontSize:11,color:"var(--ss-warning-readable)",margin:"6px 0 0"}}>
+        {`Not enough ${p.floorDetails.uncoverable.join(" and ")} holders to cover every hour even with unlimited overtime, before rest and pairing rules.`}</p>}
       <p style={{fontSize:11,color:"var(--ss-text-dim)",margin:"8px 0 0"}}>
         {(p.nodes || 0).toLocaleString()} combinations checked · {o.improvements || 0} better week{o.improvements === 1 ? "" : "s"} found
         {live && best != null && ` · ${clock(p.activeMs - p.improvedAtMs)} since the last improvement (applies the best week after ${clock(p.idleLimitMs)} without one)`}
@@ -13712,6 +13785,7 @@ function SearchProgressPanel({ progress: p, onPause, onResume, onUseBest, onCanc
         <button onClick={onUseBest} disabled={!p.hasBest} title={p.hasBest ? "" : "No week to apply yet"} className="ss-btn ss-btn-sm ss-btn-success">Use best now</button>
         <button onClick={onCancel} className="ss-btn ss-btn-sm ss-btn-ghost">Cancel search</button>
       </div>}
+      {(o.proven || p.status === "no-better") && <p style={{fontSize:11,color:"var(--ss-text-dim)",margin:"6px 0 0"}}>Proven for supervisor 12h days, days off and total overtime within the search's duty menu. Rest, days off together, shift changes, overtime spread and preferences were improved afterwards by local moves; they are not proven optimal.</p>}
       {weeks?.length > 0 && <FoundWeeksList weeks={weeks} appliedId={appliedId} onView={onView} onUse={onUse} disabled={pickDisabled} clock={clock}/>}
       {weeksStale && <p style={{fontSize:11,color:"var(--ss-text-dim)"}}>The roster, rules or time off changed, so the weeks this search found are no longer listed.</p>}
       {p.status === "infeasible" && <p>Review staffing, qualifications, availability, PTO, locks and exclusions. The search did not relax your hard rules.</p>}
@@ -13728,8 +13802,12 @@ function SearchProgressPanel({ progress: p, onPause, onResume, onUseBest, onCanc
 // Short, comparable description of a found week.
 function weekSummaryText(s) {
   const filled = s.gaps > 1e-8 ? `${Math.round(s.gaps * 10) / 10}h uncovered` : s.shortfall > 1e-8 ? `${s.shortfall}h under 40 for full-timers` : "All positions filled";
+  const r = n => n == null ? "—" : String(Math.round(n * 10) / 10);
   return { filled, daysOff: s.withoutDayOff === 0 ? "Everyone" : `${s.withoutDayOff} without`, overtime: (Math.round(s.overtime * 10) / 10) + "h",
-    supervisor: s.supervisorExtensions > 0 ? `${s.supervisorExtensions} supervisor 12h day${s.supervisorExtensions === 1 ? "" : "s"}` : "" };
+    supervisor: s.supervisorExtensions > 0 ? `${s.supervisorExtensions} supervisor 12h day${s.supervisorExtensions === 1 ? "" : "s"}` : "",
+    // Lower is better for each of these; they are the canonical objective's entries below overtime.
+    maxOvertime: s.maxOvertime == null ? "—" : r(s.maxOvertime) + "h", doubles: r(s.doubles), recovery: r(s.recovery), pattern: r(s.pattern),
+    transitions: r(s.transitions), preferences: r(s.preferences) };
 }
 
 // Every better week the search found (and autofill's), in the order found.
@@ -13742,7 +13820,11 @@ function FoundWeeksList({ weeks, appliedId, onView, onUse, disabled, clock }) {
       <div style={{ fontSize: 12, fontWeight: 700, marginBottom: 4 }}>Weeks found ({weeks.length})</div>
       <div style={{ overflowX: "auto" }}>
         <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12 }}>
-          <thead><tr><th style={th}>Week</th><th style={th}>Found at</th><th style={th}>Positions</th><th style={th}>Day off</th><th style={th}>Overtime</th><th style={th}></th></tr></thead>
+          <thead><tr><th style={th}>Week</th><th style={th}>Found at</th><th style={th}>Positions</th><th style={th}>Day off</th><th style={th}>Overtime</th>
+            <th style={th} title="Most overtime carried by one person">Max OT</th><th style={th} title="Continuous blocks over 12 hours">Doubles</th>
+            <th style={th} title="Hours of rest under 16h between duties, plus hours past 8 in a duty">Rest</th>
+            <th style={th} title="Days off not taken together, and isolated single days">Days off</th>
+            <th style={th} title="Shift changes between duties (day/night counts 2)">Shift chg</th><th style={th} title="Stated preference conflicts, weighted by past weeks">Prefs</th><th style={th}></th></tr></thead>
           <tbody>
             {weeks.map((w, i) => { const t = weekSummaryText(w.summary); return (
               <tr key={w.id}>
@@ -13751,6 +13833,7 @@ function FoundWeeksList({ weeks, appliedId, onView, onUse, disabled, clock }) {
                   {t.supervisor && <div style={{ fontSize: 10, color: "var(--ss-warning-readable)" }}>{t.supervisor}</div>}</td>
                 <td style={td}>{w.id === "autofill" ? "—" : clock(w.foundAtMs)}</td>
                 <td style={td}>{t.filled}</td><td style={td}>{t.daysOff}</td><td style={td}>{t.overtime}</td>
+                <td style={td}>{t.maxOvertime}</td><td style={td}>{t.doubles}</td><td style={td}>{t.recovery}</td><td style={td}>{t.pattern}</td><td style={td}>{t.transitions}</td><td style={td}>{t.preferences}</td>
                 <td style={{ ...td, whiteSpace: "nowrap", textAlign: "right" }}>
                   <button onClick={() => onView(i)} className="ss-btn ss-btn-sm ss-btn-secondary">View</button>{" "}
                   <button onClick={() => onUse(w)} disabled={disabled} className="ss-btn ss-btn-sm ss-btn-ghost">Use this week</button>
@@ -14504,7 +14587,9 @@ function ScheduleGrid({ onOpenTestModal }) {
     completeSearchRef.current=job;autoFillCancelRef.current=false;setAutoFillRunning(true);
     const summarize=w=>{
       const q=scheduleQuality(w,accountingRoster,cfg,{empTimeOffDays,ptoHoursByEmployee,empPatterns:boundaryPatterns(history,weekStart,empPatterns),fairnessHistory});
-      return {quality:q,gaps:q[QUALITY.coverage],shortfall:q[QUALITY.shortfall],supervisorExtensions:q[QUALITY.supervisorExtensions],withoutDayOff:q[QUALITY.noDayOff],overtime:q[QUALITY.overtime]};
+      const maxOvertime=Math.max(0,...accountingRoster.map(e=>weeklyEmployeeHours(e,w.ns || {},w.autoExtShifts || [],w.handoffs || [],ptoHoursByEmployee).overtimeHours));
+      return {quality:q,gaps:q[QUALITY.coverage],shortfall:q[QUALITY.shortfall],supervisorExtensions:q[QUALITY.supervisorExtensions],withoutDayOff:q[QUALITY.noDayOff],overtime:q[QUALITY.overtime],
+        maxOvertime,doubles:q[QUALITY.doubles],recovery:q[QUALITY.recovery],pattern:q[QUALITY.pattern],transitions:q[QUALITY.transitions],preferences:q[QUALITY.preferences]};
     };
     job.foundCount=0;
     // The search ranks supervisor 12h days, seven-day weeks and overtime only;
@@ -14518,7 +14603,9 @@ function ScheduleGrid({ onOpenTestModal }) {
       if(!polished.has(key)){let out=w;try{out=polishSearchWeek(w,polishContext);}catch(e){out=w;}polished.set(key,out);}return polished.get(key);};
     setFoundWeeks({rulesStamp:liveRulesStamp,roster:accountingRoster,appliedId:null,
       weeks:fallback?[{id:'autofill',label:"Autofill's week",foundAtMs:0,summary:summarize(fallback),week:fallback}]:[]});
-    const progress=(result,extra={})=>setAutoFillProgress({...result,solution:undefined,engine:'complete',activeMs:job.activeMs,improvedAtMs:job.improvedAtMs,
+    let floorDetails=null;
+    try{floorDetails=overtimeFloorDetails(accountingRoster,{empTimeOffDays,ptoHoursByEmployee});}catch(e){floorDetails=null;}
+    const progress=(result,extra={})=>setAutoFillProgress({...result,solution:undefined,engine:'complete',floorDetails,activeMs:job.activeMs,improvedAtMs:job.improvedAtMs,
       firstOvertime:job.firstOvertime,fallbackOvertime:fallback?.quality?.[QUALITY.overtime] ?? null,fallbackWithoutDayOff:fallback?.quality?.[QUALITY.noDayOff] ?? null,
       fallbackSupervisorExtensions:fallback?.quality?.[QUALITY.supervisorExtensions] ?? null,
       hasBest:!!(result.solution || fallback),idleLimitMs:SEARCH_IDLE_LIMIT_MS,...extra});
