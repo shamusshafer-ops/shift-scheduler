@@ -142,15 +142,104 @@ Caveat: autofill's repair passes have small wall-clock budgets, so results
 depend somewhat on CPU load; both versions ran on the same 2-core machine, one
 benchmark per core.
 
-RESULTS_PLACEHOLDER
+### Results
+
+Full tables (every metric, every scenario): [benchmarks/2026-11-25-comparison.md](benchmarks/2026-11-25-comparison.md).
+Means per week; lower is better. "Leading objectives" = hard errors, uncovered
+hours, full-time shortfall, supervisor 12h days, seven-day weeks, total
+overtime, doubles, overtime spread, compared lexicographically per paired seed.
+
+| Scenario (runs) | Leading objectives, paired | Total OT | No 2 days off together | Isolated days off | Quick turnarounds | Rest deficit h | Shift changes | Day↔night | Median s |
+|---|---|---|---|---|---|---|---|---|---|
+| synth-15 (20) | 20 equal | 8 → 8 | 5.0 → 0.4 | 13.6 → 2.2 | 1.3 → 0 | 10.4 → 0 | 5.7 → 5.8 | 2.0 → 1.7 | 5.6 → 5.6 |
+| synth-pto (20) | 20 equal | 16 → 16 | 4.2 → 1.1 | 12.5 → 5.2 | 3.2 → 0.4 | 25.2 → 3.2 | 9.3 → 8.7 | 2.8 → 2.2 | 6.0 → 13.1 |
+| synth-noot (20) | 20 equal | 8 → 8 | 5.5 → 0.8 | 14.4 → 3.2 | 1.5 → 0 | 11.6 → 0 | 6.3 → 7.4 | 1.5 → 2.3 | 6.2 → 5.5 |
+| synth-tight (20) | 20 equal | 88 → 88 | 0.1 → 0.05 | 9.8 → 8.7 | 2.8 → 0.3 | 22.0 → 2.4 | 6.9 → 5.1 | 1.1 → 1.0 | 30.7 → 17.4 |
+| real-0927 (10) | 3 better, 7 equal | 88 → 88 | 1.1 → 0 | 8.8 → 6.8 | 2.4 → 1.8 | 11.2 → 7.2 | 4.1 → 4.0 | 1.5 → 1.8 | 61.2 → 40.5 |
+| anon-15 (10) | 1 better, 9 equal | 33.6 → 32.8 | 3.5 → 0.7 | 11.7 → 5.6 | 1.5 → 0 | 12.0 → 0 | 5.8 → 3.9 | 0.8 → 0.3 | 40.0 → 14.2 |
+
+Across three consecutive weeks (history carried forward, 4 seeds each):
+
+| Scenario | Leading objectives, paired | Max cumulative OT per person | Σ squared cumulative OT | People with any OT |
+|---|---|---|---|---|
+| synth-15 (12 weeks) | 12 equal | 16 → 8 | 320 → 192 | 2 → 3 |
+| real-0927 (12 weeks) | 2 better, 10 equal | 60 → 60 | 9552 → 9376 | 9 → 9 |
+
+Reading the results:
+- **No regression on any leading objective** in 124 paired weeks; 6 improved
+  (less overtime, fewer doubles or a more even spread).
+- **Work patterns improved substantially** everywhere: people without two days
+  off together, isolated days off and quick turnarounds fell by roughly half
+  to all on the normally staffed rosters (e.g. isolated days off −52% to −84%,
+  quick turnarounds −87% to −100%).
+- **Trade-offs:** with overtime limited to three people (`synth-noot`) shift
+  changes rose by 1.1 and day/night flips by 0.75 per week, the cost of giving
+  people their days off together (which ranks higher). On the real 12-person
+  roster, the overtime spread is more even (Σ OT² −19) but 1.6h more of it falls
+  on people who did not ask for overtime, because the spread entry weighs
+  evenness against volunteers at half weight.
+- **Overtime rotates across weeks:** on `synth-15` the same 8h no longer lands
+  on the same person each week.
+- **Runtime:** faster on the hard rosters (per-node speed-up). Slower on
+  `synth-pto` (6 → 13 s): the baseline's instant "no better week" there came
+  from the unsafe PTO bound (defect 1); the corrected search must actually
+  search before giving up within its budget.
+- **Unchanged:** the real 12-person roster leaves the same 40 Medical/Scale
+  hours uncovered in both versions (5 role errors), and the search found no
+  better week than autofill's within 1000 nodes in any scenario, so the
+  benchmark exercises the polish of search weeks only through the tests.
 
 ## 5. Tests
 
-TESTS_PLACEHOLDER
+All test files were executed on the final code (Node 22): **401 tests, 401
+passed, 0 failed** (baseline: 392 tests, 391 passed; the failure was the
+crashing harness script, defect 6).
+
+New (`test-scheduling-intelligence.js`, 9 tests):
+- PTO displacement: a No OT full-timer with 40h PTO can still cover a shift
+  (fails on the baseline: reported infeasible).
+- Phase transition: the overtime week without a supervisor 12h day wins and is
+  proven (fails on the baseline: supervisor extension, falsely proven).
+- **Optimization oracle**: on 30 random rosters with PTO, locks, No OT and
+  overtime-willing staff, the search's proven optimum (days off, overtime)
+  equals an exhaustive enumeration of every staffing combination (fails on the
+  baseline).
+- Role-aware overtime floor; work-pattern measures; equal-overtime ranking;
+  pattern entries can never outrank coverage/hours/overtime; three-person
+  rotation where no pair swap is legal; polish never worsens a week and keeps
+  locks.
+
+Changed: one complete-search UI test now uses a roster where the polish cannot
+move the overtime (the old fixture's overtime was legitimately removed by it).
+Golden snapshot re-recorded: entries appended to every quality vector, schedules
+identical except the three `harness/tight` cases, which end with fewer
+uncovered hours (64→56, 64→56, 72→56).
+
+Equivalence check for the search speed-up: same first improvement (node 77, 48h
+OT) and same incumbents after 300 nodes on the anonymized roster, 48.5 → 18.7
+ms per node.
+
+Browser (Chromium 1.63 via Playwright, CDN libraries served from identical npm
+versions): page loads with a seeded roster; AUTOFILL hands off to the complete
+search; Weeks found shows the new columns; pause, resume, week preview and Use
+best now work; the applied week's overtime goes to the manager approval dialog;
+no uncaught page errors. Firefox was not available in this environment and was
+not tested; editing, saved data and export were not exercised in the browser
+(the export model is covered by `test-excel-export.js`).
 
 ## 6. Files changed
 
-FILES_PLACEHOLDER
+| File | Change |
+|---|---|
+| `ShiftScheduler_latest loop.html` | canonical objective (`QUALITY`, `employeeWorkPattern`, `employeeQuality`); complete-search PTO bound, phase transition, role bounds, per-employee candidate checks; `polishSearchWeek`; swap search with rotations; `rebalanceOvertime` on the canonical vector; `fairnessFromWeeks`, `historicalOvertimeWeight`; `overtimeFloorDetails`; Weeks found columns, proof-scope note, floor explanation |
+| `load-core.js` | exports the new functions |
+| `test-scheduling-intelligence.js` | new regression and oracle tests |
+| `test-complete-search.js` | one fixture adjusted (see §5) |
+| `test-autofill-harness.js` | null-patterns crash fixed |
+| `fixtures/golden-snapshot.json` | re-recorded (see §5) |
+| `tools/bench-scheduler.js`, `tools/check-scripts.js` | benchmark harness; inline-script compile check |
+| `.github/workflows/scheduler-tests.yml` | triggers and suites (defect 5) |
+| `docs/complete-search.md`, `docs/scheduling-intelligence.md`, `docs/benchmarks/…`, `CLAUDE.md` | documentation |
 
 ## 7. Remaining limitations
 
@@ -167,4 +256,4 @@ FILES_PLACEHOLDER
   "What would fix this?" and staffing insights remain the simulation-based
   advice. Per-shift qualification shortages are not yet quantified.
 - `ShiftScheduler_1_.jsx` (the older React component) was not updated.
-- BROWSER_PLACEHOLDER
+- Browser validation covered Chromium only; Firefox behavior, manual editing, saved data and export in the browser still need a manual check before operational use.

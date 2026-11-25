@@ -13823,7 +13823,7 @@ function FoundWeeksList({ weeks, appliedId, onView, onUse, disabled, clock }) {
           <thead><tr><th style={th}>Week</th><th style={th}>Found at</th><th style={th}>Positions</th><th style={th}>Day off</th><th style={th}>Overtime</th>
             <th style={th} title="Most overtime carried by one person">Max OT</th><th style={th} title="Continuous blocks over 12 hours">Doubles</th>
             <th style={th} title="Hours of rest under 16h between duties, plus hours past 8 in a duty">Rest</th>
-            <th style={th} title="Days off not taken together, and isolated single days">Days off</th>
+            <th style={th} title="Days off not taken together, and isolated single days off or workdays">Days off split</th>
             <th style={th} title="Shift changes between duties (day/night counts 2)">Shift chg</th><th style={th} title="Stated preference conflicts, weighted by past weeks">Prefs</th><th style={th}></th></tr></thead>
           <tbody>
             {weeks.map((w, i) => { const t = weekSummaryText(w.summary); return (
