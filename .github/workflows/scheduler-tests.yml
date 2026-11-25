@@ -5,49 +5,19 @@ on:
     paths:
       - 'ShiftScheduler_latest loop.html'
       - 'load-core.js'
-      - 'test-coverage.js'
-      - 'test-staffing.js'
-      - 'test-excel-export.js'
-      - 'test-policy.js'
-      - 'test-pto.js'
-      - 'test-overtime.js'
-      - 'test-availability.js'
-      - 'test-completion.js'
-      - 'test-publication.js'
-      - 'test-locks-fairness.js'
-      - 'test-integration-audit.js'
-      - 'test-complete-search.js'
-      - 'test-autofill-repair.js'
-      - 'test-calloff.js'
-      - 'test-shift-availability.js'
-      - 'test-review-fixes.js'
-      - 'test-autofill-fixes.js'
-      - 'fixtures/complete-search-roster.json'
-      - 'fixtures/autofill-real-roster-drafts.json'
+      - 'test-*.js'
+      - 'fixtures/**'
+      - 'tools/**'
+      - 'roster-backup-current.json'
       - '.github/workflows/scheduler-tests.yml'
   pull_request:
     paths:
       - 'ShiftScheduler_latest loop.html'
       - 'load-core.js'
-      - 'test-coverage.js'
-      - 'test-staffing.js'
-      - 'test-excel-export.js'
-      - 'test-policy.js'
-      - 'test-pto.js'
-      - 'test-overtime.js'
-      - 'test-availability.js'
-      - 'test-completion.js'
-      - 'test-publication.js'
-      - 'test-locks-fairness.js'
-      - 'test-integration-audit.js'
-      - 'test-complete-search.js'
-      - 'test-autofill-repair.js'
-      - 'test-calloff.js'
-      - 'test-shift-availability.js'
-      - 'test-review-fixes.js'
-      - 'test-autofill-fixes.js'
-      - 'fixtures/complete-search-roster.json'
-      - 'fixtures/autofill-real-roster-drafts.json'
+      - 'test-*.js'
+      - 'fixtures/**'
+      - 'tools/**'
+      - 'roster-backup-current.json'
       - '.github/workflows/scheduler-tests.yml'
 
 permissions:
@@ -61,4 +31,14 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: '22'
-      - run: node --test test-coverage.js test-staffing.js test-excel-export.js test-policy.js test-pto.js test-overtime.js test-availability.js test-completion.js test-publication.js test-locks-fairness.js test-integration-audit.js test-complete-search.js test-autofill-repair.js test-calloff.js test-shift-availability.js test-review-fixes.js test-autofill-fixes.js test-autofill-balance.js test-autofill-relays.js test-fix-suggestions.js
+      - name: Inline scripts compile (JSX via Babel, as in the browser)
+        run: npm i --no-save @babel/standalone@7 && node tools/check-scripts.js
+      - name: Rule, coverage, search and optimization tests
+        run: >-
+          node --test test-coverage.js test-staffing.js test-excel-export.js test-policy.js test-pto.js test-overtime.js
+          test-availability.js test-completion.js test-publication.js test-locks-fairness.js test-integration-audit.js
+          test-complete-search.js test-autofill-repair.js test-calloff.js test-shift-availability.js test-review-fixes.js
+          test-autofill-fixes.js test-autofill-balance.js test-autofill-relays.js test-fix-suggestions.js test-step0.js
+          test-scheduling-intelligence.js
+      - name: Golden snapshot (deterministic autofill and repair output)
+        run: node test-golden-snapshot.js
