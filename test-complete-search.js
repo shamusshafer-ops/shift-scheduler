@@ -147,7 +147,9 @@ test('production complete candidates use ordinary proposal commit and overtime s
  const solution={ns:{Sunday__second:oneDay(['a','b','c']).map(v=>a(v.id,'Guard',false))},autoExtShifts:[],handoffs:[],usedPatterns:{}};
  const h=uiHarness({status:'feasible',phase:'regular-hours',solution});h.ui.startCompleteSearch();h.queue.shift()();assert.equal(h.events.filter(e=>e[0]==='commit').length,1);
  solution.ns=Object.fromEntries(c.DAYS.slice(0,6).map(day=>[day+'__second',[a('a','Guard',false)]]));
- const overtime=uiHarness({status:'feasible',phase:'overtime-review',solution});overtime.ui.startCompleteSearch();overtime.queue.shift()();assert(!overtime.events.some(e=>e[0]==='commit'));assert.equal(overtime.events.find(e=>e[0]==='pending')[1].reviewItems[0].newHours,48);
+ // Nobody else can take a's duties here, so polishing cannot remove the overtime.
+ const only=[e('a',{overtimePref:'preferred'}),...['b','c'].map(id=>e(id,{availableDaysOfWeek:['Saturday']}))];
+ const overtime=uiHarness({status:'feasible',phase:'overtime-review',solution},{employees:only});overtime.ui.startCompleteSearch();overtime.queue.shift()();assert(!overtime.events.some(e=>e[0]==='commit'));assert.equal(overtime.events.find(e=>e[0]==='pending')[1].reviewItems[0].newHours,48);
 });
 test('production infeasibility leaves the current draft untouched',()=>{
  const h=uiHarness({status:'infeasible',phase:'regular-hours',solution:null,reasons:['exhausted']});h.ui.startCompleteSearch();h.queue.shift()();assert(!h.events.some(e=>['commit','pending'].includes(e[0])));assert.equal(h.events.at(-1)[1].status,'infeasible');
