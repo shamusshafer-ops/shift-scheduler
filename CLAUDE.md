@@ -31,6 +31,9 @@ The autofill system is a constraint satisfaction solver with multiple passes:
 2. **Weighted soft-preference scoring** — respects preferred shifts, days off, fatigue
 3. **CSP autofill + bottleneck prioritization** — fills hardest-to-cover slots first
 4. **Directed Local Search (smart swapping)** — post-fill optimization via swaps
+5. **Complete search** (`createCompleteScheduleSearch`) — branch and bound over the duty menu; proves supervisor 12h days, seven-day weeks and total overtime, then `polishSearchWeek` improves the rest
+
+All passes rank weeks with one lexicographic objective, `QUALITY` / `scheduleQuality` (per person: `employeeQuality`). See `docs/scheduling-intelligence.md` for the hierarchy, the audit and benchmark results, and `docs/complete-search.md` for the search. Benchmark changes with `node tools/bench-scheduler.js --repo <checkout> --out file.json` and compare two runs with `--compare a.json b.json`.
 
 ### Shift & Data Model
 

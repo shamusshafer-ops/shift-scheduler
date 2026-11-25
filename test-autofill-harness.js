@@ -189,7 +189,7 @@ function run(scenarioName, quiet = true, seed = 12345) {
   const sc = SCENARIOS[scenarioName]();
   if (quiet) console.log = () => {};
   const t0 = process.hrtime.bigint();
-  const result = buildAutoFill(sc.emps, {}, sc.timeOff, sc.patterns, sc.exts); result.ns = result.schedule;
+  const result = buildAutoFill(sc.emps, {}, sc.timeOff, sc.patterns || {}, sc.exts); result.ns = result.schedule;
   const ms = Number(process.hrtime.bigint() - t0) / 1e6;
   console.log = origLog;
   const errors = validate(result.ns, sc.emps, sc.timeOff, sc.patterns, sc.exts);
