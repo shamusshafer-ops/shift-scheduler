@@ -96,7 +96,10 @@ function loadFixture(file) {
     cfg: d.settings || d.cfg || {} };
 }
 const SCENARIOS = {
-  // The saved 12-person operational roster (structural shortage: 88h OT floor).
+  // The current 13-person operational roster (saved 2026-10-15). Exact optimum
+  // (tools/feasibility_cpsat.py, validated): full coverage, 48h OT, max 8h each.
+  'real-current': () => { const f = loadFixture('roster-2026-10-15.json'); return { employees: f.employees, cfg: { maxConsecutiveShifts: 6, maxConsecutiveNights: 6, minRestHours: 8, ...f.cfg } }; },
+  // The saved 12-person roster of 2026-09-27 (structural shortage: 88h OT floor).
   'real-0927': () => { const f = loadFixture('roster-2026-09-27.json'); return { employees: f.employees, cfg: { maxConsecutiveShifts: 6, maxConsecutiveNights: 6, minRestHours: 8, ...f.cfg } }; },
   // The anonymized 15-person April roster used by the complete-search tests.
   'anon-15': () => { const f = loadFixture('complete-search-roster.json'); return { employees: f.employees, cfg: f.cfg }; },

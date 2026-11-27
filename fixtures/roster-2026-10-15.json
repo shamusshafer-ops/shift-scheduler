@@ -1,0 +1,485 @@
+{
+  "source": "shift-rosters-backup-2026-11-27.json (roster \"10-15-26\", saved 2026-10-15; most current operational roster as of 2026-11-27)",
+  "settings": {
+    "maxConsecutiveShifts": 6,
+    "maxConsecutiveNights": 6,
+    "minRestHours": 8
+  },
+  "settingsNote": "The roster export carries no rule settings; these are the settings saved with the 2026-09-27 roster fixture.",
+  "employees": [
+    {
+      "id": "1781196286119",
+      "name": "S. Shafer",
+      "qualifications": [
+        "Guard",
+        "Supervisor",
+        "Scale",
+        "Medical"
+      ],
+      "employmentType": "full-time",
+      "unavailableDays": [],
+      "preferredShifts": [
+        "first"
+      ],
+      "blockedShifts": [
+        "third"
+      ],
+      "requiredShift": null,
+      "preferredDaysOff": [
+        "Sunday",
+        "Saturday"
+      ],
+      "overtimePref": "neutral",
+      "willing16h": true,
+      "maxShiftsPerWeek": null,
+      "ext12hPref": "day",
+      "availableDaysOfWeek": [
+        "Monday",
+        "Tuesday",
+        "Wednesday",
+        "Thursday",
+        "Friday",
+        "Saturday",
+        "Sunday"
+      ],
+      "inTraining": false,
+      "swingEligible": [
+        "swing-2a-2p"
+      ],
+      "crossShiftOT": false,
+      "splitShiftEligible": false,
+      "maxWeekendDays": null,
+      "notes": "",
+      "unavailableWindows": [],
+      "canWorkOtherShifts": false
+    },
+    {
+      "id": "1781196380888",
+      "name": "J. Parks",
+      "qualifications": [
+        "Guard",
+        "Medical"
+      ],
+      "employmentType": "full-time",
+      "unavailableDays": [],
+      "preferredShifts": [
+        "first"
+      ],
+      "blockedShifts": [],
+      "requiredShift": null,
+      "preferredDaysOff": [],
+      "overtimePref": "neutral",
+      "willing16h": false,
+      "maxShiftsPerWeek": null,
+      "ext12hPref": "day",
+      "availableDaysOfWeek": null,
+      "inTraining": false,
+      "swingEligible": [],
+      "crossShiftOT": false,
+      "splitShiftEligible": false,
+      "unavailableWindows": [],
+      "maxWeekendDays": null,
+      "canWorkOtherShifts": false,
+      "notes": ""
+    },
+    {
+      "id": "1781196448144",
+      "name": "H. Cameron",
+      "qualifications": [
+        "Guard",
+        "Scale"
+      ],
+      "employmentType": "full-time",
+      "unavailableDays": [],
+      "preferredShifts": [
+        "second"
+      ],
+      "blockedShifts": [
+        "third"
+      ],
+      "requiredShift": null,
+      "preferredDaysOff": [],
+      "overtimePref": "neutral",
+      "willing16h": true,
+      "maxShiftsPerWeek": null,
+      "ext12hPref": "both",
+      "availableDaysOfWeek": null,
+      "inTraining": false,
+      "swingEligible": [
+        "swing-2p-2a"
+      ],
+      "crossShiftOT": false,
+      "splitShiftEligible": false,
+      "maxWeekendDays": null,
+      "notes": "",
+      "unavailableWindows": [],
+      "canWorkOtherShifts": false
+    },
+    {
+      "id": "1781196469463",
+      "name": "O. Anderson",
+      "qualifications": [
+        "Guard",
+        "Scale"
+      ],
+      "employmentType": "full-time",
+      "unavailableDays": [],
+      "preferredShifts": [
+        "first"
+      ],
+      "blockedShifts": [],
+      "requiredShift": null,
+      "preferredDaysOff": [],
+      "overtimePref": "neutral",
+      "willing16h": false,
+      "maxShiftsPerWeek": null,
+      "ext12hPref": "both",
+      "availableDaysOfWeek": null,
+      "inTraining": false,
+      "swingEligible": [],
+      "crossShiftOT": false,
+      "splitShiftEligible": false,
+      "unavailableWindows": [
+        {
+          "day": "Sunday",
+          "startTime": "06:00",
+          "endTime": "14:00",
+          "endNextDay": false
+        }
+      ],
+      "maxWeekendDays": null,
+      "canWorkOtherShifts": false,
+      "notes": ""
+    },
+    {
+      "id": "1781196528287",
+      "name": "T. Beverly",
+      "qualifications": [
+        "Guard"
+      ],
+      "employmentType": "part-time",
+      "unavailableDays": [
+        "Sunday",
+        "Tuesday",
+        "Thursday",
+        "Friday",
+        "Saturday"
+      ],
+      "preferredShifts": [
+        "second"
+      ],
+      "blockedShifts": [
+        "first",
+        "third"
+      ],
+      "requiredShift": null,
+      "preferredDaysOff": [],
+      "overtimePref": "neutral",
+      "willing16h": false,
+      "maxShiftsPerWeek": null,
+      "ext12hPref": null,
+      "availableDaysOfWeek": null,
+      "inTraining": false,
+      "swingEligible": [],
+      "crossShiftOT": false,
+      "splitShiftEligible": false,
+      "unavailableWindows": [],
+      "maxWeekendDays": null,
+      "canWorkOtherShifts": false,
+      "notes": ""
+    },
+    {
+      "id": "1781196549856",
+      "name": "L. Shepard",
+      "qualifications": [
+        "Guard"
+      ],
+      "employmentType": "full-time",
+      "unavailableDays": [
+        "Sunday",
+        "Monday"
+      ],
+      "preferredShifts": [
+        "second"
+      ],
+      "blockedShifts": [
+        "first",
+        "third"
+      ],
+      "requiredShift": "second",
+      "preferredDaysOff": [
+        "Sunday",
+        "Monday"
+      ],
+      "overtimePref": "blocked",
+      "willing16h": false,
+      "maxShiftsPerWeek": null,
+      "ext12hPref": null,
+      "availableDaysOfWeek": [
+        "Tuesday",
+        "Wednesday",
+        "Thursday",
+        "Friday",
+        "Saturday"
+      ],
+      "inTraining": false,
+      "swingEligible": [],
+      "crossShiftOT": false,
+      "splitShiftEligible": false,
+      "maxWeekendDays": null,
+      "notes": "",
+      "unavailableWindows": [],
+      "canWorkOtherShifts": false
+    },
+    {
+      "id": "1781196594736",
+      "name": "K. Messer",
+      "qualifications": [
+        "Guard"
+      ],
+      "employmentType": "full-time",
+      "unavailableDays": [
+        "Sunday",
+        "Saturday"
+      ],
+      "preferredShifts": [
+        "third"
+      ],
+      "blockedShifts": [
+        "first",
+        "second"
+      ],
+      "requiredShift": "third",
+      "preferredDaysOff": [
+        "Sunday",
+        "Saturday"
+      ],
+      "overtimePref": "neutral",
+      "willing16h": false,
+      "maxShiftsPerWeek": null,
+      "ext12hPref": null,
+      "availableDaysOfWeek": null,
+      "inTraining": false,
+      "swingEligible": [],
+      "crossShiftOT": false,
+      "splitShiftEligible": false,
+      "unavailableWindows": [],
+      "maxWeekendDays": null,
+      "canWorkOtherShifts": false,
+      "notes": ""
+    },
+    {
+      "id": "1781196632896",
+      "name": "T. Bentley",
+      "qualifications": [
+        "Guard"
+      ],
+      "employmentType": "full-time",
+      "unavailableDays": [],
+      "preferredShifts": [
+        "third",
+        "second"
+      ],
+      "blockedShifts": [
+        "first"
+      ],
+      "requiredShift": null,
+      "preferredDaysOff": [
+        "Friday",
+        "Saturday"
+      ],
+      "overtimePref": "preferred",
+      "willing16h": false,
+      "maxShiftsPerWeek": null,
+      "ext12hPref": "night",
+      "availableDaysOfWeek": null,
+      "inTraining": false,
+      "swingEligible": [],
+      "crossShiftOT": false,
+      "splitShiftEligible": false,
+      "unavailableWindows": [],
+      "maxWeekendDays": null,
+      "canWorkOtherShifts": false,
+      "notes": ""
+    },
+    {
+      "id": "1781196669823",
+      "name": "L. Hillenberg",
+      "qualifications": [
+        "Guard",
+        "Scale",
+        "Medical"
+      ],
+      "employmentType": "full-time",
+      "unavailableDays": [],
+      "preferredShifts": [
+        "third"
+      ],
+      "blockedShifts": [],
+      "requiredShift": null,
+      "preferredDaysOff": [],
+      "overtimePref": "preferred",
+      "willing16h": true,
+      "maxShiftsPerWeek": null,
+      "ext12hPref": "both",
+      "availableDaysOfWeek": null,
+      "inTraining": false,
+      "swingEligible": [
+        "swing-10a-10p",
+        "swing-10p-10a",
+        "swing-2p-2a",
+        "swing-2a-2p"
+      ],
+      "crossShiftOT": true,
+      "splitShiftEligible": false,
+      "unavailableWindows": [],
+      "maxWeekendDays": null,
+      "canWorkOtherShifts": true,
+      "notes": ""
+    },
+    {
+      "id": "1781196694632",
+      "name": "D. Pete",
+      "qualifications": [
+        "Guard",
+        "Medical"
+      ],
+      "employmentType": "full-time",
+      "unavailableDays": [
+        "Monday",
+        "Tuesday"
+      ],
+      "preferredShifts": [
+        "third"
+      ],
+      "blockedShifts": [
+        "first",
+        "second"
+      ],
+      "requiredShift": null,
+      "preferredDaysOff": [
+        "Monday",
+        "Tuesday"
+      ],
+      "overtimePref": "neutral",
+      "willing16h": false,
+      "maxShiftsPerWeek": null,
+      "ext12hPref": "night",
+      "availableDaysOfWeek": [
+        "Wednesday",
+        "Thursday",
+        "Friday",
+        "Sunday",
+        "Saturday"
+      ],
+      "inTraining": false,
+      "swingEligible": [],
+      "crossShiftOT": false,
+      "splitShiftEligible": false,
+      "unavailableWindows": [],
+      "maxWeekendDays": null,
+      "canWorkOtherShifts": false,
+      "notes": ""
+    },
+    {
+      "id": "1789471995349",
+      "name": "T. Saunders",
+      "qualifications": [
+        "Guard"
+      ],
+      "employmentType": "full-time",
+      "unavailableDays": [],
+      "unavailableWindows": [],
+      "preferredShifts": [
+        "first"
+      ],
+      "blockedShifts": [
+        "third"
+      ],
+      "requiredShift": null,
+      "preferredDaysOff": [],
+      "overtimePref": "neutral",
+      "willing16h": false,
+      "maxShiftsPerWeek": null,
+      "ext12hPref": "day",
+      "availableDaysOfWeek": null,
+      "inTraining": false,
+      "swingEligible": [],
+      "canWorkOtherShifts": false,
+      "splitShiftEligible": false,
+      "maxWeekendDays": null,
+      "notes": ""
+    },
+    {
+      "id": "1789472175700",
+      "name": "C. Hefron",
+      "qualifications": [
+        "Guard",
+        "Medical"
+      ],
+      "employmentType": "full-time",
+      "unavailableDays": [],
+      "unavailableWindows": [
+        {
+          "day": "Sunday",
+          "startTime": "06:00",
+          "endTime": "14:00",
+          "endNextDay": false
+        }
+      ],
+      "preferredShifts": [
+        "second"
+      ],
+      "blockedShifts": [],
+      "requiredShift": null,
+      "preferredDaysOff": [],
+      "overtimePref": "preferred",
+      "willing16h": true,
+      "maxShiftsPerWeek": null,
+      "ext12hPref": "both",
+      "availableDaysOfWeek": null,
+      "inTraining": false,
+      "swingEligible": [],
+      "canWorkOtherShifts": false,
+      "splitShiftEligible": false,
+      "maxWeekendDays": null,
+      "notes": ""
+    },
+    {
+      "id": "1792064787143",
+      "name": "S. McCall",
+      "qualifications": [
+        "Guard",
+        "Scale"
+      ],
+      "employmentType": "full-time",
+      "unavailableDays": [
+        "Sunday",
+        "Monday"
+      ],
+      "unavailableWindows": [],
+      "preferredShifts": [
+        "first",
+        "second"
+      ],
+      "blockedShifts": [
+        "third"
+      ],
+      "requiredShift": null,
+      "preferredDaysOff": [],
+      "overtimePref": "preferred",
+      "willing16h": false,
+      "maxShiftsPerWeek": null,
+      "ext12hPref": "day",
+      "availableDaysOfWeek": null,
+      "inTraining": false,
+      "swingEligible": [
+        "swing-10a-10p"
+      ],
+      "canWorkOtherShifts": false,
+      "splitShiftEligible": false,
+      "maxWeekendDays": null,
+      "notes": ""
+    }
+  ]
+}
