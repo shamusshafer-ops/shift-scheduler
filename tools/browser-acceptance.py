@@ -136,11 +136,8 @@ with sync_playwright() as p:
 
     # ── Persistence ──
     def persist():
-        report['storage_before_reload'] = pg.evaluate("Object.fromEntries(Object.keys(localStorage).filter(k => k.startsWith('shift_')).map(k => [k, localStorage.getItem(k).length]))")
-        report['active_week_before_reload'] = pg.evaluate("localStorage.getItem('shift_active_week')")
         pg.reload(); pg.wait_for_selector('button:has-text("AUTOFILL")', state='attached', timeout=90000); time.sleep(1.5)
         pg.screenshot(path=str(out / '03b-after-reload.png'))
-        report['active_week_after_reload'] = pg.evaluate("localStorage.getItem('shift_active_week')")
         step('schedule persists after reload', filled_text() == applied, f'{applied} -> {filled_text()}')
     guard('persistence', persist)
 

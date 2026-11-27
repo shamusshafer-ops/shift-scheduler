@@ -63,9 +63,9 @@ are ranked by exactly the same objective as whole weeks.
 | 5 | noDayOff | seven-day workweeks (day a duty starts) |
 | 6 | overtime | total hours worked over 40 |
 | 7 | doubles | continuous blocks over 12h |
-| 8 | spread | Σ overtime² — half weight for people who asked for overtime, up to double for people who averaged 8h+/week in recent published weeks |
+| 8 | spread | Σ overtime² — half weight for people who asked for overtime, up to double for people who averaged 8h+/week in recent published weeks (Phase II: the distribution is a setting — Balanced, Volunteers first, Even) |
 | 9 | recovery | Σ(16h − rest) for rests under 16h (incl. last week's last duty) + hours past 8 in a block |
-| 10 | pattern | no two days off together (2), isolated single days off (1 each), isolated single workdays (1 each); the week is read cyclically so Sat+Sun is a weekend |
+| 10 | pattern | Phase II (calendar-accurate, see [phase-2-optimization.md](phase-2-optimization.md)): no known duty-free break of 48h+ (2; 1 if a break at the week's edge already has 24h+), isolated calendar days off and isolated worked calendar days (1 each). Nothing is assumed about next week. *(November 25: no two days off together, read cyclically so Sat+Sun counted as a weekend.)* |
 | 11 | transitions | shift changes between consecutive blocks (first↔third counts 2) |
 | 12 | preferences | stated shift/day-off conflicts, weighted by prior published weeks |
 | 13 | changes | assignments changed from the baseline (repairs) |
@@ -257,3 +257,5 @@ not tested; editing, saved data and export were not exercised in the browser
   advice. Per-shift qualification shortages are not yet quantified.
 - `ShiftScheduler_1_.jsx` (the older React component) was not updated.
 - Browser validation covered Chromium only; Firefox behavior, manual editing, saved data and export in the browser still need a manual check before operational use.
+
+Phase II ([phase-2-optimization.md](phase-2-optimization.md)) addressed several of these: calendar-accurate patterns, structural-shortage proofs, the optimizer, an automated browser check of editing, saved data, export and publication (Chromium; a Firefox run script is provided).

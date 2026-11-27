@@ -1,0 +1,149 @@
+{
+ "engine": "chromium",
+ "steps": [
+  {
+   "step": "page loads; optimizer modes offered",
+   "ok": true,
+   "detail": "Fast draft|Balanced|Deep"
+  },
+  {
+   "step": "autofill hands the week to the optimizer",
+   "ok": true,
+   "detail": "27s"
+  },
+  {
+   "step": "optimizer runs in a background worker",
+   "ok": true,
+   "detail": "panel does not say it runs in this tab"
+  },
+  {
+   "step": "pause",
+   "ok": true,
+   "detail": "Resume offered"
+  },
+  {
+   "step": "paused optimizer does not advance",
+   "ok": true,
+   "detail": "0 -> 0"
+  },
+  {
+   "step": "resume",
+   "ok": true,
+   "detail": "Pause offered again"
+  },
+  {
+   "step": "optimizer finishes and stages overtime for approval",
+   "ok": true,
+   "detail": "Finished | COVERAGE | Complete | OVERTIME | 64h \u00b7 max 16h | DAYS OFF | everyone has one |  | Complete and valid; improved by local search (fast mode). Not proven optimal. |  | 0 wh"
+  },
+  {
+   "step": "finished week is complete and valid",
+   "ok": true,
+   "detail": "Complete and valid; improved by local search (fast mode)."
+  },
+  {
+   "step": "Weeks found lists comparison columns",
+   "ok": true,
+   "detail": "WEEK FOUND AT POSITIONS DAY OFF OVERTIME MAX OT OT NOT ASKED DOUBLES NO 48H BREAK QUICK TURNS SHIFT CHG PREFS CHANGES WARN       "
+  },
+  {
+   "step": "lower-ranked weeks explain why",
+   "ok": true,
+   "detail": "Ranks below: fails the schedule check (1 error)."
+  },
+  {
+   "step": "denying overtime keeps the schedule unchanged",
+   "ok": true,
+   "detail": "FILLED 0/68 -> 0/68"
+  },
+  {
+   "step": "a listed week can be chosen",
+   "ok": true,
+   "detail": "6 enabled"
+  },
+  {
+   "step": "approved week is applied",
+   "ok": true,
+   "detail": "FILLED 68/68"
+  },
+  {
+   "step": "schedule persists after reload",
+   "ok": true,
+   "detail": "68/68 -> 68/68"
+  },
+  {
+   "step": "manual edit: remove an assignment",
+   "ok": true,
+   "detail": "68/68 -> 67/68"
+  },
+  {
+   "step": "undo restores it",
+   "ok": true,
+   "detail": "-> 68/68"
+  },
+  {
+   "step": "drag and drop from the roster onto the grid",
+   "ok": true,
+   "detail": "removed T. Saunders: 67/68; dragged back into the open slot: 68/68"
+  },
+  {
+   "step": "previous week and back (the live week is kept)",
+   "ok": true,
+   "detail": "Week of 12/06 -> Week of 11/29 (FILLED 0/68) -> Week of 12/06 (FILLED 68/68)"
+  },
+  {
+   "step": "saved weeks: save and list a week",
+   "ok": true,
+   "detail": "Acceptance snapshot listed"
+  },
+  {
+   "step": "saved weeks dialog closes",
+   "ok": true,
+   "detail": ""
+  },
+  {
+   "step": "Excel export: preview, then download a workbook",
+   "ok": true,
+   "detail": "ShiftSchedule_2026-12-06.xls 27886 bytes"
+  },
+  {
+   "step": "publish dialog lists blocking issues and overtime decisions",
+   "ok": true,
+   "detail": "7 blocking issue(s)."
+  },
+  {
+   "step": "publish a validated week",
+   "ok": true,
+   "detail": "Saved publications | 2026-12-06 \u00b7 Acceptance Test \u00b7 2026-11-27T20:00:31.245ZPrint saved publication"
+  },
+  {
+   "step": "print layout (saved publication)",
+   "ok": true,
+   "detail": "Published weekly schedule \u2014 2026-12-06 |  | Published by Acceptance Test \u00b7 2026-11-27T20:00:31.245Z \u00b7 Record pub-17958096312"
+  },
+  {
+   "step": "Deep mode runs",
+   "ok": true,
+   "detail": "Deep): complete search and neighborhood rebuilds"
+  },
+  {
+   "step": "cancel stops the run and keeps the schedule",
+   "ok": true,
+   "detail": "FILLED 68/68 -> 68/68; cancelled"
+  },
+  {
+   "step": "Use best now stops and applies or stages approval",
+   "ok": true,
+   "detail": "OVERTIME APPROVAL REQUIRED"
+  },
+  {
+   "step": "no uncaught page errors",
+   "ok": true,
+   "detail": ""
+  }
+ ],
+ "page_errors": [],
+ "console_errors": [],
+ "commit": "d8bbbca",
+ "browser": "Google Chrome for Testing 153.0.8010.12 (headless), page served from a local web server"
+}
