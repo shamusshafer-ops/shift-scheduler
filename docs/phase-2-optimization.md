@@ -299,11 +299,15 @@ in 5 of 6 runs and 64 h in one.
 | Current roster (12) | **10 better**, 2 worse | 8/12 → **10/12** | 59.3 → 58 | 18.7 → **14.7** | 1 → **0.4** |
 | synth-15 (12) | equal | 12/12 → 12/12 | 8 → 8 | 8 → 8 | 0 → 0 |
 
+After the first week each version plans from its own history, so later weeks
+are compared seed by seed but no longer from identical inputs.
+
 ### Synthetic scenarios, equal node budget (3,000 nodes, 20 seeds each, 140 weeks)
 
-Both versions reach the exact reference on every leading objective in all 140
-weeks (8, 16, 8, 88, 32, 88 and 8 h of overtime), so they are equal there; both
-keep the locked 12-hour pair in 20/20 weeks. Differences are in lower measures:
+Both versions match the exact reference on every leading objective in all 120
+weeks that have one (8, 16, 8, 88, 32 and 88 h of overtime) and give 8 h in all
+20 `synth-locked` weeks, so they are equal there; both keep the locked 12-hour
+pair in 20/20 weeks. Differences are in lower measures:
 people without a 48-hour break fall slightly (e.g. `synth-locked` 9 → 6.7,
 `synth-scarce` 8.8 → 7.8), shift changes rise (+0.9 to +2.8 per week except
 `synth-locked`, −0.5).
