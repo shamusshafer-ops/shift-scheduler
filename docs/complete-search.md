@@ -1,16 +1,14 @@
-# Complete schedule search
-
-Autofill no longer treats the fast search's first complete week, or its attempt or plateau limit, as the end of schedule generation. It hands off to a resumable, exhaustive search that looks for the complete week with the **least total overtime**. When the fast search's week is complete, the search only looks for weeks with strictly less overtime than it. The **Complete search** button starts that search directly.
+Autofill no longer treats the fast search's first complete week, or its attempt or plateau limit, as the end of schedule generation. It hands its week to the **optimizer** ([phase-2-optimization.md](phase-2-optimization.md)), which runs this complete search alongside exact rebuilds of parts of the week. The complete search looks for the complete week with the **least total overtime** (after supervisor 12-hour days and days off); when a week is already held, it only looks for strictly better weeks. The **Optimize** button (Fast draft / Balanced / Deep) starts the optimizer directly.
 
 The implementation stays in the single HTML application. It adds no server, external solver package, account, or transmission of employee data.
 
 ## Manager workflow
 
 1. Set the week, roster, leave, rules, locks and autofill exclusions as usual. Wait for saves to finish.
-2. Use **AUTOFILL** for the fast search followed automatically by complete search when necessary, or use **Complete search** directly.
-3. During the search, a progress panel shows the best week so far, the overtime floor (see below), how much of the gap between the first complete week and the floor has been closed, elapsed search time, combinations checked and time since the last improvement. **Pause** retains the current search frontier and **Resume** continues that same search. **Use best now** stops the search at any time and applies the best week found so far (autofill's week if the search has not beaten it yet). **Cancel search** ends it without applying anything.
-4. The search applies its best week on its own when it finishes, or after 5 minutes of search time (paused time excluded) without finding a better week.
-   Every better week the search finds is listed under **Weeks found**, after autofill's own week, with when it was found, whether all positions are filled, who has no day off, and its overtime. **View** shows a week person by day (the same duty codes as the Excel export, overtime days highlighted, anyone without a day off flagged); **Previous / Next** (or the arrow keys) step through the weeks. **Use this week** stops a running search and applies that week through the normal overtime approval, with the same hard-rule checks against the current draft. The list is kept until the next autofill, and hidden if the roster, rules or time off change.
+2. Use **AUTOFILL** (the fast search followed by the optimizer), or **Optimize** to improve the current draft. Choose the mode next to the button: **Balanced** (default), **Fast draft** (local search only, seconds) or **Deep** (long runs).
+3. During the run, a progress panel shows the best week so far with its status (proven, best found or unknown), any proven staffing shortage, the overtime floor, elapsed time, rebuilds and combinations checked, and time since the last improvement. **Pause** keeps the run and **Resume** continues it. **Use best now** stops and applies the best week found so far (autofill's week if nothing better was found). **Cancel** ends it without applying anything.
+4. The run applies its best week on its own when it finishes or stops improving (Balanced: 60 seconds without a better week, at most 4 minutes; Fast: 4 seconds / 15 seconds; Deep: 5 / 30 minutes; paused time excluded).
+   **Weeks found** lists up to six meaningfully different weeks, best first, with when each was found and the measures managers compare (positions, day off, overtime, max overtime, overtime not asked for, doubles, people without a 48-hour break, quick turnarounds, shift changes, preferences, changes), and one line on why each ranks below the best. **View** shows a week person by day (the same duty codes as the Excel export, overtime days highlighted, anyone without a day off flagged); **Previous / Next** (or the arrow keys) step through the weeks. **Use this week** stops a running search and applies that week through the normal overtime approval, with the same hard-rule checks against the current draft. The list is kept until the next autofill, and hidden if the roster, rules or time off change.
 5. A found candidate goes through the existing independent validator and proposal commit path. Overtime is staged for manager approval; the solver cannot approve it or publish a week.
 6. Publish only through the existing publication review, including prior-week verification and saved approvals for that exact schedule.
 
@@ -49,18 +47,27 @@ The solver may rearrange any unlocked duty belonging to an included employee. It
 
 ## Result meanings
 
-| Result | Meaning |
+The panel's heading says how the run ended; the line under it says what is proven.
+
+| Heading | Meaning |
 | --- | --- |
-| Searching | Work remains in the frontier; there is no infeasibility conclusion. |
-| Paused | The frontier is retained in memory and can be resumed with unchanged inputs. |
-| Complete candidate found | The supported staffing and employee-hour constraints have a solution. Approval and publication review still apply. |
-| Finished — least overtime possible | The search exhausted its tree; no week in the duty menu has less overtime than the applied one. |
-| Finished — autofill's week already has the least overtime | The search found nothing with less overtime than autofill's complete week, so that week was applied. |
-| Stopped — best week applied | You chose **Use best now**, or 5 minutes passed without a better week. Less overtime may still be possible. |
-| No feasible combination in the current duty menu | Every remaining branch was exhausted or rejected by a necessary constraint/bound. |
-| Input or validation error | Data could not be modeled or a candidate failed the independent validator; correct the input or investigate the error. |
-| Cancelled | No feasibility conclusion was reached. |
-| Inputs changed | The old search cannot apply its result; start a fresh search. |
+| Optimizing (mode): … | Work remains; there is no infeasibility conclusion. |
+| Optimizer stopped | The inputs could not be modeled (the reasons are listed); correct them and start again. |
+| Optimization paused | The run is kept in memory and can be resumed with unchanged inputs. |
+| Finished — no better week for m:ss | No better week appeared for the mode's idle time; the best week was applied. |
+| Finished | The run ended on its own (nothing left to improve, or the mode's time cap). |
+| Stopped — best week applied | You chose **Use best now**. |
+| Optimization cancelled | Nothing was applied; no feasibility conclusion was reached. |
+| Inputs changed — start a new optimization | The roster, rules, time off or draft changed; the old run cannot apply its result. |
+
+| Status line | Meaning |
+| --- | --- |
+| Proven best for supervisor 12-hour days, people with a day off and total overtime | Complete and valid; the whole-week search exhausted its tree. Lower measures were improved by local search, not proven. |
+| Complete and valid; the best found within the search so far. Not proven optimal. | Balanced or Deep before a proof. |
+| Complete and valid; improved by local search (fast mode). Not proven optimal. | Fast draft. |
+| Proven infeasible | No complete week exists in the search's duty menu with the current rules, locks and exclusions. |
+| No complete week found yet; whether one exists is not known. | The best draft is applied as a draft with its issues listed. |
+| Proven staffing shortage | Some role hours cannot be covered by anyone; the week leaves only those uncovered (still reported as gaps). |
 
 This separation follows the distinction between feasible, proven infeasible and unknown results documented for constraint solvers in [Google's CP-SAT documentation](https://developers.google.com/optimization/cp/cp_solver). This application uses its own JavaScript search, not OR-Tools.
 

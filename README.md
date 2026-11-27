@@ -32,12 +32,14 @@ Every shift must include at minimum:
 ---
 
 ## Files
-- `ShiftScheduler_1_.jsx` — React component version
-- `ShiftScheduler_latest loop.html` — Standalone HTML version
+- `ShiftScheduler_latest loop.html` — the application (standalone HTML)
+- `ShiftScheduler_1_.jsx` — early React prototype from the first commit; it does not implement the current rules (rest, PTO, extended shifts, approvals, publication). See `docs/phase-2-optimization.md` §10.
 
 ## Getting Started
-Open `ShiftScheduler_latest loop.html` in a browser for the standalone version,
-or import `ShiftScheduler_1_.jsx` into a React project.
+Open `ShiftScheduler_latest loop.html` in a browser. **AUTOFILL** builds a week and
+hands it to the optimizer; **Optimize** (Fast draft / Balanced / Deep) improves the
+current draft. Overtime always needs a manager's approval before it is applied.
+How the optimizer works and what it proves: `docs/phase-2-optimization.md`.
 
 ## Weekly Excel Export
 The standalone app's Excel preview and `.xls` download share the same layout and data:

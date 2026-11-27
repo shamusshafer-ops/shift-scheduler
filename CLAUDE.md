@@ -32,8 +32,11 @@ The autofill system is a constraint satisfaction solver with multiple passes:
 3. **CSP autofill + bottleneck prioritization** — fills hardest-to-cover slots first
 4. **Directed Local Search (smart swapping)** — post-fill optimization via swaps
 5. **Complete search** (`createCompleteScheduleSearch`) — branch and bound over the duty menu; proves supervisor 12h days, seven-day weeks and total overtime, then `polishSearchWeek` improves the rest
+6. **Optimizer** (`createScheduleOptimizer`) — what AUTOFILL hands its week to and the **Optimize** button runs (Fast / Balanced / Deep): a validated pool of weeks, adaptive large-neighborhood search that rebuilds parts of the week exactly with the complete search, plus the whole-week search for proofs; runs in a Web Worker (`createOptimizerRunner`, `runOptimizerWorker`). `coverageCapability` proves structural shortages first. See `docs/phase-2-optimization.md`.
 
-All passes rank weeks with one lexicographic objective, `QUALITY` / `scheduleQuality` (per person: `employeeQuality`). See `docs/scheduling-intelligence.md` for the hierarchy, the audit and benchmark results, and `docs/complete-search.md` for the search. Benchmark changes with `node tools/bench-scheduler.js --repo <checkout> --out file.json` and compare two runs with `--compare a.json b.json`.
+All passes rank weeks with one lexicographic objective, `QUALITY` / `scheduleQuality` (per person: `employeeQuality`). See `docs/scheduling-intelligence.md` for the hierarchy, the audit and benchmark results, `docs/complete-search.md` for the search and `docs/phase-2-optimization.md` for the optimizer, roster feasibility and Phase II results. Benchmark changes with `node tools/bench-scheduler.js --repo <checkout> --out file.json` (budgets: `--budget nodes --nodes N` or `--budget time --seconds S`) and compare two runs with `--compare a.json b.json`. Exact offline analysis of one week: `tools/export-duty-model.js` + `tools/feasibility_cpsat.py` (OR-Tools CP-SAT). Browser check: `tools/browser-acceptance.py`.
+
+The core is a plain `<script>`; `load-core.js` extracts it for Node and exports an explicit list of names — add new core functions to that list.
 
 ### Shift & Data Model
 
@@ -60,6 +63,9 @@ Employee objects include: qualifications, employmentType, unavailableDays, block
 - `OvertimeModal` — approval flow when employee would exceed 40h
 - `UnderHoursBanner` — warns when full-time employees are under 40h
 - `ThemeCtx` — dark/light theme provider
+
+## Rosters
+`fixtures/roster-2026-10-15.json` is the current operational roster (13 people, exported 2026-11-27); benchmark scenario `real-current`. `fixtures/roster-2026-09-27.json` is the previous 12-person roster (`real-0927`).
 
 ## Roster Backup
 `roster-backup-current.json` is a versioned snapshot. Format: `{ version, exportedAt, employeeCount, employees[] }`. Current version: `v35.2-csp`.

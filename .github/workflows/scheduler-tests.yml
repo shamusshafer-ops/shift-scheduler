@@ -39,6 +39,6 @@ jobs:
           test-availability.js test-completion.js test-publication.js test-locks-fairness.js test-integration-audit.js
           test-complete-search.js test-autofill-repair.js test-calloff.js test-shift-availability.js test-review-fixes.js
           test-autofill-fixes.js test-autofill-balance.js test-autofill-relays.js test-fix-suggestions.js test-step0.js
-          test-scheduling-intelligence.js
+          test-scheduling-intelligence.js test-phase2-optimization.js
       - name: Golden snapshot (deterministic autofill and repair output)
         run: node test-golden-snapshot.js

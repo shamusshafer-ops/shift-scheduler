@@ -120,7 +120,7 @@ function summarize(employees, r) {
 }
 
 if (require.main === module) {
-  const loaded = loadRoster(arg('roster', path.join(REPO, 'fixtures/roster-2026-09-27.json'))), settings = loaded.settings;
+  const loaded = loadRoster(arg('roster', path.join(REPO, 'fixtures/roster-2026-10-15.json'))), settings = loaded.settings;
   // --set "D Pete,L Hillenburg" --as '{"splitShiftEligible":true}' tries a roster change without editing the file.
   const changed = arg('set', '').split(',').filter(Boolean), patch = JSON.parse(arg('as', '{}'));
   const employees = loaded.employees.map(e => changed.includes(e.name) ? { ...e, ...patch } : e);

@@ -89,20 +89,43 @@ test('the overtime floor counts each role\'s hours against only the people quali
   assert.equal(c.overtimeLowerBound(guards.slice(0, 12)), 544 - 12 * 40, 'a role nobody holds gives no floor (the week is infeasible, not costly)');
 });
 
-test('work-pattern measures: days off together, isolated days, quick turnarounds and shift changes', () => {
+test('work-pattern measures: actual breaks, calendar days, quick turnarounds and shift changes', () => {
   const span = (day, shiftId) => ({ employeeId: 'x', source: 'regular', ...c.shiftInterval(day, shiftId) });
-  const w = (...duties) => c.employeeWorkPattern('x', duties.map(d => span(...d)));
-  // Mon-Fri on first shift: weekend off together, no changes, 16h+ rest.
-  assert.deepEqual(w(...['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday'].map(d => [d, 'first'])), { recovery: 0, pattern: 0, transitions: 0, blocks: 5 });
-  // Sun, Tue, Thu, Sat: no two days off together, three isolated days off, two isolated workdays inside the week.
-  const scattered = w(['Sunday', 'first'], ['Tuesday', 'first'], ['Thursday', 'first'], ['Saturday', 'first']);
-  assert.equal(scattered.pattern, 2 + 3 + 2);
+  const w = (duties, pattern, known) => c.employeeWorkPattern('x', duties.map(d => span(...d)), pattern, known);
+  const pick = (r, ...k) => Object.fromEntries(k.map(x => [x, r[x]]));
+  const monFri = ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday'].map(d => [d, 'first']);
+  // Without last week, Mon-Fri has no known 48h break; the open one before Monday
+  // (30h so far) may still become one: 1, not 2. Nothing assumed about next week.
+  assert.deepEqual(pick(w(monFri), 'recovery', 'pattern', 'transitions', 'breaks48', 'longestBreakHours'),
+    { recovery: 0, pattern: 1, transitions: 0, breaks48: 0, longestBreakHours: 34 });
+  // With last week known (Mon-Fri first shifts) the weekend is a real 64h break.
+  const lastWeek = [-6, -5, -4, -3, -2].map(d => ({ start: d * 24 + 6, end: d * 24 + 14 }));
+  assert.deepEqual(pick(w(monFri, { prevWorkIntervals: lastWeek }), 'pattern', 'transitions', 'breaks48', 'longestBreakHours'),
+    { pattern: 0, transitions: 0, breaks48: 1, longestBreakHours: 64 });
+  // Sun-Thu: Friday and Saturday off, known inside the week.
+  assert.equal(w(['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday'].map(d => [d, 'first'])).pattern, 0);
+  // Scattered: no known 48h break, Mon, Wed and Fri isolated days off, Tue and Thu isolated workdays
+  // (Sunday is not judged without last week; Saturday never, next Sunday is unknown).
+  assert.equal(w([['Sunday', 'first'], ['Tuesday', 'first'], ['Thursday', 'first'], ['Saturday', 'first']]).pattern, 2 + 3 + 2);
   // Second shift then first shift next morning: 8h rest (8h short of 16) and one shift change.
-  assert.deepEqual(w(['Monday', 'second'], ['Tuesday', 'first']), { recovery: 8, pattern: 0, transitions: 1, blocks: 2 });
+  assert.deepEqual(pick(w([['Monday', 'second'], ['Tuesday', 'first']]), 'recovery', 'transitions'), { recovery: 8, transitions: 1 });
   // First to third (day to night) counts as two.
-  assert.equal(w(['Monday', 'first'], ['Wednesday', 'third']).transitions, 2);
+  assert.equal(w([['Monday', 'first'], ['Wednesday', 'third']]).transitions, 2);
   // Last week's Saturday night counts for Sunday's rest.
   assert.equal(c.employeeWorkPattern('x', [span('Sunday', 'first')], { prevWorkIntervals: [{ start: -2, end: 6 }] }).recovery, 16);
+  // Overnight work makes the next calendar day a worked day: thirds Mon, Tue and Thu
+  // touch Mon-Fri, so only Sunday and Saturday are calendar days off.
+  const thirds = w([['Monday', 'third'], ['Tuesday', 'third'], ['Thursday', 'third']]);
+  assert.deepEqual(pick(thirds, 'calendarDaysOff', 'dutyFreeDays'), { calendarDaysOff: 2, dutyFreeDays: 4 });
+  // Carry-in work from last week counts for rest; its hours do not start a duty this week.
+  const carry = { employeeId: 'x', start: -2, end: 10, carryIn: true, source: 'extended' };
+  const r = c.employeeWorkPattern('x', [carry, span('Sunday', 'third')]);
+  assert.equal(r.recovery, 4, '12h rest after the carried-in late stay');
+  // An early arrival (02:00-14:00) is a day block, a late stay after nights a night block.
+  assert.equal(c.blockShiftClass({ start: 2, end: 14 }), 0);
+  assert.equal(c.blockShiftClass({ start: 22, end: 34 }), 2);
+  // The old cyclic reading remains available for reporting only.
+  assert.equal(c.repeatingWeekPattern('x', monFri.map(d => span(...d))), 0);
 });
 
 test('with equal overtime, days off together and fewer quick turnarounds rank better', () => {

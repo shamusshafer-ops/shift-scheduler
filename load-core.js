@@ -67,7 +67,7 @@ const exportsList = [
   "remainingSlotCapacity", "buildCallOffList", "callOffNeeds", "callOffPosition", "compareScheduleQuality", "scheduleQuality", "repairScheduleCompletion", "buildCompletionDiagnostics",
   "overtimeCreditLimits", "trimOvertimeProposal", "resolveOvertimeProposal", "repairScheduleGaps",
   "overtimeLowerBound", "SEARCH_IDLE_LIMIT_MS", "rebalanceOvertime", "repairWithRelays", "relayNeighbourhood", "handoffSourceSpan", "handoffSourceDay", "handoffSourcesFor", "roleReachable", "relayGapPossible", "findFixSuggestionsSteps", "staffingInsightsSteps", "WAIVABLE_RULES", "suggestionAskText", "swingShapeAllowed", "stretchIssues", "employeeStretches", "doubleShiftCount", "handoffAllowedLikeDuty", "HANDOFF_EXT_EQUIV", "QUALITY", "employeesWithoutDayOff", "employeeDutyDays", "supervisorExtensions", "isSupervisorExtension",
-  "employeeQuality", "employeeWorkPattern", "polishSearchWeek", "RECOVERY_TARGET_HOURS", "fairnessFromWeeks", "historicalOvertimeWeight", "overtimeFloorDetails",
+  "employeeQuality", "employeeWorkPattern", "repeatingWeekPattern", "blockShiftClass", "previousWeekKnownFrom", "effectiveOvertimePref", "createScheduleOptimizer", "OPTIMIZER_MODES", "coverageCapability", "searchCandidates", "createOptimizerRunner", "hydrateOptimizerConfig", "overtimeSpreadCost", "OVERTIME_DISTRIBUTIONS", "makeWeekValidator", "weekComparisonDetails", "runOptimizerWorker", "weekDistance", "explainRanking", "polishSearchWeek", "RECOVERY_TARGET_HOURS", "fairnessFromWeeks", "historicalOvertimeWeight", "overtimeFloorDetails",
 ];
 const wrapped = src + "\n;module.exports = {" +
   exportsList.map(n => `${n}: (typeof ${n} !== "undefined" ? ${n} : undefined)`).join(",") + "};";
