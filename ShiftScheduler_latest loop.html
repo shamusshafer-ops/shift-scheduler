@@ -2817,12 +2817,18 @@ function polishSearchWeek(week, context) {
 // to the pool; the best one's searched objectives tighten the whole-week
 // search's bound. Neighborhoods that pay off are chosen more often, grow when
 // small ones stop working, and never repeat an identical rebuild of the same week.
+//
+// regionNodes: node budgets of one region rebuild, by level. An operator moves
+// up a level after three fruitless rebuilds and down after an improvement;
+// every stallStep iterations without a new best week raise all operators one
+// level, so long stalls get the large multi-day rebuilds that move work
+// between several people at once.
 const OPTIMIZER_MODES = {
-  fast:     { label: "Fast draft",   globalSearch: false, idleMs: 4000,  maxMs: 15000,   regionNodes: [120, 240, 400],         polishMs: 80 },
-  balanced: { label: "Balanced",     globalSearch: true,  idleMs: 45000, maxMs: 240000,  regionNodes: [200, 400, 800, 1200],   polishMs: 150 },
-  deep:     { label: "Deep",         globalSearch: true,  idleMs: 300000, maxMs: 1800000, regionNodes: [300, 600, 1200, 2400], polishMs: 250 },
+  fast:     { label: "Fast draft",   globalSearch: false, idleMs: 4000,  maxMs: 15000,   incompleteMaxMs: 90000, regionNodes: [120, 240, 400, 800], stallStep: 3, polishMs: 80 },
+  balanced: { label: "Balanced",     globalSearch: true,  idleMs: 60000, maxMs: 240000,  regionNodes: [200, 400, 800, 1600, 3200, 6400],        stallStep: 3, polishMs: 150 },
+  deep:     { label: "Deep",         globalSearch: true,  idleMs: 300000, maxMs: 1800000, regionNodes: [300, 600, 1200, 2400, 4800, 9600, 19200], stallStep: 4, polishMs: 250 },
 };
-const OPTIMIZER_OPERATORS = ["day", "days", "weekend", "shift", "employee", "pattern", "peers", "gap", "pto", "extended", "random"];
+const OPTIMIZER_OPERATORS = ["day", "days", "weekend", "shift", "employee", "pattern", "peers", "gap", "shortfall", "pto", "extended", "random"];
 function scheduleKeySet(week) {
   const keys = new Set();
   for (const [key, rows] of Object.entries(week?.ns || {})) for (const a of rows || []) keys.add("r|" + key + "|" + a.employeeId + "|" + a.position);
@@ -2972,8 +2978,20 @@ function createScheduleOptimizer(config, runtime = {}) {
     for (const s of ALL_SLOTS) { const c = analyzeShiftCoverage(s.day, s.shiftId, week.ns, roster, week.autoExtShifts || [], week.handoffs || []); if (!c.ok) out.push(s); }
     return out;
   }
+  // Full-timers below 40 credited hours, and the days they could still work.
+  function shortEmployees(week) {
+    return roster.filter(e => e.employmentType === "full-time" && !excluded.has(e.id) && !e.inTraining &&
+      weeklyEmployeeHours(e, week.ns, week.autoExtShifts || [], week.handoffs || [], ctx.ptoHoursByEmployee || {}).creditedHours < FT_MIN_HOURS - 1e-9);
+  }
+  function openDays(emp, week) {
+    const own = collectCoverageIntervals(week.ns, week.autoExtShifts || [], week.handoffs || []).filter(i => i.employeeId === emp.id);
+    return DAYS.filter((d, n) => !(emp.unavailableDays || []).includes(d) && !ctx.empTimeOffDays?.has?.(emp.id + "__" + d) &&
+      SHIFTS.some(sh => !(emp.blockedShifts || []).includes(sh.id)) && !own.some(i => i.start < (n + 1) * 24 && i.end > n * 24));
+  }
+  let regionFocus = null;
   const applicable = (op, week) => {
     if (op === "gap") return gapKeys(week).length > 0;
+    if (op === "shortfall") return shortEmployees(week).some(e => openDays(e, week).length);
     if (op === "pto") return !!ctx.empTimeOffDays && [...(ctx.empTimeOffDays || [])].some(k => typeof k === "string");
     if (op === "extended") return (week.autoExtShifts || []).some(x => !x.carryIn && !x.locked) || (week.handoffs || []).some(h => !h.locked);
     return true;
@@ -2994,6 +3012,14 @@ function createScheduleOptimizer(config, runtime = {}) {
       }
       case "gap": {
         const g = pick(gapKeys(week)), d = DAYS.indexOf(g.day), days = DAYS.slice(Math.max(0, d - Math.min(level, 1)), d + 1 + Math.min(level, 2));
+        return regionDays(days);
+      }
+      case "shortfall": {
+        // Rebuild days a short full-timer could still work, requiring their 40 hours there.
+        const short = shortEmployees(week).filter(e => openDays(e, week).length);
+        if (!short.length) return new Set();
+        const emp = pick(short), days = openDays(emp, week).sort(() => rng() - 0.5).slice(0, 1 + Math.min(level, 2));
+        regionFocus = emp.id;
         return regionDays(days);
       }
       case "pto": {
@@ -3057,9 +3083,11 @@ function createScheduleOptimizer(config, runtime = {}) {
   }
   const hash = str => { let h = 2166136261; for (let i = 0; i < str.length; i++) { h ^= str.charCodeAt(i); h = Math.imul(h, 16777619); } return (h >>> 0).toString(36); };
   function chooseOperator(week) {
-    const ops = OPTIMIZER_OPERATORS.filter(op => applicable(op, week));
-    // A week with gaps rebuilds around them first, half the time.
+    const ops = OPTIMIZER_OPERATORS.filter(op => (!config.operators || config.operators.includes(op)) && applicable(op, week));
+    if (!ops.length) return null;
+    // A week with gaps or a full-timer short of 40 hours rebuilds around them first, half the time.
     if (ops.includes("gap") && rng() < 0.5) return "gap";
+    if (ops.includes("shortfall") && rng() < 0.5) return "shortfall";
     const total = ops.reduce((n, op) => n + stats[op].weight, 0);
     let r = rng() * total;
     for (const op of ops) { r -= stats[op].weight; if (r <= 0) return op; }
@@ -3071,9 +3099,14 @@ function createScheduleOptimizer(config, runtime = {}) {
     const baseEntry = pool.length > 1 && rng() < (stalled ? 0.4 : 0.12) ? pick(pool) : best;
     if (!baseEntry) return null;
     const base = baseEntry.week;
-    let op, keys, key;
+    let op, keys, key, level = 0;
+    // An incomplete best week gets the largest rebuilds at once: completing it comes first.
+    const stallLevel = best && !best.complete ? M.regionNodes.length - 1 : Math.floor((iterations - lastBestIteration) / (M.stallStep || 6));
     for (let tries = 0; tries < 6; tries++) {
-      op = chooseOperator(base); keys = region(op, base, stats[op].level);
+      regionFocus = null;
+      op = chooseOperator(base);
+      if (!op) return null;
+      level = Math.min(M.regionNodes.length - 1, Math.max(stats[op].level, stallLevel)); keys = region(op, base, level);
       key = hash(baseEntry.id + "|" + op + "|" + [...keys].sort().join(","));
       if (keys.size && !tabu.has(key)) break;
     }
@@ -3082,14 +3115,14 @@ function createScheduleOptimizer(config, runtime = {}) {
     const { targets, ...fixed } = destroy(base, keys);
     fixed.targets = targets;
     const floors = Object.fromEntries(roster.map(e => [e.id, e.employmentType === "full-time"
-      ? Math.min(FT_MIN_HOURS, weeklyEmployeeHours(e, base.ns, base.autoExtShifts || [], base.handoffs || [], ctx.ptoHoursByEmployee || {}).creditedHours) : 0]));
+      ? (e.id === regionFocus ? FT_MIN_HOURS : Math.min(FT_MIN_HOURS, weeklyEmployeeHours(e, base.ns, base.autoExtShifts || [], base.handoffs || [], ctx.ptoHoursByEmployee || {}).creditedHours)) : 0]));
     const q = baseEntry.quality, baseComplete = baseEntry.complete;
     const search = createCompleteScheduleSearch({ ...searchInput, schedule: fixed.ns, extShifts: fixed.autoExtShifts, handoffs: fixed.handoffs,
       targetSlots: [...fixed.targets], restrictCandidatesToTargets: true, structuralGaps, hourFloors: floors, optimizeOvertime: true, allowTies: true,
       ...(baseComplete ? { overtimeBudget: q[QUALITY.overtime], withoutDayOffBudget: q[QUALITY.noDayOff], supervisorExtensionBudget: q[QUALITY.supervisorExtensions] } : {}) },
       { candidateCache, secondary: w => quality(restoreLocks(w, base)), seedSecondary: baseComplete ? q : null });
     stats[op].tries++;
-    return { op, keys, base, baseEntry, search, nodes: M.regionNodes[Math.min(stats[op].level, M.regionNodes.length - 1)], startedAt: clock() };
+    return { op, keys, base, baseEntry, search, nodes: M.regionNodes[level], startedAt: clock() };
   }
   function finishJob(j) {
     const snap = j.search.snapshot(), ms = clock() - j.startedAt, s = stats[j.op];
@@ -3146,7 +3179,14 @@ function createScheduleOptimizer(config, runtime = {}) {
       const more = () => deterministic ? doneIters < iterBudget : clock() < deadline;
       while (more() && status === "running") {
         if (solverActive() && (!job || turn++ % 3 === 0)) {
-          solverSnapshot = deterministic ? solver.advance({ maxSteps: searchSteps, timeSliceMs: 1e9 }) : solver.advance({ maxSteps: 300, timeSliceMs: Math.max(4, Math.min(20, deadline - clock())) });
+          if (deterministic) {
+            // Reproducible share: a fixed number of whole-week search nodes per
+            // turn (steps alone would starve it: one node takes many steps).
+            const target = (solverSnapshot.nodes || 0) + (M.wholeWeekNodes || 60);
+            let guard = 0;
+            do { solverSnapshot = solver.advance({ maxSteps: searchSteps, timeSliceMs: 1e9 }); }
+            while (solverSnapshot.status === "searching" && solverSnapshot.nodes < target && ++guard < 400);
+          } else solverSnapshot = solver.advance({ maxSteps: 300, timeSliceMs: Math.max(4, Math.min(20, deadline - clock())) });
           harvestSolver();
         }
         if (!job) job = startJob();
@@ -3155,10 +3195,13 @@ function createScheduleOptimizer(config, runtime = {}) {
         do { r = job.search.advance(deterministic ? { maxSteps: 200, timeSliceMs: 1e9 } : { maxSteps: 200, timeSliceMs: Math.max(4, deadline - clock()) }); }
         while (r.status === "searching" && r.nodes < job.nodes && (deterministic || clock() < deadline));
         if (r.status !== "searching" || r.nodes >= job.nodes) { if (r.status === "searching") job.search.cancel(); finishJob(job); job = null; doneIters++; }
-        // Stop rules: idle (no better week for a while), or the mode's cap.
-        const idle = deterministic ? iterations - lastBestIteration >= (config.idleIterations || 40) : elapsed() - lastBestAt >= M.idleMs;
+        // Stop rules: idle (no better week for a while, once a complete week is
+        // found; an incomplete best keeps searching), or the mode's cap.
+        const idleFor = deterministic ? iterations - lastBestIteration : elapsed() - lastBestAt;
+        const idle = idleFor >= (deterministic ? (config.idleIterations || 40) * (best?.complete ? 1 : 4) : best?.complete ? M.idleMs : Math.max(M.maxMs, M.incompleteMaxMs || 0));
         if (idle) { status = "done"; stopReason = "idle"; }
-        else if (!deterministic && elapsed() >= M.maxMs) { status = "done"; stopReason = "time-limit"; }
+        // A mode's time cap is for improving a complete week; an incomplete one may run to incompleteMaxMs.
+        else if (!deterministic && elapsed() >= (best?.complete ? M.maxMs : Math.max(M.maxMs, M.incompleteMaxMs || 0))) { status = "done"; stopReason = "time-limit"; }
         else if (deterministic && config.maxIterations && iterations >= config.maxIterations) { status = "done"; stopReason = "iteration-limit"; }
       }
       if (status === "done" && solver && solverSnapshot.status === "searching") solverSnapshot = solver.cancel();
@@ -16547,7 +16590,7 @@ function ScheduleGrid({ onOpenTestModal }) {
                             );
                           })()}
                           <span style={{fontSize:9,color:isSMDual?"var(--ss-medical)":pC(a.position,t),fontWeight:700,flexShrink:0}}>{isSMDual?"S&M":a.position.substring(0,3).toUpperCase()}</span>
-                          {!isReadOnly&&<button onClick={(e)=>{e.stopPropagation();removeAsgn(day,shift.id,a.employeeId);}}
+                          {!isReadOnly&&<button onClick={(e)=>{e.stopPropagation();removeAsgn(day,shift.id,a.employeeId);}} title="Remove from this shift" aria-label="Remove from this shift"
                             style={{background:"transparent",border:"none",color:"var(--ss-text-dim)",cursor:"pointer",fontSize:10,padding:"0 2px",lineHeight:1}}>✕</button>}
                         </div>
                         {}

@@ -78,7 +78,7 @@ const ctxFor = (emps, extra = {}) => {
 };
 const optimizerFor = (initial, extra = {}) => c.createScheduleOptimizer({ mode: 'balanced', seed: 7, deterministic: true, idleIterations: 1e9, maxIterations: extra.iterations || 12,
   initial, searchInput: { weekStart, employees: sc.employees, cfg: sc.cfg, schedule: extra.schedule || {}, extShifts: [], handoffs: [], timeOffReqs: [], history: [], empPatterns: {},
-    excludedIds: extra.excludedIds || [] }, context: ctxFor(sc.employees, extra), globalSearch: extra.globalSearch });
+    excludedIds: extra.excludedIds || [] }, context: ctxFor(sc.employees, extra), globalSearch: extra.globalSearch, operators: extra.operators });
 const run = opt => { let s; do { s = opt.advance({ iterations: 1, searchSteps: 300 }); } while (s.status === 'running'); return s; };
 
 test('candidate pool: the best week by the canonical objective wins, whatever order weeks arrive in', () => {
@@ -141,4 +141,24 @@ test('explainRanking names the entry that decides', () => {
   assert.equal(r.decidedBy, 'overtime'); assert.equal(r.better, 'first');
   assert.match(r.text, /total overtime hours 24 vs 32/);
   assert.equal(c.explainRanking(v({}), v({})).decidedBy, null);
+});
+
+test('optimizer: a full-timer left short of 40 hours is completed by the shortfall rebuild', () => {
+  const Q = c.QUALITY, q = w => c.scheduleQuality(w, sc.employees, sc.cfg, {});
+  // From autofill's complete week, give one 40-hour full-timer's regular duty to a part-timer or on-call employee.
+  const hours = e => c.weeklyEmployeeHours(e, autofill.ns, autofill.autoExtShifts || [], autofill.handoffs || [], {}).creditedHours;
+  let short = null;
+  outer: for (const e of sc.employees.filter(e => e.employmentType === 'full-time' && hours(e) === 40))
+    for (const [key, rows] of Object.entries(autofill.ns)) for (const a of rows.filter(a => a.employeeId === e.id && a.position !== 'Supervisor'))
+      for (const p of sc.employees.filter(p => p.employmentType !== 'full-time' && (p.qualifications || []).includes(a.position))) {
+        const w = JSON.parse(JSON.stringify(autofill));
+        w.ns[key] = w.ns[key].map(x => x === a || (x.employeeId === a.employeeId && x.position === a.position) ? { ...x, employeeId: p.id } : x);
+        const v = q(w);
+        if (v[Q.hard] === 0 && v[Q.coverage] === 0 && v[Q.body] === 0 && v[Q.shortfall] === 8) { short = { week: w, id: e.id }; break outer; }
+      }
+  assert(short, 'fixture needs a week with exactly one full-timer 8 hours short');
+  const s = run(optimizerFor(short.week, { iterations: 8, globalSearch: false, operators: ['shortfall'] }));
+  assert.equal(s.best.quality[Q.shortfall], 0, 'the short full-timer gets their 40 hours');
+  assert(s.best.complete && s.best.errors === 0);
+  assert(s.operators.shortfall.newBest >= 1);
 });
