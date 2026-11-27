@@ -3100,8 +3100,10 @@ function createScheduleOptimizer(config, runtime = {}) {
     if (!baseEntry) return null;
     const base = baseEntry.week;
     let op, keys, key, level = 0;
-    // An incomplete best week gets the largest rebuilds at once: completing it comes first.
-    const stallLevel = best && !best.complete ? M.regionNodes.length - 1 : Math.floor((iterations - lastBestIteration) / (M.stallStep || 6));
+    // An incomplete best week gets larger rebuilds at once: completing it comes
+    // first (the largest when there is no whole-week search, as in Fast mode).
+    const stallSteps = Math.floor((iterations - lastBestIteration) / (M.stallStep || 6));
+    const stallLevel = best && !best.complete ? Math.max(stallSteps, solver ? Math.floor((M.regionNodes.length - 1) / 2) : M.regionNodes.length - 1) : stallSteps;
     for (let tries = 0; tries < 6; tries++) {
       regionFocus = null;
       op = chooseOperator(base);
@@ -3178,15 +3180,19 @@ function createScheduleOptimizer(config, runtime = {}) {
       let doneIters = 0;
       const more = () => deterministic ? doneIters < iterBudget : clock() < deadline;
       while (more() && status === "running") {
-        if (solverActive() && (!job || turn++ % 3 === 0)) {
+        // While no complete week is held, the whole-week search (which looks
+        // for any complete week first) gets a turn every time and a larger share.
+        const incomplete = !best?.complete;
+        if (solverActive() && (!job || incomplete || turn++ % 3 === 0)) {
           if (deterministic) {
             // Reproducible share: a fixed number of whole-week search nodes per
             // turn (steps alone would starve it: one node takes many steps).
-            const target = (solverSnapshot.nodes || 0) + (M.wholeWeekNodes || 60);
+            const target = (solverSnapshot.nodes || 0) + (incomplete ? 300 : M.wholeWeekNodes || 60);
             let guard = 0;
             do { solverSnapshot = solver.advance({ maxSteps: searchSteps, timeSliceMs: 1e9 }); }
             while (solverSnapshot.status === "searching" && solverSnapshot.nodes < target && ++guard < 400);
-          } else solverSnapshot = solver.advance({ maxSteps: 300, timeSliceMs: Math.max(4, Math.min(20, deadline - clock())) });
+          } else solverSnapshot = solver.advance({ maxSteps: incomplete ? 2000 : 300,
+            timeSliceMs: Math.max(4, incomplete ? (deadline - clock()) / 2 : Math.min(20, deadline - clock())) });
           harvestSolver();
         }
         if (!job) job = startJob();
@@ -14542,7 +14548,7 @@ function OptimizerPanel({ progress: p, onPause, onResume, onUseBest, onCancel, w
   const o = p.search?.optimization || {}, floorDetails = o.floorDetails;
   const bestEntry = weeks?.find(w => w.id === (weeks.reduce((b, w) => !b || compareScheduleQuality(w.summary.quality, b.summary.quality) < 0 ? w : b, null) || {}).id);
   const title = p.status === "paused" ? "Optimization paused"
-    : p.status === "searching" ? `Optimizing (${p.modeLabel || OPTIMIZER_MODES[p.mode]?.label || ""}): complete search and neighborhood rebuilds`
+    : p.status === "searching" ? `Optimizing (${p.modeLabel || OPTIMIZER_MODES[p.mode]?.label || ""}): ${OPTIMIZER_MODES[p.mode]?.globalSearch === false ? "neighborhood rebuilds" : "complete search and neighborhood rebuilds"}`
     : p.status === "stale" ? "Inputs changed — start a new optimization"
     : p.status === "cancelled" ? "Optimization cancelled"
     : p.status === "invalid" ? "Optimizer stopped"
