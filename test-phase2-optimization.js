@@ -110,7 +110,7 @@ test('optimizer: reproducible, never worse than autofill, explains rankings, sta
   assert(s1.best.complete);
   assert(['best-found', 'proven-selected'].includes(s1.proof.kind));
   assert.doesNotMatch(s1.proof.text, /all objectives/i);
-  for (const cand of s1.candidates.filter(x => x.explanation)) assert.match(cand.explanation.text, /Ranks (above|below)|Equal/);
+  for (const cand of s1.candidates.filter(x => x.explanation)) assert.match(cand.explanation.text, /^Ranks below|^Equal/, 'listed weeks explain why they rank below the best');
   // The whole-week search's bound follows the best valid week.
   const o = s1.search?.optimization;
   if (o) assert(o.bound[2] <= s1.best.quality[c.QUALITY.overtime] + 1e-9);

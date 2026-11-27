@@ -120,40 +120,27 @@ test('complete-search feasibility agrees with an exhaustive oracle on 24 constra
   const r=solve(input(roster,{targetSlots:days.map(d=>d+'__second')}));assert.equal(r.status==='feasible',expected,'oracle mismatch trial '+trial);assert(['feasible','infeasible'].includes(r.status));
  }
 });
-function uiHarness(result={status:'searching',phase:'regular-hours',nodes:1,candidates:1,reasons:[],solution:null},overrides={},weeks=[]) {
- const queue=[],events=[],ref={current:null},stamp={current:'base'},cancel={current:false},found={current:null};let advances=0;
- const fake={snapshot:()=>result,advance:()=>{advances++;return result;},cancel:()=>({...result,status:'cancelled'}),foundWeeks:(from=0)=>weeks.slice(from)};
- const scope={...c,isReadOnly:false,generationInputsReady:true,pendingProposal:null,employees:oneDay(['a','b','c']),weekStart:'2026-09-06',cfg:{},schedule:{},extShifts:[],handoffs:[],trainingBlocks:[],timeOffReqs:[],weekAvailability:null,history:[],empPatterns:{},afExclude:[],fairnessHistory:{},ptoHoursByEmployee:{},
+// The page's optimizer wiring (startCompleteSearch ... cancelCompleteSearch),
+// with createOptimizerRunner replaced by a fake whose updates the test emits.
+function uiHarness(overrides={}) {
+ const queue=[],events=[],ref={current:null},stamp={current:'base'},cancel={current:false},found={current:null},calls=[];let onUpdate=null,data=null;
+ const fakeRunner=(d,opts)=>{data=d;onUpdate=opts.onUpdate;const r={usesWorker:false};
+  for(const m of ['start','pause','resume','useBest','cancel','terminate'])r[m]=()=>calls.push(m);return r;};
+ const scope={...c,isReadOnly:false,generationInputsReady:true,pendingProposal:null,employees:oneDay(['a','b','c']),weekStart:'2026-09-06',cfg:{},schedule:{},extShifts:[],handoffs:[],trainingBlocks:[],timeOffReqs:[],
+  weekAvailability:null,history:[],empPatterns:{},afExclude:[],fairnessHistory:{},optimizerMode:'balanced',ptoHoursByEmployee:{},makeOptimizerWorker:()=>null,
   completeSearchRef:ref,overtimeInputRef:stamp,autoFillCancelRef:cancel,autoFillRunning:false,
-  createCompleteScheduleSearch:()=>fake,setAutoFillRunning:v=>events.push(['running',v]),setAutoFillProgress:v=>events.push(['progress',v]),
+  createOptimizerRunner:fakeRunner,setAutoFillRunning:v=>events.push(['running',v]),setAutoFillProgress:v=>events.push(['progress',v]),
   showAlert:v=>events.push(['alert',v]),validateSchedule:()=>[],proposalIsCurrent:p=>p.baseStamp===stamp.current,discardStaleProposal:()=>events.push(['stale']),
   setPendingProposal:p=>events.push(['pending',p]),commitScheduleProposal:p=>events.push(['commit',p]),setTimeout:f=>queue.push(f),
-  empTimeOffDays:new Set(),liveRulesStamp:'rules',setFoundWeeks:v=>{found.current=typeof v==='function'?v(found.current):v;},setPreviewWeek:()=>{},...overrides};
+  liveRulesStamp:'rules',setFoundWeeks:v=>{found.current=typeof v==='function'?v(found.current):v;},setPreviewWeek:()=>{},...overrides};
  const start=html.indexOf('  const startCompleteSearch ='),end=html.indexOf('  const runAutoFill =',start);
  const ui=new Function(...Object.keys(scope),html.slice(start,end)+'return {startCompleteSearch,resumeCompleteSearch,cancelCompleteSearch,applyFoundWeek};')(...Object.values(scope));
- return {ui,events,queue,ref,stamp,cancel,found,get advances(){return advances;}};
+ const last=()=>{const v=events.filter(e=>e[0]==='progress').at(-1)?.[1];return typeof v==='function'?v({}):v;};
+ return {ui,events,queue,ref,stamp,cancel,found,calls,emit:(snap,kind)=>onUpdate(snap,kind),get data(){return data;},last};
 }
-test('production pause and resume keep the same frontier, and cancel reports unknown feasibility',()=>{
- const h=uiHarness();h.ui.startCompleteSearch();const job=h.ref.current;h.cancel.current=true;h.queue.shift()();assert.equal(h.advances,0);assert.equal(job.paused,true);
- h.ui.resumeCompleteSearch();h.queue.shift()();assert.equal(h.ref.current,job);assert.equal(h.advances,1);
- h.ui.cancelCompleteSearch();assert.equal(h.ref.current,null);assert.equal(h.events.at(-1)[1].status,'cancelled');
- while(h.queue.length)h.queue.shift()();assert.equal(h.advances,1);
-});
-test('production search discards changed-input and unmounted results before applying a candidate',()=>{
- const h=uiHarness();h.ui.startCompleteSearch();h.stamp.current='edited';h.queue.shift()();assert.equal(h.advances,0);assert.equal(h.events.at(-1)[1].status,'stale');assert(!h.events.some(e=>['commit','pending'].includes(e[0])));
- const removed=uiHarness();removed.ui.startCompleteSearch();removed.ref.current=null;removed.queue.shift()();assert.equal(removed.advances,0);
-});
-test('production complete candidates use ordinary proposal commit and overtime staging',()=>{
- const solution={ns:{Sunday__second:oneDay(['a','b','c']).map(v=>a(v.id,'Guard',false))},autoExtShifts:[],handoffs:[],usedPatterns:{}};
- const h=uiHarness({status:'feasible',phase:'regular-hours',solution});h.ui.startCompleteSearch();h.queue.shift()();assert.equal(h.events.filter(e=>e[0]==='commit').length,1);
- solution.ns=Object.fromEntries(c.DAYS.slice(0,6).map(day=>[day+'__second',[a('a','Guard',false)]]));
- // Nobody else can take a's duties here, so polishing cannot remove the overtime.
- const only=[e('a',{overtimePref:'preferred'}),...['b','c'].map(id=>e(id,{availableDaysOfWeek:['Saturday']}))];
- const overtime=uiHarness({status:'feasible',phase:'overtime-review',solution},{employees:only});overtime.ui.startCompleteSearch();overtime.queue.shift()();assert(!overtime.events.some(e=>e[0]==='commit'));assert.equal(overtime.events.find(e=>e[0]==='pending')[1].reviewItems[0].newHours,48);
-});
-test('production infeasibility leaves the current draft untouched',()=>{
- const h=uiHarness({status:'infeasible',phase:'regular-hours',solution:null,reasons:['exhausted']});h.ui.startCompleteSearch();h.queue.shift()();assert(!h.events.some(e=>['commit','pending'].includes(e[0])));assert.equal(h.events.at(-1)[1].status,'infeasible');
-});
+// A pool entry as the optimizer reports it.
+const entry=(id,week,{origin='rebuild:day',complete=true,errors=0,quality=Array(14).fill(0)}={})=>({id,origin,label:origin,week,complete,errors,warnings:0,quality,foundAtMs:1,details:{maxOvertime:0}});
+const snap=(best,candidates=[best],extra={})=>({status:'running',best,candidates,proof:{kind:'best-found',text:'x'},...extra});
 // relaysDone: the one relay-repair pass on the best week has already run.
 function handOff(best,complete,attemptNum=10,relaysDone=true) {
  const start=html.indexOf('      if (complete || attemptNum >= MAX_ATTEMPTS || plateauCount >= PLATEAU_LIMIT) {'),end=html.indexOf('\n      setTimeout(tick, 0);\n',start);const calls=[];
@@ -180,35 +167,6 @@ test('a complete autofill week hands off to the search, bounded by its own days 
  assert.equal(calls.length,1);assert.equal(calls[0][1],best);assert.deepEqual(calls[0][2],{supervisorExtensions:0,withoutDayOff:2,overtime:104});
 });
 const fallbackDraft=()=>({ns:{Sunday__second:oneDay(['a','b','c']).map(v=>a(v.id,'Guard',false))},autoExtShifts:[],handoffs:[],usedPatterns:{},errors:1});
-test('an infeasible complete search applies the heuristic fallback draft instead of leaving the grid empty',()=>{
- const fb=fallbackDraft(),h=uiHarness({status:'infeasible',phase:'regular-hours',solution:null,reasons:['exhausted']});
- h.ui.startCompleteSearch(undefined,fb);h.queue.shift()();
- const commit=h.events.find(e=>e[0]==='commit');
- assert(commit,'fallback committed');assert.deepEqual(commit[1].ns,fb.ns);
- const last=h.events.filter(e=>e[0]==='progress').at(-1)[1];
- assert.equal(last.status,'infeasible');assert.equal(last.applied,'autofill');assert.equal(last.fallbackErrors,1);
-});
-test('a fallback draft that needs overtime goes through the approval step, not straight to the grid',()=>{
- const fb=fallbackDraft();fb.ns=Object.fromEntries(c.DAYS.slice(0,6).map(day=>[day+'__second',[a('a','Guard',false)]]));
- const h=uiHarness({status:'infeasible',phase:'overtime-review',solution:null,reasons:['exhausted']});
- h.ui.startCompleteSearch(undefined,fb);h.queue.shift()();
- assert(!h.events.some(e=>e[0]==='commit'));assert.equal(h.events.find(e=>e[0]==='pending')[1].reviewItems[0].newHours,48);
-});
-test('a validator-rejected complete candidate falls back to the heuristic draft',()=>{
- const solution={ns:{Sunday__second:[]},autoExtShifts:[],handoffs:[],usedPatterns:{}},fb=fallbackDraft();
- const h=uiHarness({status:'feasible',phase:'regular-hours',solution},{validateSchedule:(ns)=>ns===solution.ns?[{level:'error',msg:'bad'}]:[]});
- h.ui.startCompleteSearch(undefined,fb);h.queue.shift()();
- const commits=h.events.filter(e=>e[0]==='commit');
- assert.equal(commits.length,1);assert.deepEqual(commits[0][1].ns,fb.ns);
- assert.equal(h.events.filter(e=>e[0]==='progress').at(-1)[1].status,'invalid');
-});
-test('stale or cancelled searches never apply the fallback draft',()=>{
- const stale=uiHarness();stale.ui.startCompleteSearch(undefined,fallbackDraft());stale.stamp.current='edited';stale.queue.shift()();
- assert(!stale.events.some(e=>['commit','pending'].includes(e[0])));
- const cancelled=uiHarness();cancelled.ui.startCompleteSearch(undefined,fallbackDraft());cancelled.ui.cancelCompleteSearch();
- while(cancelled.queue.length)cancelled.queue.shift()();
- assert(!cancelled.events.some(e=>['commit','pending'].includes(e[0])));
-});
 test('fixed excluded overtime is still a reviewable combination when no editable employee wants OT',()=>{
  const roster=oneDay(['a','b','fixed']);roster[2]={...roster[2],requiredShift:null,availableDaysOfWeek:c.DAYS,overtimePref:'preferred'};
  const schedule=Object.fromEntries(c.DAYS.slice(0,6).map(day=>[day+'__second',[a('fixed','Guard',false)]]));
@@ -307,26 +265,6 @@ test('the overtime floor counts every coverage hour and each person\'s room unde
  assert.equal(c.overtimeLowerBound(guards,{ptoHoursByEmployee:{g0:16}}),544-12*40,'PTO never counts toward overtime, so it uses up no room under 40');
 });
 const incumbent=()=>({ns:{Sunday__second:oneDay(['a','b','c']).map(v=>a(v.id,'Guard',false))},autoExtShifts:[],handoffs:[],usedPatterns:{}});
-test('"Use best now" applies the search\'s best week, or autofill\'s draft before one exists',()=>{
- const found=incumbent(),h=uiHarness({status:'searching',phase:'overtime-review',nodes:9,reasons:[],solution:found,optimization:{bestOvertime:0,improvements:1,floor:0}});
- h.ui.startCompleteSearch(undefined,fallbackDraft());h.queue.shift()();h.ref.current.useBest();
- const commit=h.events.find(e=>e[0]==='commit');assert.deepEqual(commit[1].ns,found.ns);assert.equal(h.ref.current,null);
- assert.equal(h.events.filter(e=>e[0]==='progress').at(-1)[1].applied,'search');
- const early=uiHarness(),fb=fallbackDraft();early.ui.startCompleteSearch(undefined,fb);early.ref.current.useBest();
- assert.deepEqual(early.events.find(e=>e[0]==='commit')[1].ns,fb.ns);
- while(early.queue.length)early.queue.shift()();assert.equal(early.advances,0,'the search stops once a week is applied');
-});
-test('the search applies its best week after the idle limit without improvement',()=>{
- const found=incumbent(),h=uiHarness({status:'searching',phase:'overtime-review',nodes:9,reasons:[],solution:found,optimization:{bestOvertime:0,improvements:0,floor:0}});
- h.ui.startCompleteSearch(undefined,fallbackDraft());h.queue.shift()();assert(!h.events.some(e=>e[0]==='commit'));
- h.ref.current.improvedAtMs=h.ref.current.activeMs-c.SEARCH_IDLE_LIMIT_MS;h.queue.shift()();
- assert.deepEqual(h.events.find(e=>e[0]==='commit')[1].ns,found.ns);assert.equal(h.events.filter(e=>e[0]==='progress').at(-1)[1].stopReason,'idle');
-});
-test('when no week beats autofill\'s overtime, autofill\'s week is applied',()=>{
- const fb=fallbackDraft();fb.errors=0;const h=uiHarness({status:'no-better',phase:'overtime-review',nodes:9,reasons:['none'],solution:null,optimization:{bestOvertime:null,seedOvertime:8,improvements:0,floor:0}});
- h.ui.startCompleteSearch(undefined,fb,8);h.queue.shift()();
- assert.deepEqual(h.events.find(e=>e[0]==='commit')[1].ns,fb.ns);assert.equal(h.events.filter(e=>e[0]==='progress').at(-1)[1].applied,'autofill');
-});
 test('a day off for everyone outranks overtime savings in the search',()=>{
  const i=overtimeWeek(),plain=solve(i),w=r=>c.employeesWithoutDayOff(i.employees,r.solution.ns,r.solution.autoExtShifts,r.solution.handoffs).length;
  assert.equal(w(plain),1,'the first complete week has someone working all seven days');
@@ -360,30 +298,81 @@ test('the supervisor stays late only when second shift cannot be completed witho
  const r2=finish(c.createCompleteScheduleSearch({...i,employees:withMedic,optimizeOvertime:true}),60000);
  assert.equal(r2.status,'feasible');assert.equal(r2.optimization.bestSupervisorExtensions,0,'a second-shift Medic is used instead');
 });
-test('every better week is kept for review, after autofill\'s week, and the chosen one is marked',()=>{
- const w1=incumbent(),w2=incumbent();w2.ns.Sunday__second=w2.ns.Sunday__second.slice().reverse();
- const weeks=[{supervisorExtensions:0,withoutDayOff:1,overtime:8,nodes:5,solution:w1},{supervisorExtensions:0,withoutDayOff:0,overtime:8,nodes:9,solution:w2}];
- const h=uiHarness({status:'searching',phase:'overtime-review',nodes:9,reasons:[],solution:w2,optimization:{bestOvertime:8,improvements:2,floor:0}},{},weeks);
- h.ui.startCompleteSearch(undefined,fallbackDraft());
- assert.deepEqual(h.found.current.weeks.map(w=>w.id),['autofill'],'autofill\'s week is listed first');
- h.queue.shift()();
- assert.deepEqual(h.found.current.weeks.map(w=>w.id),['autofill','search-1','search-2']);
- assert.deepEqual(h.found.current.weeks[2].week.ns,w2.ns);assert.equal(h.found.current.rulesStamp,'rules');
- h.queue.shift()();assert.equal(h.found.current.weeks.length,3,'weeks are fetched once');
- h.ref.current.useBest();assert.equal(h.found.current.appliedId,'search-2');
+test('production optimizer: pause, resume and cancel go to the runner; a cancelled run reports unknown feasibility',()=>{
+ const h=uiHarness();h.ui.startCompleteSearch();assert.deepEqual(h.calls,['start']);const job=h.ref.current;
+ assert.equal(JSON.stringify(h.data),JSON.stringify(JSON.parse(JSON.stringify(h.data))),'the worker receives plain data only');
+ h.cancel.current=true;h.emit(snap(null,[]),'progress');assert.deepEqual(h.calls,['start','pause']);assert.equal(job.paused,true);
+ h.ui.resumeCompleteSearch();assert.equal(h.calls.at(-1),'resume');assert.equal(h.ref.current,job);
+ h.ui.cancelCompleteSearch();assert.equal(h.calls.at(-1),'cancel');assert.equal(h.ref.current,null);
+ assert.equal(h.last().status,'cancelled');assert.match(h.last().reasons[0],/not known/);
+ h.emit(snap(entry('w1',incumbent())),'done');assert(!h.events.some(e=>['commit','pending'].includes(e[0])),'late results after cancel are ignored');
 });
-test('choosing an earlier week stops the search and proposes that exact week',()=>{
- const w1=incumbent(),weeks=[{supervisorExtensions:0,withoutDayOff:1,overtime:8,nodes:5,solution:w1}];
- const h=uiHarness({status:'searching',phase:'overtime-review',nodes:9,reasons:[],solution:w1,optimization:{bestOvertime:8,improvements:1,floor:0}},{},weeks);
- h.ui.startCompleteSearch(undefined,fallbackDraft());h.queue.shift()();
- const list=h.found.current,pick=list.weeks.find(w=>w.id==='autofill');
- // applyFoundWeek reads the render-time foundWeeks value, so rebuild the harness scope with it.
- const again=uiHarness(undefined,{foundWeeks:list,completeSearchRef:h.ref});
- again.ui.applyFoundWeek(pick);
- assert.equal(h.ref.current,null,'the running search was stopped');
- const commit=again.events.find(e=>e[0]==='commit');assert.deepEqual(commit[1].ns,pick.week.ns);
+test('production optimizer discards results after inputs change or after being replaced',()=>{
+ const h=uiHarness();h.ui.startCompleteSearch(undefined,fallbackDraft());h.stamp.current='edited';h.emit(snap(entry('w1',incumbent())),'done');
+ assert.equal(h.calls.at(-1),'cancel');assert.equal(h.last().status,'stale');assert(!h.events.some(e=>['commit','pending'].includes(e[0])));
+ const replaced=uiHarness();replaced.ui.startCompleteSearch();replaced.ref.current=null;replaced.emit(snap(entry('w1',incumbent())),'done');
+ assert.equal(replaced.calls.at(-1),'terminate');assert(!replaced.events.some(e=>['commit','pending'].includes(e[0])));
+});
+test('production optimizer: the best week commits normally, and overtime goes to approval',()=>{
+ const h=uiHarness();h.ui.startCompleteSearch();h.emit(snap(entry('w1',incumbent())),'done');
+ assert.equal(h.events.filter(e=>e[0]==='commit').length,1);assert.equal(h.last().applied,'optimizer');assert.equal(h.ref.current,null);
+ const week={ns:Object.fromEntries(c.DAYS.slice(0,6).map(day=>[day+'__second',[a('a','Guard',false)]])),autoExtShifts:[],handoffs:[],usedPatterns:{}};
+ const ot=uiHarness({employees:[e('a',{overtimePref:'preferred',availableDaysOfWeek:c.DAYS}),...['b','c'].map(id=>e(id))]});ot.ui.startCompleteSearch();ot.emit(snap(entry('w1',week)),'done');
+ assert(!ot.events.some(e=>e[0]==='commit'));assert.equal(ot.events.find(e=>e[0]==='pending')[1].reviewItems[0].newHours,48);
+});
+test('production optimizer: with no complete week, the best draft is applied and the panel says it is incomplete',()=>{
+ const fb=fallbackDraft(),h=uiHarness();h.ui.startCompleteSearch(undefined,fb);
+ h.emit(snap(entry('a1',fb,{origin:'autofill',complete:false,errors:1}),undefined,{proof:{kind:'unknown',text:'unknown'}}),'done');
+ const commit=h.events.find(e=>e[0]==='commit');assert(commit,'the draft is committed');assert.deepEqual(commit[1].ns,fb.ns);
+ assert.equal(h.last().applied,'autofill');assert.equal(h.last().fallbackErrors,0,'counted by this page\'s validator');
+ const none=uiHarness();none.ui.startCompleteSearch();none.emit(snap(null,[],{proof:{kind:'infeasible',text:'no'}}),'done');
+ assert(!none.events.some(e=>['commit','pending'].includes(e[0])),'nothing to apply leaves the draft untouched');assert.equal(none.last().status,'invalid');
+});
+test('a draft that needs overtime goes through approval, not straight to the grid',()=>{
+ const fb=fallbackDraft();fb.ns=Object.fromEntries(c.DAYS.slice(0,6).map(day=>[day+'__second',[a('a','Guard',false)]]));
+ const h=uiHarness();h.ui.startCompleteSearch(undefined,fb);h.emit(snap(entry('a1',fb,{origin:'autofill',complete:false,errors:1})),'done');
+ assert(!h.events.some(e=>e[0]==='commit'));assert.equal(h.events.find(e=>e[0]==='pending')[1].reviewItems[0].newHours,48);
+});
+test('a week the page\'s own validator rejects is never applied; the next valid candidate is',()=>{
+ const bad=incumbent(),good=incumbent();good.ns.Sunday__second=good.ns.Sunday__second.slice().reverse();
+ const h=uiHarness({validateSchedule:ns=>ns===bad.ns?[{level:'error',msg:'bad'}]:[]});h.ui.startCompleteSearch(undefined,fallbackDraft());
+ h.emit(snap(entry('w1',bad),[entry('w1',bad),entry('w2',good)]),'done');
+ const commits=h.events.filter(e=>e[0]==='commit');assert.equal(commits.length,1);assert.deepEqual(commits[0][1].ns,good.ns);
+ assert.equal(h.found.current.appliedId,'w2');assert.match(h.last().reasons[0],/validator rejected the best week/);
+ const only=uiHarness({validateSchedule:()=>[{level:'error',msg:'bad'}]}),fb=fallbackDraft();only.ui.startCompleteSearch(undefined,fb);
+ only.emit(snap(entry('w1',bad)),'done');assert.deepEqual(only.events.find(e=>e[0]==='commit')[1].ns,fb.ns,'then autofill\'s draft');
+});
+test('"Use best now" asks the runner to stop and applies the week it reports',()=>{
+ const found=incumbent(),h=uiHarness();h.ui.startCompleteSearch(undefined,fallbackDraft());h.ref.current.useBest();
+ assert.equal(h.calls.at(-1),'useBest');h.emit(snap(entry('w1',found),undefined,{status:'done',stopReason:'user'}),'done');
+ assert.deepEqual(h.events.find(e=>e[0]==='commit')[1].ns,found.ns);assert.equal(h.ref.current,null);
+});
+test('an idle finish applies the best week and says why it stopped',()=>{
+ const found=incumbent(),h=uiHarness();h.ui.startCompleteSearch(undefined,fallbackDraft());
+ h.emit(snap(entry('w1',found)),'progress');assert(!h.events.some(e=>e[0]==='commit'));
+ h.emit(snap(entry('w1',found),undefined,{status:'done',stopReason:'idle'}),'done');
+ assert.deepEqual(h.events.find(e=>e[0]==='commit')[1].ns,found.ns);assert.equal(h.last().stopReason,'idle');
+});
+test('the page applies the optimizer\'s best by the canonical objective, whatever order weeks arrived in',()=>{
+ // A later, raw search week (more overtime) must not replace an earlier polished week.
+ const polished=incumbent(),raw=incumbent();raw.ns.Sunday__second=raw.ns.Sunday__second.slice().reverse();
+ const q=ot=>{const v=Array(14).fill(0);v[c.QUALITY.overtime]=ot;return v;};
+ const best=entry('w1',polished,{quality:q(8)}),later=entry('w2',raw,{origin:'search',quality:q(16)});
+ const h=uiHarness();h.ui.startCompleteSearch();h.emit(snap(best,[best,later]),'progress');
+ assert.deepEqual(h.found.current.weeks.map(w=>w.id),['w1','w2']);
+ h.emit(snap(best,[best,later],{status:'done',stopReason:'idle'}),'done');
+ assert.deepEqual(h.events.find(e=>e[0]==='commit')[1].ns,polished.ns);assert.equal(h.found.current.appliedId,'w1');
+});
+test('choosing a listed week stops the optimizer and proposes exactly that week; stale lists cannot be used',()=>{
+ const w1=incumbent(),w2=incumbent();w2.ns.Sunday__second=w2.ns.Sunday__second.slice().reverse();
+ const h=uiHarness();h.ui.startCompleteSearch(undefined,fallbackDraft());h.emit(snap(entry('w1',w1),[entry('w1',w1),entry('w2',w2)]),'progress');
+ const list=h.found.current,pick=list.weeks.find(w=>w.id==='w2');
+ const again=uiHarness({foundWeeks:list,completeSearchRef:h.ref});again.ui.applyFoundWeek(pick);
+ assert.equal(h.ref.current,null,'the running optimizer was stopped');assert.equal(h.calls.at(-1),'cancel');
+ assert.deepEqual(again.events.find(e=>e[0]==='commit')[1].ns,w2.ns);
  const panel=again.events.filter(e=>e[0]==='progress').map(e=>e[1]({status:'searching'})).at(-1);
- assert.equal(panel.applied,'picked');assert.equal(panel.pickedLabel,"Autofill's week");
- const stale=uiHarness(undefined,{foundWeeks:list,liveRulesStamp:'rules changed'});stale.ui.applyFoundWeek(pick);
+ assert.equal(panel.applied,'picked');
+ const stale=uiHarness({foundWeeks:list,liveRulesStamp:'rules changed'});stale.ui.applyFoundWeek(pick);
  assert(!stale.events.some(e=>['commit','pending'].includes(e[0])),'weeks built for other rules cannot be applied');
 });
+
